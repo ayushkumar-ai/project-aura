@@ -50,7 +50,7 @@ def test_orchestrator_evaluates_response():
     assert result.passed is True
     assert result.score == 1.0
     assert result.details == {
-        "reason": "response contains content",
+        "reason": "response is valid",
     }
 
 

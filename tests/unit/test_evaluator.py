@@ -17,7 +17,7 @@ def test_evaluator_accepts_non_empty_response():
     assert result.passed is True
     assert result.score == 1.0
     assert result.details == {
-        "reason": "response contains content",
+        "reason": "response is valid",
     }
 
 
@@ -35,4 +35,19 @@ def test_evaluator_rejects_empty_response():
     assert result.score == 0.0
     assert result.details == {
         "reason": "empty response",
+    }
+def test_evaluator_rejects_request_id_mismatch():
+    request = AURARequest(user_input="Hello AURA")
+
+    response = AURAResponse(
+        request_id=uuid4(),
+        content="Hello AURA.",
+    )
+
+    result = Evaluator().evaluate(request, response)
+
+    assert result.passed is False
+    assert result.score == 0.0
+    assert result.details == {
+        "reason": "request ID mismatch",
     }
