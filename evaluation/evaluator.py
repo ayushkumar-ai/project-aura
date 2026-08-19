@@ -1,11 +1,15 @@
-from core.models import AURAResponse
+from core.models import AURARequest, AURAResponse
 from evaluation.models import EvaluationResult
 
 
 class Evaluator:
     """Evaluates the basic quality of an AURA response."""
 
-    def evaluate(self, response: AURAResponse) -> EvaluationResult:
+    def evaluate(
+        self,
+        request: AURARequest,
+        response: AURAResponse,
+    ) -> EvaluationResult:
         """Evaluate whether the response contains usable content."""
 
         if not response.content.strip():

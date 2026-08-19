@@ -51,4 +51,4 @@ class Orchestrator:
 
         response = self.run(request)
 
-        return Evaluator().evaluate(response)
+        return Evaluator().evaluate(request, response)
