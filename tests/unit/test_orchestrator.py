@@ -2,7 +2,7 @@ from core.models import AURARequest, AURAResponse
 from core.orchestrator import Orchestrator
 from core.policy import Policy
 from providers.fake_model import FakeModelProvider
-
+from memory.in_memory import InMemoryStore
 
 def test_orchestrator_allows_request():
     orchestrator = Orchestrator(
@@ -65,3 +65,19 @@ def test_orchestrator_evaluates_denied_response():
 
     assert result.passed is True
     assert result.score == 1.0
+
+
+def test_orchestrator_stores_request_in_memory():
+    memory = InMemoryStore()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=memory,
+    )
+
+    request = AURARequest(user_input="Remember this")
+
+    orchestrator.run(request)
+
+    assert memory.retrieve(str(request.request_id)) == "Remember this"

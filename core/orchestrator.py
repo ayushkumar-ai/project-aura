@@ -5,18 +5,22 @@ from core.policy import Policy, PolicyDecision
 from evaluation.evaluator import Evaluator
 from evaluation.models import EvaluationResult
 from interfaces.model import ModelInterface
+from interfaces.memory import MemoryInterface
 
 
 class Orchestrator:
     """Coordinates the AURA request execution pipeline."""
 
+
     def __init__(
         self,
         model: ModelInterface,
         policy: Policy,
+        memory: MemoryInterface | None = None,
     ):
         self.model = model
         self.policy = policy
+        self.memory = memory
 
     def run(self, request: AURARequest) -> AURAResponse:
         """Execute a request through policy and model layers."""
@@ -25,6 +29,12 @@ class Orchestrator:
             request=request,
             request_id=request.request_id,
         )
+
+        if self.memory is not None:
+            self.memory.store(
+                str(request.request_id),
+                request.user_input,
+            )
 
         decision = self.policy.evaluate(request)
 
