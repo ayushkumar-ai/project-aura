@@ -81,3 +81,50 @@ def test_orchestrator_stores_request_in_memory():
     orchestrator.run(request)
 
     assert memory.retrieve(str(request.request_id)) == "Remember this"
+
+
+def test_orchestrator_builds_context_with_memory():
+    memory = InMemoryStore()
+
+    memory.store("user_name", "AURA")
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=memory,
+    )
+
+    request = AURARequest(
+        user_input="What is my name?",
+        metadata={"memory_key": "user_name"},
+    )
+
+    context = orchestrator._build_context(request)
+
+    assert context.state == {
+        "memory": "AURA",
+    }
+
+
+
+def test_orchestrator_uses_memory_in_model_prompt():
+    memory = InMemoryStore()
+    memory.store("user_name", "AURA")
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=memory,
+    )
+
+    request = AURARequest(
+        user_input="What is my name?",
+        metadata={"memory_key": "user_name"},
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == (
+        "Fake response to: Memory: AURA\n"
+        "User: What is my name?"
+    )

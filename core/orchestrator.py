@@ -22,8 +22,9 @@ class Orchestrator:
         self.policy = policy
         self.memory = memory
 
-    def run(self, request: AURARequest) -> AURAResponse:
-        """Execute a request through policy and model layers."""
+
+    def _build_context(self, request: AURARequest) -> AURAContext:
+        """Build execution context with optional memory."""
 
         context = AURAContext(
             request=request,
@@ -31,21 +32,42 @@ class Orchestrator:
         )
 
         if self.memory is not None:
+            memory_key = request.metadata.get("memory_key")
+
+            if memory_key is not None:
+                memory_value = self.memory.retrieve(memory_key)
+
+                if memory_value is not None:
+                    context.state["memory"] = memory_value
+        return context
+
+
+    def run(self, request: AURARequest) -> AURAResponse:
+        """Execute a request through policy and model layers."""
+
+        context = self._build_context(request)
+
+        if self.memory is not None:
             self.memory.store(
                 str(request.request_id),
                 request.user_input,
-            )
+                )
+
 
         decision = self.policy.evaluate(request)
-
         if decision == PolicyDecision.DENY:
             return AURAResponse(
                 request_id=context.request_id,
                 content="Request denied by policy.",
                 metadata={"policy": decision.value},
-            )
+                )
 
-        response = self.model.generate(request.user_input)
+        prompt = request.user_input
+
+        if "memory" in context.state:
+            prompt = f"Memory: {context.state['memory']}\nUser: {request.user_input}"
+
+        response = self.model.generate(prompt)
 
         return AURAResponse(
             request_id=context.request_id,
