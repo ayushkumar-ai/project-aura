@@ -1,6 +1,9 @@
+
 from core.context import AURAContext
 from core.models import AURARequest, AURAResponse
 from core.policy import Policy, PolicyDecision
+from evaluation.evaluator import Evaluator
+from evaluation.models import EvaluationResult
 from interfaces.model import ModelInterface
 
 
@@ -42,3 +45,10 @@ class Orchestrator:
                 "policy": decision.value,
             },
         )
+
+    def evaluate(self, request: AURARequest) -> EvaluationResult:
+        """Run a request and evaluate the resulting response."""
+
+        response = self.run(request)
+
+        return Evaluator().evaluate(response)

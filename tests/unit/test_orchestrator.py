@@ -37,3 +37,31 @@ def test_orchestrator_denies_request():
     assert response.metadata == {
         "policy": "deny",
     }
+
+def test_orchestrator_evaluates_response():
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+    )
+
+    request = AURARequest(user_input="Hello AURA")
+    result = orchestrator.evaluate(request)
+
+    assert result.passed is True
+    assert result.score == 1.0
+    assert result.details == {
+        "reason": "response contains content",
+    }
+
+
+def test_orchestrator_evaluates_denied_response():
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+    )
+
+    request = AURARequest(user_input="   ")
+    result = orchestrator.evaluate(request)
+
+    assert result.passed is True
+    assert result.score == 1.0
