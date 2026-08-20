@@ -128,3 +128,42 @@ def test_orchestrator_uses_memory_in_model_prompt():
         "Fake response to: Memory: AURA\n"
         "User: What is my name?"
     )
+
+
+def test_orchestrator_handles_missing_memory():
+    memory = InMemoryStore()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=memory,
+    )
+
+    request = AURARequest(
+        user_input="What is my name?",
+        metadata={"memory_key": "unknown"},
+    )
+
+    context = orchestrator._build_context(request)
+
+    assert context.state == {}
+
+def test_orchestrator_uses_user_prompt_when_memory_is_missing():
+    memory = InMemoryStore()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=memory,
+    )
+
+    request = AURARequest(
+        user_input="What is my name?",
+        metadata={"memory_key": "unknown"},
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == (
+        "Fake response to: What is my name?"
+    )
