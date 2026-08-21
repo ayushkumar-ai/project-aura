@@ -203,3 +203,104 @@ def test_orchestrator_does_not_record_denied_request_in_history():
     orchestrator.run(request)
 
     assert history.turns == []
+
+
+def test_orchestrator_builds_context_with_history():
+    history = ConversationHistory()
+
+    history.add_turn(
+        user_input="Hello AURA",
+        assistant_output="Hello! How can I help?",
+    )
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        history=history,
+    )
+
+    request = AURARequest(user_input="What can you do?")
+
+    context = orchestrator._build_context(request)
+
+    assert context.history is history
+    assert len(context.history.turns) == 1
+    assert context.history.turns[0].user_input == "Hello AURA"
+
+
+def test_orchestrator_uses_conversation_history_in_model_prompt():
+    history = ConversationHistory()
+
+    history.add_turn(
+        user_input="Hello AURA",
+        assistant_output="Hello! How can I help?",
+    )
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        history=history,
+    )
+
+    request = AURARequest(user_input="What can you do?")
+
+    response = orchestrator.run(request)
+
+    assert response.content == (
+        "Fake response to: "
+        "History:\n"
+        "User: Hello AURA\n"
+        "Assistant: Hello! How can I help?\n"
+        "User: What can you do?"
+    )
+
+
+def test_orchestrator_maintains_history_across_multiple_requests():
+    history = ConversationHistory()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        history=history,
+    )
+
+    first_request = AURARequest(user_input="Hello AURA")
+    first_response = orchestrator.run(first_request)
+
+    second_request = AURARequest(user_input="What can you do?")
+    second_response = orchestrator.run(second_request)
+
+    assert len(history.turns) == 2
+
+    assert history.turns[0].user_input == "Hello AURA"
+    assert history.turns[0].assistant_output == first_response.content
+
+    assert history.turns[1].user_input == "What can you do?"
+    assert history.turns[1].assistant_output == second_response.content
+
+
+def test_orchestrator_does_not_add_denied_request_between_turns():
+    history = ConversationHistory()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        history=history,
+    )
+
+    first_request = AURARequest(user_input="Hello AURA")
+    first_response = orchestrator.run(first_request)
+
+    denied_request = AURARequest(user_input="   ")
+    orchestrator.run(denied_request)
+
+    second_request = AURARequest(user_input="Continue")
+    second_response = orchestrator.run(second_request)
+
+    assert len(history.turns) == 2
+
+    assert history.turns[0].user_input == "Hello AURA"
+    assert history.turns[0].assistant_output == first_response.content
+
+    assert history.turns[1].user_input == "Continue"
+    assert history.turns[1].assistant_output == second_response.content

@@ -31,6 +31,7 @@ class Orchestrator:
         context = AURAContext(
             request=request,
             request_id=request.request_id,
+            history=self.history if self.history is not None else ConversationHistory(),
         )
 
         if self.memory is not None:
@@ -68,6 +69,18 @@ class Orchestrator:
 
         if "memory" in context.state:
             prompt = f"Memory: {context.state['memory']}\nUser: {request.user_input}"
+
+        if context.history.turns:
+            history_text = "\n".join(
+                f"User: {turn.user_input}\nAssistant: {turn.assistant_output}"
+                for turn in context.history.turns
+            )
+
+            prompt = (
+                f"History:\n"
+                f"{history_text}\n"
+                f"User: {request.user_input}"
+            )
 
         response = self.model.generate(prompt)
 
