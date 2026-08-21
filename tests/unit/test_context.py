@@ -28,3 +28,21 @@ def test_aura_context_with_state():
     )
 
     assert context.state == {"phase": "testing"}
+
+
+def test_aura_context_with_multiple_state_values():
+    request = AURARequest(user_input="Hello AURA")
+
+    context = AURAContext(
+        request=request,
+        request_id=request.request_id,
+        state={
+            "memory": "AURA",
+            "history": "Previous conversation",
+        },
+    )
+
+    assert context.state == {
+        "memory": "AURA",
+        "history": "Previous conversation",
+    }
