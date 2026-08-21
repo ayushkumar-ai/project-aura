@@ -3,6 +3,8 @@ from core.orchestrator import Orchestrator
 from core.policy import Policy
 from providers.fake_model import FakeModelProvider
 from memory.in_memory import InMemoryStore
+from core.history import ConversationHistory
+
 
 def test_orchestrator_allows_request():
     orchestrator = Orchestrator(
@@ -167,3 +169,37 @@ def test_orchestrator_uses_user_prompt_when_memory_is_missing():
     assert response.content == (
         "Fake response to: What is my name?"
     )
+
+
+def test_orchestrator_records_conversation_history():
+    history = ConversationHistory()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        history=history,
+    )
+
+    request = AURARequest(user_input="Hello AURA")
+
+    response = orchestrator.run(request)
+
+    assert len(history.turns) == 1
+    assert history.turns[0].user_input == "Hello AURA"
+    assert history.turns[0].assistant_output == response.content
+
+
+def test_orchestrator_does_not_record_denied_request_in_history():
+    history = ConversationHistory()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        history=history,
+    )
+
+    request = AURARequest(user_input="   ")
+
+    orchestrator.run(request)
+
+    assert history.turns == []

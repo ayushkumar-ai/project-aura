@@ -6,7 +6,7 @@ from evaluation.evaluator import Evaluator
 from evaluation.models import EvaluationResult
 from interfaces.model import ModelInterface
 from interfaces.memory import MemoryInterface
-
+from core.history import ConversationHistory
 
 class Orchestrator:
     """Coordinates the AURA request execution pipeline."""
@@ -17,10 +17,12 @@ class Orchestrator:
         model: ModelInterface,
         policy: Policy,
         memory: MemoryInterface | None = None,
+        history: ConversationHistory | None = None,
     ):
         self.model = model
         self.policy = policy
         self.memory = memory
+        self.history = history
 
 
     def _build_context(self, request: AURARequest) -> AURAContext:
@@ -69,6 +71,11 @@ class Orchestrator:
 
         response = self.model.generate(prompt)
 
+        if self.history is not None:
+            self.history.add_turn(
+                user_input=request.user_input,
+                assistant_output=response.content,
+            )
         return AURAResponse(
             request_id=context.request_id,
             content=response.content,

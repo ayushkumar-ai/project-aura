@@ -46,3 +46,14 @@ def test_aura_context_with_multiple_state_values():
         "memory": "AURA",
         "history": "Previous conversation",
     }
+
+
+def test_aura_context_has_empty_history_by_default():
+    request = AURARequest(user_input="Hello AURA")
+
+    context = AURAContext(
+        request=request,
+        request_id=request.request_id,
+    )
+
+    assert context.history.turns == []
