@@ -7,22 +7,26 @@ from evaluation.models import EvaluationResult
 from interfaces.model import ModelInterface
 from interfaces.memory import MemoryInterface
 from core.history import ConversationHistory
+from core.tool_registry import ToolRegistry
+from core.history import ConversationHistory
 
 class Orchestrator:
     """Coordinates the AURA request execution pipeline."""
 
 
     def __init__(
-        self,
+    self,
         model: ModelInterface,
         policy: Policy,
         memory: MemoryInterface | None = None,
         history: ConversationHistory | None = None,
+        tool_registry: ToolRegistry | None = None,
     ):
         self.model = model
         self.policy = policy
         self.memory = memory
         self.history = history
+        self.tool_registry = tool_registry
 
 
     def _build_context(self, request: AURARequest) -> AURAContext:

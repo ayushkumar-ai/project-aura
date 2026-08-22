@@ -304,3 +304,17 @@ def test_orchestrator_does_not_add_denied_request_between_turns():
 
     assert history.turns[1].user_input == "Continue"
     assert history.turns[1].assistant_output == second_response.content
+
+
+def test_orchestrator_accepts_tool_registry():
+    from core.tool_registry import ToolRegistry
+
+    registry = ToolRegistry()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+    )
+
+    assert orchestrator.tool_registry is registry
