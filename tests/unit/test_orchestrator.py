@@ -736,3 +736,117 @@ def test_orchestrator_uses_injected_executor_for_tool_failure():
         "policy": "allow",
         "error": "tool_execution_failed",
     }
+
+
+def test_orchestrator_accepts_tool_selector():
+    from core.tool_registry import ToolRegistry
+    from interfaces.tool_selector import ToolSelector
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_selector=selector,
+    )
+
+    assert orchestrator.tool_selector is selector
+
+
+def test_orchestrator_uses_tool_selector_to_choose_tool():
+    from core.tool_registry import ToolRegistry
+    from interfaces.tool_selector import ToolSelector
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_selector=selector,
+    )
+
+    request = AURARequest(
+        user_input="echo",
+        metadata={
+            "tool_input": "Hello from selector",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == "Hello from selector"
+    assert response.metadata["tool"] == "echo"
+
+
+def test_orchestrator_handles_unknown_tool_selected_by_selector():
+    from core.tool_registry import ToolRegistry
+    from interfaces.tool_selector import ToolSelector
+
+    registry = ToolRegistry()
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_selector=selector,
+    )
+
+    request = AURARequest(
+        user_input="calculator",
+        metadata={
+            "tool_input": "2 + 2",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == "Tool 'calculator' is not available."
+    assert response.metadata == {
+        "tool": "calculator",
+        "policy": "allow",
+        "error": "tool_not_found",
+    }
+
+
+def test_orchestrator_handles_selected_tool_execution_failure():
+    from core.tool_registry import ToolRegistry
+    from interfaces.tool_selector import ToolSelector
+
+    class FailingTool:
+        def execute(self, input_data: str) -> str:
+            raise RuntimeError("Tool failed")
+
+    registry = ToolRegistry()
+    registry.register("failing", FailingTool())
+
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_selector=selector,
+    )
+
+    request = AURARequest(
+        user_input="failing",
+        metadata={
+            "tool_input": "Hello",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == "Tool 'failing' failed during execution."
+    assert response.metadata == {
+        "tool": "failing",
+        "policy": "allow",
+        "error": "tool_execution_failed",
+    }

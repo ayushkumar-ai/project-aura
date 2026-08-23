@@ -9,6 +9,7 @@ from interfaces.memory import MemoryInterface
 from core.history import ConversationHistory
 from core.tool_registry import ToolRegistry
 from interfaces.tool_executor import ToolExecutor
+from interfaces.tool_selector import ToolSelector
 
 
 
@@ -24,6 +25,7 @@ class Orchestrator:
         history: ConversationHistory | None = None,
         tool_registry: ToolRegistry | None = None,
         tool_executor: ToolExecutor | None = None,
+        tool_selector: ToolSelector | None = None,
     ):
         self.model = model
         self.policy = policy
@@ -31,6 +33,9 @@ class Orchestrator:
         self.history = history
         self.tool_registry = tool_registry
         self.tool_executor = tool_executor
+        self.tool_selector = tool_selector
+        if self.tool_executor is None and self.tool_selector is not None:
+            self.tool_executor = ToolExecutor(self.tool_selector.registry)
         if self.tool_executor is None and self.tool_registry is not None:
             self.tool_executor = ToolExecutor(self.tool_registry)
 
@@ -74,10 +79,15 @@ class Orchestrator:
                 content="Request denied by policy.",
                 metadata={"policy": decision.value},
                 )
-        if self.tool_executor is not None:
+        if self.tool_executor is not None or self.tool_selector is not None:
             tool_name = request.metadata.get("tool")
             tool_input = request.metadata.get("tool_input")
 
+            if tool_name is None and self.tool_selector is not None:
+                try:
+                    tool_name = self.tool_selector.select(request.user_input)
+                except KeyError:
+                        tool_name = request.user_input
             if tool_name is not None and tool_input is not None:
                 try:
                     tool_result = self.tool_executor.execute(
