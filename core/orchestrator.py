@@ -73,8 +73,21 @@ class Orchestrator:
             tool_input = request.metadata.get("tool_input")
 
             if tool_name is not None and tool_input is not None:
-                tool = self.tool_registry.get(tool_name)
+                try:
+                    tool = self.tool_registry.get(tool_name)
+                except KeyError:
+                    return AURAResponse(
+                        request_id=context.request_id,
+                        content=f"Tool '{tool_name}' is not available.",
+                        metadata={
+                            "tool": tool_name,
+                            "policy": decision.value,
+                            "error": "tool_not_found",
+                        },
+                    )
+
                 tool_result = tool.execute(tool_input)
+
 
                 return AURAResponse(
                     request_id=context.request_id,

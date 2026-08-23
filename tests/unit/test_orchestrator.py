@@ -347,8 +347,7 @@ def test_orchestrator_executes_requested_tool():
 
     assert response.content == "Hello from tool"
 
-
-def test_orchestrator_rejects_unknown_tool():
+def test_orchestrator_returns_error_for_unknown_tool():
     from core.tool_registry import ToolRegistry
 
     registry = ToolRegistry()
@@ -367,8 +366,14 @@ def test_orchestrator_rejects_unknown_tool():
         },
     )
 
-    with pytest.raises(KeyError):
-        orchestrator.run(request)
+    response = orchestrator.run(request)
+
+    assert response.content == "Tool 'unknown' is not available."
+    assert response.metadata == {
+        "tool": "unknown",
+        "policy": "allow",
+        "error": "tool_not_found",
+    }
 
 
 def test_orchestrator_uses_model_when_no_tool_requested():
@@ -412,3 +417,32 @@ def test_orchestrator_uses_model_when_tool_input_is_missing():
     response = orchestrator.run(request)
 
     assert response.content == "Fake response to: Hello AURA"
+
+
+def test_orchestrator_includes_tool_metadata_in_response():
+    from core.tool_registry import ToolRegistry
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+    )
+
+    request = AURARequest(
+        user_input="Use the echo tool",
+        metadata={
+            "tool": "echo",
+            "tool_input": "Hello from tool",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.metadata == {
+        "tool": "echo",
+        "policy": "allow",
+    }
