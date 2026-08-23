@@ -1,22 +1,3 @@
-from core.tool_registry import ToolRegistry
-from interfaces.tool_executor import ToolExecutor
-from tools.echo import EchoTool
-
-
-def test_tool_executor_executes_registered_tool():
-    registry = ToolRegistry()
-    registry.register("echo", EchoTool())
-
-    executor = ToolExecutor(registry)
-
-    result = executor.execute(
-        tool_name="echo",
-        tool_input="Hello AURA",
-    )
-
-    assert result == "Hello AURA"
-
-
 import pytest
 
 from core.tool_registry import ToolRegistry
@@ -113,4 +94,30 @@ def test_tool_executor_rejects_empty_tool_name():
         executor.execute(
             tool_name="",
             tool_input="Hello AURA",
+        )
+
+
+def test_tool_executor_requires_tool_name():
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    executor = ToolExecutor(registry)
+
+    with pytest.raises(ValueError, match="Tool name cannot be empty"):
+        executor.execute(
+            tool_name="   ",
+            tool_input="Hello AURA",
+        )
+
+
+def test_tool_executor_requires_tool_input():
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    executor = ToolExecutor(registry)
+
+    with pytest.raises(ValueError, match="Tool input cannot be empty"):
+        executor.execute(
+            tool_name="echo",
+            tool_input="   ",
         )
