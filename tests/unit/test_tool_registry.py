@@ -28,3 +28,23 @@ def test_tool_registry_rejects_duplicate_tool_name():
 
     with pytest.raises(ValueError):
         registry.register("echo", EchoTool())
+
+
+def test_tool_registry_lists_registered_tools():
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    assert registry.list_tools() == ["echo"]
+
+
+def test_tool_registry_lists_multiple_registered_tools():
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+
+    registry.register("echo", EchoTool())
+    registry.register("echo2", EchoTool())
+
+    assert registry.list_tools() == ["echo", "echo2"]

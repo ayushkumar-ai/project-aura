@@ -483,3 +483,117 @@ def test_orchestrator_handles_tool_execution_failure():
         "policy": "allow",
         "error": "tool_execution_failed",
     }
+
+
+def test_orchestrator_does_not_execute_tool_without_tool_input():
+    from core.tool_registry import ToolRegistry
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+    )
+
+    request = AURARequest(
+        user_input="Use the echo tool",
+        metadata={
+            "tool": "echo",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == "Fake response to: Use the echo tool"
+
+
+def test_orchestrator_does_not_execute_tool_when_request_is_denied():
+    from core.tool_registry import ToolRegistry
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+    )
+
+    request = AURARequest(
+        user_input="   ",
+        metadata={
+            "tool": "echo",
+            "tool_input": "Should not execute",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == "Request denied by policy."
+    assert response.metadata == {
+        "policy": "deny",
+    }
+
+
+def test_orchestrator_records_successful_tool_execution_in_history():
+    from core.tool_registry import ToolRegistry
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    history = ConversationHistory()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+        history=history,
+    )
+
+    request = AURARequest(
+        user_input="Use the echo tool",
+        metadata={
+            "tool": "echo",
+            "tool_input": "Hello from tool",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert len(history.turns) == 1
+    assert history.turns[0].user_input == "Use the echo tool"
+    assert history.turns[0].assistant_output == response.content
+
+
+def test_orchestrator_does_not_record_failed_tool_execution_in_history():
+    from core.tool_registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register("failing", FailingTool())
+
+    history = ConversationHistory()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+        history=history,
+    )
+
+    request = AURARequest(
+        user_input="Run failing tool",
+        metadata={
+            "tool": "failing",
+            "tool_input": "Hello",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.metadata["error"] == "tool_execution_failed"
+    assert history.turns == []

@@ -99,6 +99,12 @@ class Orchestrator:
                         },
                     )
 
+                if self.history is not None:
+                    self.history.add_turn(
+                    user_input=request.user_input,
+                    assistant_output=tool_result,
+                )
+
                 return AURAResponse(
                     request_id=context.request_id,
                     content=tool_result,
@@ -148,3 +154,7 @@ class Orchestrator:
         response = self.run(request)
 
         return Evaluator().evaluate(request, response)
+
+
+
+

@@ -20,3 +20,8 @@ class ToolRegistry:
             raise KeyError(f"Unknown tool: {name}")
 
         return self._tools[name]
+
+
+    def list_tools(self) -> list[str]:
+        """Return the names of all registered tools."""
+        return list(self._tools.keys())
