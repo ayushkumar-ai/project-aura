@@ -597,3 +597,142 @@ def test_orchestrator_does_not_record_failed_tool_execution_in_history():
 
     assert response.metadata["error"] == "tool_execution_failed"
     assert history.turns == []
+
+
+def test_orchestrator_accepts_tool_executor():
+    from interfaces.tool_executor import ToolExecutor
+    from core.tool_registry import ToolRegistry
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    executor = ToolExecutor(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_executor=executor,
+    )
+
+    request = AURARequest(
+        user_input="Use the echo tool",
+        metadata={
+            "tool": "echo",
+            "tool_input": "Hello from executor",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == "Hello from executor"
+    assert response.metadata == {
+        "tool": "echo",
+        "policy": "allow",
+    }
+
+
+def test_orchestrator_prefers_explicit_tool_executor():
+    from core.tool_registry import ToolRegistry
+    from interfaces.tool_executor import ToolExecutor
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    executor = ToolExecutor(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+        tool_executor=executor,
+    )
+
+    assert orchestrator.tool_executor is executor
+
+
+class FakeToolExecutor:
+    """Test executor used to verify dependency injection."""
+
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, tool_name: str, tool_input: str) -> str:
+        self.calls.append((tool_name, tool_input))
+        return f"Executed by injected executor: {tool_input}"
+
+    def list_tools(self) -> list[str]:
+        return ["fake"]
+
+
+def test_orchestrator_uses_injected_tool_executor():
+    executor = FakeToolExecutor()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_executor=executor,
+    )
+
+    request = AURARequest(
+        user_input="Use a tool",
+        metadata={
+            "tool": "fake",
+            "tool_input": "Hello AURA",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == "Executed by injected executor: Hello AURA"
+    assert executor.calls == [
+        ("fake", "Hello AURA"),
+    ]
+
+
+def test_orchestrator_does_not_require_tool_registry_when_executor_is_injected():
+    executor = FakeToolExecutor()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_executor=executor,
+    )
+
+    assert orchestrator.tool_registry is None
+    assert orchestrator.tool_executor is executor
+
+
+def test_orchestrator_uses_injected_executor_for_tool_failure():
+    class FailingExecutor:
+        def execute(self, tool_name: str, tool_input: str) -> str:
+            raise RuntimeError("Injected executor failed")
+
+        def list_tools(self) -> list[str]:
+            return []
+
+    executor = FailingExecutor()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_executor=executor,
+    )
+
+    request = AURARequest(
+        user_input="Use a tool",
+        metadata={
+            "tool": "anything",
+            "tool_input": "Hello AURA",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == "Tool 'anything' failed during execution."
+    assert response.metadata == {
+        "tool": "anything",
+        "policy": "allow",
+        "error": "tool_execution_failed",
+    }

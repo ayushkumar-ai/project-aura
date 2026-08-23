@@ -74,7 +74,7 @@ class Orchestrator:
                 content="Request denied by policy.",
                 metadata={"policy": decision.value},
                 )
-        if self.tool_registry is not None:
+        if self.tool_executor is not None:
             tool_name = request.metadata.get("tool")
             tool_input = request.metadata.get("tool_input")
 
