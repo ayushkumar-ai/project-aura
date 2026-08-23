@@ -68,6 +68,23 @@ class Orchestrator:
                 content="Request denied by policy.",
                 metadata={"policy": decision.value},
                 )
+        if self.tool_registry is not None:
+            tool_name = request.metadata.get("tool")
+            tool_input = request.metadata.get("tool_input")
+
+            if tool_name is not None and tool_input is not None:
+                tool = self.tool_registry.get(tool_name)
+                tool_result = tool.execute(tool_input)
+
+                return AURAResponse(
+                    request_id=context.request_id,
+                    content=tool_result,
+                    metadata={
+                        "tool": tool_name,
+                        "policy": decision.value,
+                    },
+                )
+
 
         prompt = request.user_input
 

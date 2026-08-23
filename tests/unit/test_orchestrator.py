@@ -4,6 +4,8 @@ from core.policy import Policy
 from providers.fake_model import FakeModelProvider
 from memory.in_memory import InMemoryStore
 from core.history import ConversationHistory
+import pytest
+from tools.echo import EchoTool
 
 
 def test_orchestrator_allows_request():
@@ -318,3 +320,95 @@ def test_orchestrator_accepts_tool_registry():
     )
 
     assert orchestrator.tool_registry is registry
+
+
+def test_orchestrator_executes_requested_tool():
+    from core.tool_registry import ToolRegistry
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+    )
+
+    request = AURARequest(
+        user_input="Use the echo tool",
+        metadata={
+            "tool": "echo",
+            "tool_input": "Hello from tool",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == "Hello from tool"
+
+
+def test_orchestrator_rejects_unknown_tool():
+    from core.tool_registry import ToolRegistry
+
+    registry = ToolRegistry()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+    )
+
+    request = AURARequest(
+        user_input="Use unknown tool",
+        metadata={
+            "tool": "unknown",
+            "tool_input": "Hello",
+        },
+    )
+
+    with pytest.raises(KeyError):
+        orchestrator.run(request)
+
+
+def test_orchestrator_uses_model_when_no_tool_requested():
+    from core.tool_registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+    )
+
+    request = AURARequest(user_input="Hello AURA")
+
+    response = orchestrator.run(request)
+
+    assert response.content == "Fake response to: Hello AURA"
+
+
+def test_orchestrator_uses_model_when_tool_input_is_missing():
+    from core.tool_registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+    )
+
+    request = AURARequest(
+        user_input="Hello AURA",
+        metadata={
+            "tool": "echo",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == "Fake response to: Hello AURA"
