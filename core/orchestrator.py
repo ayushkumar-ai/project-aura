@@ -86,8 +86,18 @@ class Orchestrator:
                         },
                     )
 
-                tool_result = tool.execute(tool_input)
-
+                try:
+                    tool_result = tool.execute(tool_input)
+                except Exception:
+                    return AURAResponse(
+                        request_id=context.request_id,
+                        content=f"Tool '{tool_name}' failed during execution.",
+                        metadata={
+                            "tool": tool_name,
+                            "policy": decision.value,
+                            "error": "tool_execution_failed",
+                        },
+                    )
 
                 return AURAResponse(
                     request_id=context.request_id,

@@ -446,3 +446,40 @@ def test_orchestrator_includes_tool_metadata_in_response():
         "tool": "echo",
         "policy": "allow",
     }
+
+
+class FailingTool:
+    """Tool used to test tool execution failures."""
+
+    def execute(self, input_data: str) -> str:
+        raise RuntimeError("Tool execution failed")
+
+
+def test_orchestrator_handles_tool_execution_failure():
+    from core.tool_registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register("failing", FailingTool())
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+    )
+
+    request = AURARequest(
+        user_input="Run failing tool",
+        metadata={
+            "tool": "failing",
+            "tool_input": "Hello",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == "Tool 'failing' failed during execution."
+    assert response.metadata == {
+        "tool": "failing",
+        "policy": "allow",
+        "error": "tool_execution_failed",
+    }
