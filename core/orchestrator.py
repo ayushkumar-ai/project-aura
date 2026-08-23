@@ -8,7 +8,9 @@ from interfaces.model import ModelInterface
 from interfaces.memory import MemoryInterface
 from core.history import ConversationHistory
 from core.tool_registry import ToolRegistry
-from core.history import ConversationHistory
+from interfaces.tool_executor import ToolExecutor
+
+
 
 class Orchestrator:
     """Coordinates the AURA request execution pipeline."""
@@ -21,12 +23,16 @@ class Orchestrator:
         memory: MemoryInterface | None = None,
         history: ConversationHistory | None = None,
         tool_registry: ToolRegistry | None = None,
+        tool_executor: ToolExecutor | None = None,
     ):
         self.model = model
         self.policy = policy
         self.memory = memory
         self.history = history
         self.tool_registry = tool_registry
+        self.tool_executor = tool_executor
+        if self.tool_executor is None and self.tool_registry is not None:
+            self.tool_executor = ToolExecutor(self.tool_registry)
 
 
     def _build_context(self, request: AURARequest) -> AURAContext:
@@ -74,7 +80,10 @@ class Orchestrator:
 
             if tool_name is not None and tool_input is not None:
                 try:
-                    tool = self.tool_registry.get(tool_name)
+                    tool_result = self.tool_executor.execute(
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                    )
                 except KeyError:
                     return AURAResponse(
                         request_id=context.request_id,
@@ -85,9 +94,6 @@ class Orchestrator:
                             "error": "tool_not_found",
                         },
                     )
-
-                try:
-                    tool_result = tool.execute(tool_input)
                 except Exception:
                     return AURAResponse(
                         request_id=context.request_id,
