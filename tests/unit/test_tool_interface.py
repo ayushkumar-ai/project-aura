@@ -21,3 +21,13 @@ def test_valid_tool_implementation():
     result = tool.execute("Hello AURA")
 
     assert result == "Tool executed: Hello AURA"
+
+
+def test_tool_interface_requires_description():
+    class TestTool(ToolInterface):
+        def execute(self, input_data: str) -> str:
+            return input_data
+
+    tool = TestTool()
+
+    assert tool.description == "Test tool"
