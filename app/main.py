@@ -10,6 +10,8 @@ from interfaces.tool_selector import ToolSelector
 from memory.in_memory import InMemoryStore
 from providers.fake_model import FakeModelProvider
 from tools.echo import EchoTool
+from tools.calculator import CalculatorTool
+
 
 
 def create_orchestrator() -> Orchestrator:
@@ -17,6 +19,7 @@ def create_orchestrator() -> Orchestrator:
 
     registry = ToolRegistry()
     registry.register("echo", EchoTool())
+    registry.register("calculator", CalculatorTool())
 
     selector = ToolSelector(registry)
     executor = ToolExecutor(registry)

@@ -155,3 +155,35 @@ def test_tool_selector_returns_none_when_no_tool_matches():
     result = selector.select("tell me the weather")
 
     assert result is None
+
+
+def test_tool_selector_selects_calculator_from_calculate_request():
+    registry = ToolRegistry()
+
+    from tools.calculator import CalculatorTool
+
+    registry.register("calculator", CalculatorTool())
+
+    selector = ToolSelector(registry)
+
+    assert selector.select("calculate 25 * 4") == "calculator"
+
+
+def test_tool_selector_selects_calculator_from_compute_request():
+    registry = ToolRegistry()
+
+    from tools.calculator import CalculatorTool
+
+    registry.register("calculator", CalculatorTool())
+
+    selector = ToolSelector(registry)
+
+    assert selector.select("compute 10 + 5") == "calculator"
+
+
+def test_tool_selector_does_not_select_calculator_when_not_registered():
+    registry = ToolRegistry()
+
+    selector = ToolSelector(registry)
+
+    assert selector.select("calculate 25 * 4") is None

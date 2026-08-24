@@ -86,7 +86,27 @@ class Orchestrator:
                 try:
                     tool_name = self.tool_selector.select(request.user_input)
                 except KeyError:
-                        tool_name = request.user_input
+                    tool_name = request.user_input
+
+            # Extract calculator input from natural-language requests.
+            if (
+                tool_name == "calculator"
+                and tool_input is None
+            ):
+                normalized_input = request.user_input.strip()
+
+                calculator_prefixes = (
+                    "calculate ",
+                    "calculation ",
+                    "compute ",
+                    "math ",
+                    "arithmetic ",
+                )
+
+                for prefix in calculator_prefixes:
+                    if normalized_input.lower().startswith(prefix):
+                        tool_input = normalized_input[len(prefix):].strip()
+                        break
             if tool_name is not None and tool_input is not None:
                 try:
                     tool_result = self.tool_executor.execute(

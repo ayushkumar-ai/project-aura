@@ -10,6 +10,7 @@ from interfaces.tool_selector import ToolSelector
 from memory.in_memory import InMemoryStore
 from providers.fake_model import FakeModelProvider
 from tools.echo import EchoTool
+from tools.calculator import CalculatorTool
 
 
 class FailingTool:
@@ -208,3 +209,23 @@ def test_aura_runtime_uses_memory_in_model_context():
         "Fake response to: Memory: AURA\n"
         "User: What is my name?"
     )
+
+
+def test_aura_calculator_runtime_end_to_end():
+    registry = ToolRegistry()
+    registry.register("calculator", CalculatorTool())
+
+    orchestrator = build_runtime(registry=registry)
+
+    request = AURARequest(
+        user_input="calculate 25 * 4",
+    )
+
+    response = orchestrator.run(request)
+
+    assert response.content == "100"
+    assert response.metadata == {
+        "tool": "calculator",
+        "policy": "allow",
+    }
+
