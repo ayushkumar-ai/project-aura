@@ -1,4 +1,3 @@
-
 from core.context import AURAContext
 from core.models import AURARequest, AURAResponse
 from core.policy import Policy, PolicyDecision
@@ -148,8 +147,10 @@ class Orchestrator:
                 f"User: {request.user_input}"
             )
 
-        response = self.model.generate(prompt)
-
+        response = self.model.generate(
+            prompt,
+            request_id=context.request_id,
+        )
         if self.history is not None:
             self.history.add_turn(
                 user_input=request.user_input,
