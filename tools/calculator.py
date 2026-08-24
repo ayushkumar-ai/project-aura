@@ -18,6 +18,17 @@ class CalculatorTool(ToolInterface):
     def description(self) -> str:
         return "Calculator tool"
 
+    @property
+    def keywords(self) -> tuple[str, ...]:
+        """Return keywords associated with calculator intent."""
+        return (
+            "calculate",
+            "calculation",
+            "compute",
+            "math",
+            "arithmetic",
+        )
+
     def execute(self, input_data: str) -> str:
         expression = input_data.strip()
 

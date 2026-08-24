@@ -77,3 +77,21 @@ def test_calculator_has_description():
     tool = CalculatorTool()
 
     assert tool.description == "Calculator tool"
+
+
+def test_calculator_has_name():
+    tool = CalculatorTool()
+
+    assert tool.name == "calculator"
+
+
+def test_calculator_has_keywords():
+    tool = CalculatorTool()
+
+    assert tool.keywords == (
+        "calculate",
+        "calculation",
+        "compute",
+        "math",
+        "arithmetic",
+    )

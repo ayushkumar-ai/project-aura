@@ -31,3 +31,15 @@ def test_tool_interface_requires_description():
     tool = TestTool()
 
     assert tool.description == "Test tool"
+
+
+def test_tool_interface_provides_default_name():
+    tool = FakeTool()
+
+    assert tool.name == "fake"
+
+
+def test_tool_interface_provides_default_empty_keywords():
+    tool = FakeTool()
+
+    assert tool.keywords == ()    
