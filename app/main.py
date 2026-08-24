@@ -1,3 +1,4 @@
+from app.aura import AURA
 from app.config import settings
 from core.history import ConversationHistory
 from core.models import AURARequest
@@ -31,17 +32,20 @@ def create_orchestrator() -> Orchestrator:
     )
 
 
+def create_aura() -> AURA:
+    """Create a persistent AURA runtime."""
+    return AURA(create_orchestrator())
+
+
 def run_aura(user_input: str):
-    """Run a user input through the AURA pipeline."""
-
-    orchestrator = create_orchestrator()
-    request = AURARequest(user_input=user_input)
-
-    return orchestrator.run(request)
+    """Run a single input through a new AURA runtime."""
+    aura = create_aura()
+    return aura.run(user_input)
 
 
 if __name__ == "__main__":
-    response = run_aura("Hello AURA")
+    aura = create_aura()
+    response = aura.run("Hello AURA")
 
     print(f"{settings.aura_app_name}: {response.content}")
     print(f"Metadata: {response.metadata}")
