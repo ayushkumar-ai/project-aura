@@ -20,24 +20,17 @@ class ToolSelector:
                 return name
 
         # Natural-language request: select a matching registered tool.
+        # Natural-language intent matching using tool capabilities.
         for name in self.registry.list_tools():
+            tool = self.registry.get(name)
+
             if name.lower() in normalized_request:
                 return name
 
-        # Calculator intent.
-        if "calculator" in self.registry.list_tools():
-            calculator_keywords = (
-                "calculate",
-                "calculation",
-                "compute",
-                "math",
-                "arithmetic",
-            )
-
-            if any(keyword in normalized_request for keyword in calculator_keywords):
-                return "calculator"
-
-        # A single unknown identifier is treated as an explicit tool request.
+            for keyword in tool.keywords:
+                if keyword.lower() in normalized_request:
+                    return name
+            # A single unknown identifier is treated as an explicit tool request.
         if " " not in normalized_request:
             raise KeyError(f"Unknown tool: {request}")
 

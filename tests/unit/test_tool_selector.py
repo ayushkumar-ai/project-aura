@@ -187,3 +187,45 @@ def test_tool_selector_does_not_select_calculator_when_not_registered():
     selector = ToolSelector(registry)
 
     assert selector.select("calculate 25 * 4") is None
+
+
+def test_tool_selector_uses_tool_keywords():
+    class CalculatorTool:
+        @property
+        def description(self) -> str:
+            return "Calculator tool"
+
+        @property
+        def keywords(self) -> tuple[str, ...]:
+            return ("calculate", "compute")
+
+        def execute(self, input_data: str) -> str:
+            return "4"
+
+    registry = ToolRegistry()
+    registry.register("calculator", CalculatorTool())
+
+    selector = ToolSelector(registry)
+
+    assert selector.select("please calculate 2 + 2") == "calculator"
+
+
+def test_tool_selector_returns_none_when_keywords_do_not_match():
+    class CalculatorTool:
+        @property
+        def description(self) -> str:
+            return "Calculator tool"
+
+        @property
+        def keywords(self) -> tuple[str, ...]:
+            return ("calculate", "compute")
+
+        def execute(self, input_data: str) -> str:
+            return "4"
+
+    registry = ToolRegistry()
+    registry.register("calculator", CalculatorTool())
+
+    selector = ToolSelector(registry)
+
+    assert selector.select("tell me the weather") is None
