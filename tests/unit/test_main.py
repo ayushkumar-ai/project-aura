@@ -95,3 +95,34 @@ def test_aura_preserves_memory_between_requests():
         "Fake response to: Memory: test_value\n"
         "User: What is stored?"
     )
+
+
+def test_aura_run_request_accepts_complete_request():
+    aura = create_aura()
+
+    request = AURARequest(
+        user_input="echo",
+        metadata={
+            "tool_input": "Hello from public AURA API",
+        },
+    )
+
+    response = aura.run_request(request)
+
+    assert response.content == "Hello from public AURA API"
+    assert response.metadata == {
+        "tool": "echo",
+        "policy": "allow",
+    }
+
+
+def test_aura_run_delegates_through_request_api():
+    aura = create_aura()
+
+    response = aura.run("Hello AURA")
+
+    assert response.content == "Fake response to: Hello AURA"
+    assert response.metadata == {
+        "provider": "fake",
+        "policy": "allow",
+    }
