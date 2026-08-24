@@ -21,3 +21,8 @@ class ToolExecutor:
     def list_tools(self) -> list[str]:
         """Return the names of available tools."""
         return self.registry.list_tools()
+
+    def prepare_input(self, tool_name: str, request: str) -> str:
+        """Prepare user input using the selected tool."""
+        tool = self.registry.get(tool_name)
+        return tool.prepare_input(request)

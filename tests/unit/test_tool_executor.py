@@ -121,3 +121,24 @@ def test_tool_executor_requires_tool_input():
             tool_name="echo",
             tool_input="   ",
         )
+
+
+def test_tool_executor_prepares_tool_input():
+    class PreparingTool:
+        def prepare_input(self, request: str) -> str:
+            return request.replace("calculate ", "")
+
+        def execute(self, input_data: str) -> str:
+            return input_data
+
+    registry = ToolRegistry()
+    registry.register("calculator", PreparingTool())
+
+    executor = ToolExecutor(registry)
+
+    result = executor.prepare_input(
+        tool_name="calculator",
+        request="calculate 25 * 4",
+    )
+
+    assert result == "25 * 4"

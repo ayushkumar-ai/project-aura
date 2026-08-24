@@ -95,3 +95,45 @@ def test_calculator_has_keywords():
         "math",
         "arithmetic",
     )
+
+
+def test_calculator_prepares_calculate_request():
+    tool = CalculatorTool()
+
+    assert tool.prepare_input("calculate 25 * 4") == "25 * 4"
+
+
+def test_calculator_prepares_compute_request():
+    tool = CalculatorTool()
+
+    assert tool.prepare_input("compute 25 * 4") == "25 * 4"
+
+
+def test_calculator_prepares_math_request():
+    tool = CalculatorTool()
+
+    assert tool.prepare_input("math 25 * 4") == "25 * 4"
+
+
+def test_calculator_prepare_input_extracts_calculation_expression():
+    tool = CalculatorTool()
+
+    assert tool.prepare_input("calculate 25 * 4") == "25 * 4"
+
+
+def test_calculator_prepare_input_supports_compute():
+    tool = CalculatorTool()
+
+    assert tool.prepare_input("compute 10 + 5") == "10 + 5"
+
+
+def test_calculator_prepare_input_supports_math():
+    tool = CalculatorTool()
+
+    assert tool.prepare_input("math 8 / 2") == "8 / 2"
+
+
+def test_calculator_prepare_input_returns_plain_expression():
+    tool = CalculatorTool()
+
+    assert tool.prepare_input("25 * 4") == "25 * 4"

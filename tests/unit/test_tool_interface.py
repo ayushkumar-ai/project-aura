@@ -42,4 +42,10 @@ def test_tool_interface_provides_default_name():
 def test_tool_interface_provides_default_empty_keywords():
     tool = FakeTool()
 
-    assert tool.keywords == ()    
+    assert tool.keywords == ()
+
+
+def test_tool_interface_prepare_input_strips_request():
+    tool = FakeTool()
+
+    assert tool.prepare_input("  Hello AURA  ") == "Hello AURA"

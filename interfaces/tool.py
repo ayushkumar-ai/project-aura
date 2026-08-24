@@ -29,6 +29,10 @@ class ToolInterface(ABC):
         """Return keywords that can indicate this tool's intent."""
         return ()
 
+    def prepare_input(self, request: str) -> str:
+        """Convert a user request into input for tool execution."""
+        return request.strip()
+
     @abstractmethod
     def execute(self, input_data: str) -> str:
         """Execute the tool with the supplied input."""

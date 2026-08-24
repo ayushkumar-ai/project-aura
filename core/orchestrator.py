@@ -79,40 +79,45 @@ class Orchestrator:
                 metadata={"policy": decision.value},
                 )
         if self.tool_executor is not None or self.tool_selector is not None:
-            tool_name = request.metadata.get("tool")
+            explicit_tool = request.metadata.get("tool")
+            tool_name = explicit_tool
             tool_input = request.metadata.get("tool_input")
 
-            if tool_name is None and self.tool_selector is not None:
+            if tool_name is not None:
                 try:
-                    tool_name = self.tool_selector.select(request.user_input)
-                except KeyError:
-                    tool_name = request.user_input
+                    # Only prepare input for tools selected from natural language.
+                    # Explicit tool requests without tool_input preserve the
+                    # existing model-fallback behavior.
+                    if tool_input is None and explicit_tool is None:
+                        tool_input = self.tool_executor.prepare_input(
+                            tool_name=tool_name,
+                            request=request.user_input,
+                        )
 
-            # Extract calculator input from natural-language requests.
-            if (
-                tool_name == "calculator"
-                and tool_input is None
-            ):
-                normalized_input = request.user_input.strip()
+                    # If there is still no input, fall back to the model.
+                    if tool_input is None:
+                        tool_name = None
+                    else:
+                        tool_result = self.tool_executor.execute(
+                            tool_name=tool_name,
+                            tool_input=tool_input,
+                        )
 
-                calculator_prefixes = (
-                    "calculate ",
-                    "calculation ",
-                    "compute ",
-                    "math ",
-                    "arithmetic ",
-                )
+                        if self.history is not None:
+                            self.history.add_turn(
+                                user_input=request.user_input,
+                                assistant_output=tool_result,
+                            )
 
-                for prefix in calculator_prefixes:
-                    if normalized_input.lower().startswith(prefix):
-                        tool_input = normalized_input[len(prefix):].strip()
-                        break
-            if tool_name is not None and tool_input is not None:
-                try:
-                    tool_result = self.tool_executor.execute(
-                        tool_name=tool_name,
-                        tool_input=tool_input,
-                    )
+                        return AURAResponse(
+                            request_id=context.request_id,
+                            content=tool_result,
+                            metadata={
+                                "tool": tool_name,
+                                "policy": decision.value,
+                            },
+                        )
+
                 except KeyError:
                     return AURAResponse(
                         request_id=context.request_id,
@@ -123,6 +128,49 @@ class Orchestrator:
                             "error": "tool_not_found",
                         },
                     )
+
+                except Exception:
+                    return AURAResponse(
+                        request_id=context.request_id,
+                        content=f"Tool '{tool_name}' failed during execution.",
+                        metadata={
+                            "tool": tool_name,
+                            "policy": decision.value,
+                            "error": "tool_execution_failed",
+                        },
+                    )
+
+            if tool_name is None and self.tool_selector is not None:
+                try:
+                    tool_name = self.tool_selector.select(request.user_input)
+                except KeyError:
+                    tool_name = request.user_input
+
+
+            if tool_name is not None:
+                try:
+                    if tool_input is None:
+                        tool_input = self.tool_executor.prepare_input(
+                            tool_name=tool_name,
+                            request=request.user_input,
+                        )
+
+                    tool_result = self.tool_executor.execute(
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                    )
+
+                except KeyError:
+                    return AURAResponse(
+                        request_id=context.request_id,
+                        content=f"Tool '{tool_name}' is not available.",
+                        metadata={
+                            "tool": tool_name,
+                            "policy": decision.value,
+                            "error": "tool_not_found",
+                        },
+                    )
+
                 except Exception:
                     return AURAResponse(
                         request_id=context.request_id,
@@ -136,9 +184,9 @@ class Orchestrator:
 
                 if self.history is not None:
                     self.history.add_turn(
-                    user_input=request.user_input,
-                    assistant_output=tool_result,
-                )
+                        user_input=request.user_input,
+                        assistant_output=tool_result,
+                    )
 
                 return AURAResponse(
                     request_id=context.request_id,
@@ -148,7 +196,6 @@ class Orchestrator:
                         "policy": decision.value,
                     },
                 )
-
 
         prompt = request.user_input
 
