@@ -86,22 +86,3 @@ class CalculatorTool(ToolInterface):
                 return normalized_request[len(prefix):].strip()
 
         return normalized_request
-
-
-    def prepare_input(self, request: str) -> str:
-        """Extract an arithmetic expression from a natural-language request."""
-        normalized_request = request.strip()
-
-        prefixes = (
-            "calculate ",
-            "calculation ",
-            "compute ",
-            "math ",
-            "arithmetic ",
-        )
-
-        for prefix in prefixes:
-            if normalized_request.lower().startswith(prefix):
-                return normalized_request[len(prefix):].strip()
-
-        return normalized_request
