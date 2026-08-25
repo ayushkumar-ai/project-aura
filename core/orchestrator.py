@@ -59,6 +59,52 @@ class Orchestrator:
         return context
 
 
+    def _resolve_tool(
+        self,
+        request: AURARequest,
+    ) -> tuple[str | None, str | None]:
+        """Resolve a tool name and optional explicit tool input."""
+
+        explicit_tool = request.metadata.get("tool")
+        tool_input = request.metadata.get("tool_input")
+
+        if explicit_tool is not None:
+            return explicit_tool, tool_input
+
+        if self.tool_selector is None:
+            return None, None
+
+        try:
+            tool_name = self.tool_selector.select(request.user_input)
+        except KeyError:
+            return None, None
+
+        return tool_name, None
+
+
+    def _execute_tool(
+        self,
+        tool_name: str,
+        tool_input: str | None,
+        request: AURARequest,
+    ) -> str:
+        """Prepare input and execute the resolved tool."""
+
+        if self.tool_executor is None:
+            raise RuntimeError("Tool executor is not configured.")
+
+        if tool_input is None:
+            tool_input = self.tool_executor.prepare_input(
+                tool_name=tool_name,
+                request=request.user_input,
+            )
+
+        return self.tool_executor.execute(
+            tool_name=tool_name,
+            tool_input=tool_input,
+        )
+
+
     def run(self, request: AURARequest) -> AURAResponse:
         """Execute a request through policy and model layers."""
 
