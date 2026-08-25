@@ -29,6 +29,11 @@ class ToolInterface(ABC):
         """Return keywords that can indicate this tool's intent."""
         return ()
 
+    @property
+    def capabilities(self) -> tuple[str, ...]:
+        """Return capabilities provided by the tool."""
+        return ()
+
     def prepare_input(self, request: str) -> str:
         """Convert a user request into input for tool execution."""
         return request.strip()

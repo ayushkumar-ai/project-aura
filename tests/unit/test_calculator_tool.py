@@ -137,3 +137,12 @@ def test_calculator_prepare_input_returns_plain_expression():
     tool = CalculatorTool()
 
     assert tool.prepare_input("25 * 4") == "25 * 4"
+
+
+def test_calculator_has_capabilities():
+    tool = CalculatorTool()
+
+    assert tool.capabilities == (
+        "arithmetic",
+        "numeric_calculation",
+    )

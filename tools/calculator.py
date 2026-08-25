@@ -29,6 +29,14 @@ class CalculatorTool(ToolInterface):
             "arithmetic",
         )
 
+    @property
+    def capabilities(self) -> tuple[str, ...]:
+        """Return capabilities provided by the calculator."""
+        return (
+            "arithmetic",
+            "numeric_calculation",
+        )
+
     def execute(self, input_data: str) -> str:
         expression = input_data.strip()
 
