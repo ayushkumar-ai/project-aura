@@ -938,21 +938,27 @@ def test_orchestrator_resolves_explicit_tool_without_input():
     assert orchestrator._resolve_tool(request) == ("echo", None, True)
 
 
-    def test_orchestrator_resolves_explicit_tool_without_input():
-        registry = ToolRegistry()
-        registry.register("echo", EchoTool())
+def test_orchestrator_resolves_selected_tool_and_preserves_input():
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
 
-        orchestrator = Orchestrator(
-            model=FakeModelProvider(),
-            policy=Policy(),
-            tool_registry=registry,
-        )
+    selector = ToolSelector(registry)
 
-        request = AURARequest(
-            user_input="anything",
-            metadata={
-                "tool": "echo",
-            },
-        )
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_selector=selector,
+    )
 
-        assert orchestrator._resolve_tool(request) == ("echo", None, True)
+    request = AURARequest(
+        user_input="echo",
+        metadata={
+            "tool_input": "Hello from selector",
+        },
+    )
+
+    assert orchestrator._resolve_tool(request) == (
+        "echo",
+        "Hello from selector",
+        False,
+    )
