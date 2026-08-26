@@ -936,3 +936,17 @@ def test_orchestrator_resolves_explicit_tool_without_input():
     )
 
     assert orchestrator._resolve_tool(request) == ("echo", None, True)
+
+
+def test_orchestrator_resolves_no_tool_without_selector():
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+    )
+
+    request = AURARequest(
+        user_input="hello there",
+        metadata={},
+    )
+
+    assert orchestrator._resolve_tool(request) == (None, None, False)
