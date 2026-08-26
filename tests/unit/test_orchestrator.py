@@ -6,6 +6,9 @@ from memory.in_memory import InMemoryStore
 from core.history import ConversationHistory
 import pytest
 from tools.echo import EchoTool
+from core.tool_registry import ToolRegistry
+from interfaces.tool_selector import ToolSelector
+from tools.echo import EchoTool
 
 
 def test_orchestrator_allows_request():
@@ -850,3 +853,66 @@ def test_orchestrator_handles_selected_tool_execution_failure():
         "policy": "allow",
         "error": "tool_execution_failed",
     }
+
+
+def test_orchestrator_resolves_explicit_tool_and_input():
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+    )
+
+    request = AURARequest(
+        user_input="anything",
+        metadata={
+            "tool": "echo",
+            "tool_input": "Hello",
+        },
+    )
+
+    assert orchestrator._resolve_tool(request) == ("echo", "Hello", True)
+
+
+def test_orchestrator_resolves_selected_tool_with_supplied_input():
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_selector=selector,
+    )
+
+    request = AURARequest(
+        user_input="echo",
+        metadata={
+            "tool_input": "Hello",
+        },
+    )
+
+    assert orchestrator._resolve_tool(request) == ("echo", "Hello", False)
+
+
+def test_orchestrator_resolves_no_tool_when_no_selector_matches():
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_selector=selector,
+    )
+
+    request = AURARequest(
+        user_input="hello there",
+        metadata={},
+    )
+
+    assert orchestrator._resolve_tool(request) == (None, None, False)
