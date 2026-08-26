@@ -916,3 +916,43 @@ def test_orchestrator_resolves_no_tool_when_no_selector_matches():
     )
 
     assert orchestrator._resolve_tool(request) == (None, None, False)
+
+
+def test_orchestrator_resolves_explicit_tool_without_input():
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+    )
+
+    request = AURARequest(
+        user_input="anything",
+        metadata={
+            "tool": "echo",
+        },
+    )
+
+    assert orchestrator._resolve_tool(request) == ("echo", None, True)
+
+
+    def test_orchestrator_resolves_explicit_tool_without_input():
+        registry = ToolRegistry()
+        registry.register("echo", EchoTool())
+
+        orchestrator = Orchestrator(
+            model=FakeModelProvider(),
+            policy=Policy(),
+            tool_registry=registry,
+        )
+
+        request = AURARequest(
+            user_input="anything",
+            metadata={
+                "tool": "echo",
+            },
+        )
+
+        assert orchestrator._resolve_tool(request) == ("echo", None, True)
