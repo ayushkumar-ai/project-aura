@@ -950,3 +950,22 @@ def test_orchestrator_resolves_no_tool_without_selector():
     )
 
     assert orchestrator._resolve_tool(request) == (None, None, False)
+
+
+def test_orchestrator_propagates_unknown_tool_from_selector():
+    registry = ToolRegistry()
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_selector=selector,
+    )
+
+    request = AURARequest(
+        user_input="calculator",
+        metadata={},
+    )
+
+    with pytest.raises(KeyError):
+        orchestrator._resolve_tool(request)
