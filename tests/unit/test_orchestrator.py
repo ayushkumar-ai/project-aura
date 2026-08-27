@@ -1001,3 +1001,43 @@ def test_orchestrator_prepares_tool_input_when_not_supplied():
     )
 
     assert result == "Hello from AURA"
+
+
+def test_orchestrator_uses_supplied_tool_input_directly():
+    class RecordingExecutor:
+        def __init__(self):
+            self.prepare_calls = []
+            self.execute_calls = []
+
+        def prepare_input(self, tool_name: str, request: str) -> str:
+            self.prepare_calls.append((tool_name, request))
+            return "prepared input"
+
+        def execute(self, tool_name: str, tool_input: str) -> str:
+            self.execute_calls.append((tool_name, tool_input))
+            return "executed result"
+
+    executor = RecordingExecutor()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_executor=executor,
+    )
+
+    request = AURARequest(
+        user_input="Original request",
+        metadata={},
+    )
+
+    result = orchestrator._execute_tool(
+        tool_name="echo",
+        tool_input="Supplied input",
+        request=request,
+    )
+
+    assert result == "executed result"
+    assert executor.prepare_calls == []
+    assert executor.execute_calls == [
+        ("echo", "Supplied input"),
+    ]
