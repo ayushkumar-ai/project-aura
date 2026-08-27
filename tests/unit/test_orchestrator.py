@@ -1041,3 +1041,48 @@ def test_orchestrator_uses_supplied_tool_input_directly():
     assert executor.execute_calls == [
         ("echo", "Supplied input"),
     ]
+
+
+def test_orchestrator_run_executes_resolved_tool_and_records_history():
+    class RecordingExecutor:
+        def __init__(self):
+            self.execute_calls = []
+
+        def prepare_input(self, tool_name: str, request: str) -> str:
+            return request
+
+        def execute(self, tool_name: str, tool_input: str) -> str:
+            self.execute_calls.append((tool_name, tool_input))
+            return "tool result"
+
+    executor = RecordingExecutor()
+    history = ConversationHistory()
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_executor=executor,
+        history=history,
+    )
+
+    request = AURARequest(
+        user_input="Original request",
+        metadata={
+            "tool": "echo",
+            "tool_input": "Supplied input",
+        },
+    )
+
+    result = orchestrator.run(request)
+
+    assert result.content == "tool result"
+    assert result.metadata["tool"] == "echo"
+    assert result.metadata["policy"] == "allow"
+
+    assert executor.execute_calls == [
+        ("echo", "Supplied input"),
+    ]
+
+    assert len(history.turns) == 1
+    assert history.turns[0].user_input == "Original request"
+    assert history.turns[0].assistant_output == "tool result"
