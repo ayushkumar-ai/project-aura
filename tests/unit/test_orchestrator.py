@@ -969,3 +969,35 @@ def test_orchestrator_propagates_unknown_tool_from_selector():
 
     with pytest.raises(KeyError):
         orchestrator._resolve_tool(request)
+
+
+def test_orchestrator_prepares_tool_input_when_not_supplied():
+    from core.tool_registry import ToolRegistry
+    from interfaces.tool_executor import ToolExecutor
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    executor = ToolExecutor(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_executor=executor,
+    )
+
+    request = AURARequest(
+        user_input="Hello from AURA",
+        metadata={
+            "tool": "echo",
+        },
+    )
+
+    result = orchestrator._execute_tool(
+        tool_name="echo",
+        tool_input=None,
+        request=request,
+    )
+
+    assert result == "Hello from AURA"
