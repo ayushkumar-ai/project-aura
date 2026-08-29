@@ -36,10 +36,16 @@ class Orchestrator:
         self.knowledge = knowledge
 
         if self.tool_executor is None and self.tool_selector is not None:
-            self.tool_executor = ToolExecutor(self.tool_selector.registry)
+            self.tool_executor = ToolExecutor(
+                self.tool_selector.registry,
+                policy=self.policy,
+            )
 
         if self.tool_executor is None and self.tool_registry is not None:
-            self.tool_executor = ToolExecutor(self.tool_registry)
+            self.tool_executor = ToolExecutor(
+                self.tool_registry,
+                policy=self.policy,
+            )
 
     def _build_context(self, request: AURARequest) -> AURAContext:
         """Build execution context with optional memory."""

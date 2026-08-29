@@ -19,3 +19,11 @@ class Policy:
             return PolicyDecision.DENY
 
         return PolicyDecision.ALLOW
+
+
+    def authorize_tool(self, tool_name: str) -> PolicyDecision:
+        """Authorize execution of a registered tool."""
+        if tool_name in {"calculator", "echo"}:
+            return PolicyDecision.ALLOW
+
+        return PolicyDecision.DENY

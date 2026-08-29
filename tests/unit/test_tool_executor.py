@@ -1,5 +1,8 @@
+import time
+
 import pytest
 
+from core.policy import Policy
 from core.tool_registry import ToolRegistry
 from interfaces.tool_executor import ToolExecutor
 from tools.echo import EchoTool
@@ -142,3 +145,44 @@ def test_tool_executor_prepares_tool_input():
     )
 
     assert result == "25 * 4"
+
+
+def test_unauthorized_tool_is_rejected_before_execution():
+    registry = ToolRegistry()
+    executed = False
+
+    class UnauthorizedTool:
+        def execute(self, tool_input):
+            nonlocal executed
+            executed = True
+            return "should not execute"
+
+    registry.register("unauthorized", UnauthorizedTool())
+
+    executor = ToolExecutor(
+        registry=registry,
+        policy=Policy(),
+    )
+
+    with pytest.raises(PermissionError):
+        executor.execute("unauthorized", "test input")
+
+    assert executed is False
+
+def test_tool_execution_timeout_is_handled_safely():
+    registry = ToolRegistry()
+
+    class SlowTool:
+        def execute(self, tool_input):
+            time.sleep(0.2)
+            return "finished"
+
+    registry.register("calculator", SlowTool())
+
+    executor = ToolExecutor(
+        registry=registry,
+        policy=Policy(),
+    )
+
+    with pytest.raises(TimeoutError):
+        executor.execute("calculator", "test input", timeout=0.05)
