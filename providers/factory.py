@@ -1,5 +1,6 @@
 from interfaces.model import ModelInterface
 from providers.fake_model import FakeModelProvider
+from providers.openai_model import OpenAIProvider
 
 
 def create_model_provider(
@@ -13,6 +14,14 @@ def create_model_provider(
 
     if provider_name in {"", "fake"}:
         return FakeModelProvider()
+
+
+    if provider_name == "openai":
+        return OpenAIProvider(
+            model_name=model_name,
+            api_key=api_key,
+        )
+
 
     raise ValueError(
         f"Unsupported model provider: {provider}"
