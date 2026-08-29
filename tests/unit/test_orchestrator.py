@@ -1086,3 +1086,35 @@ def test_orchestrator_run_executes_resolved_tool_and_records_history():
     assert len(history.turns) == 1
     assert history.turns[0].user_input == "Original request"
     assert history.turns[0].assistant_output == "tool result"
+
+
+def test_history_and_memory_are_combined_in_model_prompt():
+    history = ConversationHistory()
+    history.add_turn(
+        user_input="Previous user message",
+        assistant_output="Previous assistant response",
+    )
+
+    memory = InMemoryStore()
+    memory.store("user_name", "AURA")
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        history=history,
+        memory=memory,
+    )
+
+    request = AURARequest(
+        user_input="Current user request",
+        metadata={"memory_key": "user_name"},
+    )
+
+    response = orchestrator.run(request)
+
+    prompt = response.content.removeprefix("Fake response to: ")
+
+    assert "Previous user message" in prompt
+    assert "Previous assistant response" in prompt
+    assert "AURA" in prompt
+    assert "Current user request" in prompt

@@ -11,6 +11,9 @@ from memory.in_memory import InMemoryStore
 from providers.fake_model import FakeModelProvider
 from tools.echo import EchoTool
 from tools.calculator import CalculatorTool
+from core.models import AURARequest, AURAResponse
+from app.main import create_orchestrator
+from providers.openai_model import OpenAIProvider
 
 
 class FailingTool:
@@ -229,3 +232,57 @@ def test_aura_calculator_runtime_end_to_end():
         "policy": "allow",
     }
 
+
+def test_aura_openai_runtime_end_to_end(monkeypatch):
+    class FakeResponse:
+        output_text = "OpenAI integration response"
+
+    class FakeResponses:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return FakeResponse()
+
+    class FakeOpenAIClient:
+        def __init__(self):
+            self.responses = FakeResponses()
+
+    fake_client = FakeOpenAIClient()
+
+    monkeypatch.setattr(
+        "providers.openai_model.OpenAI",
+        lambda api_key: fake_client,
+    )
+
+    monkeypatch.setenv("AURA_MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("AURA_MODEL_NAME", "integration-model")
+    monkeypatch.setenv("AURA_API_KEY", "test-api-key")
+
+    orchestrator = create_orchestrator()
+
+    assert isinstance(orchestrator.model, OpenAIProvider)
+
+    request = AURARequest(
+        user_input="Hello from integration test",
+    )
+
+    response = orchestrator.run(request)
+
+    assert isinstance(response, AURAResponse)
+    assert response.content == "OpenAI integration response"
+    assert response.request_id == request.request_id
+
+    assert response.metadata == {
+        "provider": "openai",
+        "model": "integration-model",
+        "policy": "allow",
+    }
+
+    assert fake_client.responses.calls == [
+        {
+            "model": "integration-model",
+            "input": "Hello from integration test",
+        }
+    ]

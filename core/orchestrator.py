@@ -201,13 +201,10 @@ class Orchestrator:
                         )
 
         # Default model path.
-        prompt = request.user_input
+        prompt_parts = []
 
         if "memory" in context.state:
-            prompt = (
-                f"Memory: {context.state['memory']}\n"
-                f"User: {request.user_input}"
-            )
+            prompt_parts.append(f"Memory: {context.state['memory']}")
 
         if context.history.turns:
             history_text = "\n".join(
@@ -217,12 +214,11 @@ class Orchestrator:
                 )
                 for turn in context.history.turns
             )
+            prompt_parts.append(f"History:\n{history_text}")
 
-            prompt = (
-                f"History:\n"
-                f"{history_text}\n"
-                f"User: {request.user_input}"
-            )
+        prompt_parts.append(f"User: {request.user_input}")
+
+        prompt = "\n".join(prompt_parts)
 
         response = self.model.generate(
             prompt,
