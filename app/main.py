@@ -1,5 +1,5 @@
 from app.aura import AURA
-from app.config import settings
+from app.config import Settings, settings
 from core.history import ConversationHistory
 from core.models import AURARequest
 from core.orchestrator import Orchestrator
@@ -8,7 +8,7 @@ from core.tool_registry import ToolRegistry
 from interfaces.tool_executor import ToolExecutor
 from interfaces.tool_selector import ToolSelector
 from memory.in_memory import InMemoryStore
-from providers.fake_model import FakeModelProvider
+from providers.factory import create_model_provider
 from tools.echo import EchoTool
 from tools.calculator import CalculatorTool
 
@@ -17,6 +17,7 @@ from tools.calculator import CalculatorTool
 def create_orchestrator() -> Orchestrator:
     """Create the default AURA orchestration pipeline."""
 
+    config = Settings()
     registry = ToolRegistry()
     registry.register("echo", EchoTool())
     registry.register("calculator", CalculatorTool())
@@ -25,7 +26,11 @@ def create_orchestrator() -> Orchestrator:
     executor = ToolExecutor(registry)
 
     return Orchestrator(
-        model=FakeModelProvider(),
+        model=create_model_provider(
+            provider=config.aura_model_provider,
+            model_name=config.aura_model_name,
+            api_key=config.aura_api_key,
+        ),
         policy=Policy(),
         memory=InMemoryStore(),
         history=ConversationHistory(),

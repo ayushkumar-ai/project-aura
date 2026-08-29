@@ -1,3 +1,5 @@
+import pytest
+
 from app.main import create_aura, create_orchestrator, run_aura
 from core.orchestrator import Orchestrator
 from core.history import ConversationHistory
@@ -126,3 +128,15 @@ def test_aura_run_delegates_through_request_api():
         "provider": "fake",
         "policy": "allow",
     }
+
+
+def test_create_orchestrator_rejects_unsupported_model_provider(
+    monkeypatch,
+):
+    monkeypatch.setenv("AURA_MODEL_PROVIDER", "unknown")
+
+    with pytest.raises(
+        ValueError,
+        match="Unsupported model provider",
+    ):
+        create_orchestrator()
