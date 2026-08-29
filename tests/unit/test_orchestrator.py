@@ -9,6 +9,7 @@ from tools.echo import EchoTool
 from core.tool_registry import ToolRegistry
 from interfaces.tool_selector import ToolSelector
 from tools.echo import EchoTool
+from knowledge.in_memory import InMemoryKnowledgeStore, KnowledgeRecord
 
 
 def test_orchestrator_allows_request():
@@ -1118,3 +1119,32 @@ def test_history_and_memory_are_combined_in_model_prompt():
     assert "Previous assistant response" in prompt
     assert "AURA" in prompt
     assert "Current user request" in prompt
+
+
+def test_retrieved_knowledge_reaches_model_prompt():
+    knowledge = InMemoryKnowledgeStore(
+        records=[
+            KnowledgeRecord(
+                content="AURA is built with Python.",
+                source="architecture.md",
+            )
+        ]
+    )
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        knowledge=knowledge,
+    )
+
+    request = AURARequest(
+        user_input="Tell me what language AURA uses",
+    )
+
+    response = orchestrator.run(request)
+
+    prompt = response.content.removeprefix("Fake response to: ")
+
+    assert "AURA is built with Python." in prompt
+    assert "Source: architecture.md" in prompt
+    assert "Tell me what language AURA uses" in prompt

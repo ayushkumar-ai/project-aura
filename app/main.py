@@ -14,7 +14,7 @@ from tools.calculator import CalculatorTool
 
 
 
-def create_orchestrator() -> Orchestrator:
+def create_orchestrator(knowledge=None) -> Orchestrator:
     """Create the default AURA orchestration pipeline."""
 
     config = Settings()
@@ -34,6 +34,7 @@ def create_orchestrator() -> Orchestrator:
         policy=Policy(),
         memory=InMemoryStore(),
         history=ConversationHistory(),
+        knowledge=knowledge,
         tool_registry=registry,
         tool_executor=executor,
         tool_selector=selector,

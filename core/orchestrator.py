@@ -9,6 +9,7 @@ from core.history import ConversationHistory
 from core.tool_registry import ToolRegistry
 from interfaces.tool_executor import ToolExecutor
 from interfaces.tool_selector import ToolSelector
+from knowledge.in_memory import InMemoryKnowledgeStore
 
 
 class Orchestrator:
@@ -23,6 +24,7 @@ class Orchestrator:
         tool_registry: ToolRegistry | None = None,
         tool_executor: ToolExecutor | None = None,
         tool_selector: ToolSelector | None = None,
+        knowledge: InMemoryKnowledgeStore | None = None,
     ):
         self.model = model
         self.policy = policy
@@ -31,6 +33,7 @@ class Orchestrator:
         self.tool_registry = tool_registry
         self.tool_executor = tool_executor
         self.tool_selector = tool_selector
+        self.knowledge = knowledge
 
         if self.tool_executor is None and self.tool_selector is not None:
             self.tool_executor = ToolExecutor(self.tool_selector.registry)
@@ -200,6 +203,11 @@ class Orchestrator:
                             },
                         )
 
+        retrieved_knowledge = []
+
+        if self.knowledge is not None:
+            retrieved_knowledge = self.knowledge.retrieve(request.user_input)
+
         # Default model path.
         prompt_parts = []
 
@@ -216,9 +224,20 @@ class Orchestrator:
             )
             prompt_parts.append(f"History:\n{history_text}")
 
-        prompt_parts.append(f"User: {request.user_input}")
+        if retrieved_knowledge:
+            knowledge_text = "\n".join(
 
-        prompt = "\n".join(prompt_parts)
+                f"Knowledge: {record.content}\nSource: {record.source}"
+                for record in retrieved_knowledge
+            )
+            prompt_parts.append(knowledge_text)
+
+        if prompt_parts:
+            prompt_parts.append(f"User: {request.user_input}")
+            prompt = "\n".join(prompt_parts)
+        else:
+            prompt = request.user_input
+
 
         response = self.model.generate(
             prompt,

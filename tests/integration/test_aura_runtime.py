@@ -14,6 +14,7 @@ from tools.calculator import CalculatorTool
 from core.models import AURARequest, AURAResponse
 from app.main import create_orchestrator
 from providers.openai_model import OpenAIProvider
+from knowledge.in_memory import InMemoryKnowledgeStore, KnowledgeRecord
 
 
 class FailingTool:
@@ -286,3 +287,31 @@ def test_aura_openai_runtime_end_to_end(monkeypatch):
             "input": "Hello from integration test",
         }
     ]
+
+
+def test_aura_retrieval_runtime_end_to_end(monkeypatch):
+    monkeypatch.setenv("AURA_MODEL_PROVIDER", "fake")
+
+    knowledge = InMemoryKnowledgeStore(
+        records=[
+            KnowledgeRecord(
+                content="AURA's model provider architecture is provider-agnostic.",
+                source="architecture.md",
+            )
+        ]
+    )
+
+    orchestrator = create_orchestrator(
+        knowledge=knowledge,
+    )
+
+    request = AURARequest(
+        user_input="Explain the provider architecture",
+    )
+
+    response = orchestrator.run(request)
+
+    assert isinstance(response, AURAResponse)
+    assert response.request_id == request.request_id
+    assert "AURA's model provider architecture is provider-agnostic." in response.content
+    assert "Source: architecture.md" in response.content
