@@ -29,6 +29,37 @@ def test_create_orchestrator_registers_echo_tool():
     assert orchestrator.tool_registry.get("echo").description == "Echo tool"
 
 
+def test_default_composition_rejects_unauthorized_tool_before_execution():
+    executed = False
+
+    class UnauthorizedTool:
+        def execute(self, tool_input):
+            nonlocal executed
+            executed = True
+            return "should not execute"
+
+    orchestrator = create_orchestrator()
+    orchestrator.tool_registry.register("unauthorized", UnauthorizedTool())
+
+    response = orchestrator.run(
+        AURARequest(
+            user_input="Run unauthorized tool",
+            metadata={
+                "tool": "unauthorized",
+                "tool_input": "test input",
+            },
+        )
+    )
+
+    assert executed is False
+    assert response.content == "Tool 'unauthorized' failed during execution."
+    assert response.metadata == {
+        "tool": "unauthorized",
+        "policy": "allow",
+        "error": "tool_execution_failed",
+    }
+
+
 def test_create_orchestrator():
     orchestrator = create_orchestrator()
 

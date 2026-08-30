@@ -22,8 +22,9 @@ def create_orchestrator(knowledge=None) -> Orchestrator:
     registry.register("echo", EchoTool())
     registry.register("calculator", CalculatorTool())
 
+    policy = Policy()
     selector = ToolSelector(registry)
-    executor = ToolExecutor(registry)
+    executor = ToolExecutor(registry, policy=policy)
 
     return Orchestrator(
         model=create_model_provider(
@@ -31,7 +32,7 @@ def create_orchestrator(knowledge=None) -> Orchestrator:
             model_name=config.aura_model_name,
             api_key=config.aura_api_key,
         ),
-        policy=Policy(),
+        policy=policy,
         memory=InMemoryStore(),
         history=ConversationHistory(),
         knowledge=knowledge,
