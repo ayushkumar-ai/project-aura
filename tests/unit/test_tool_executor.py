@@ -186,3 +186,28 @@ def test_tool_execution_timeout_is_handled_safely():
 
     with pytest.raises(TimeoutError):
         executor.execute("calculator", "test input", timeout=0.05)
+
+
+def test_tool_execution_timeout_does_not_block_caller():
+    registry = ToolRegistry()
+
+    class VerySlowTool:
+        def execute(self, tool_input):
+            time.sleep(0.6)
+            return "finished"
+
+    registry.register("calculator", VerySlowTool())
+
+    executor = ToolExecutor(
+        registry=registry,
+        policy=Policy(),
+    )
+
+    start_time = time.perf_counter()
+    with pytest.raises(TimeoutError):
+        executor.execute("calculator", "test input", timeout=0.05)
+    elapsed = time.perf_counter() - start_time
+
+    assert elapsed < 0.3, (
+        f"Caller was blocked for {elapsed:.3f}s, expected < 0.3s"
+    )

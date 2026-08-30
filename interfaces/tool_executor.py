@@ -39,9 +39,12 @@ class ToolExecutor:
         if timeout is None:
             return tool.execute(tool_input)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
             future = executor.submit(tool.execute, tool_input)
             return future.result(timeout=timeout)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
     def list_tools(self) -> list[str]:
         """Return the names of available tools."""
         return self.registry.list_tools()
