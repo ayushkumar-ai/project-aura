@@ -121,12 +121,6 @@ class Orchestrator:
 
         context = self._build_context(request)
 
-        if self.memory is not None:
-            self.memory.store(
-                str(request.request_id),
-                request.user_input,
-            )
-
         decision = self.policy.evaluate(request)
 
         if decision == PolicyDecision.DENY:
@@ -134,6 +128,12 @@ class Orchestrator:
                 request_id=context.request_id,
                 content="Request denied by policy.",
                 metadata={"policy": decision.value},
+            )
+
+        if self.memory is not None:
+            self.memory.store(
+                str(request.request_id),
+                request.user_input,
             )
 
         if self.tool_executor is not None or self.tool_selector is not None:

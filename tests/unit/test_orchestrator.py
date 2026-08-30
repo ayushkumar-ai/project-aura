@@ -1212,3 +1212,18 @@ def test_orchestrator_handles_model_generation_failure():
         "error": "model_generation_failed",
     }
     assert history.turns == []
+
+
+def test_orchestrator_does_not_record_denied_request_in_memory():
+    memory = InMemoryStore()
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=memory,
+    )
+
+    request = AURARequest(user_input="   ")
+    response = orchestrator.run(request)
+
+    assert response.metadata["policy"] == "deny"
+    assert memory.retrieve(str(request.request_id)) is None
