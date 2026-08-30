@@ -256,10 +256,20 @@ class Orchestrator:
             prompt = request.user_input
 
 
-        response = self.model.generate(
-            prompt,
-            request_id=context.request_id,
-        )
+        try:
+            response = self.model.generate(
+                prompt,
+                request_id=context.request_id,
+            )
+        except Exception:
+            return AURAResponse(
+                request_id=context.request_id,
+                content="Model generation failed.",
+                metadata={
+                    "policy": decision.value,
+                    "error": "model_generation_failed",
+                },
+            )
 
         if self.history is not None:
             self.history.add_turn(

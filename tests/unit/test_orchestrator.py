@@ -1185,3 +1185,30 @@ def test_orchestrator_handles_unauthorized_tool_execution():
         "policy": "deny",
         "error": "tool_unauthorized",
     }
+
+
+def test_orchestrator_handles_model_generation_failure():
+    from interfaces.model import ModelInterface
+
+    class FailingModelProvider(ModelInterface):
+        def generate(self, prompt: str, request_id):
+            raise RuntimeError("Underlying LLM API failed")
+
+    history = ConversationHistory()
+    orchestrator = Orchestrator(
+        model=FailingModelProvider(),
+        policy=Policy(),
+        history=history,
+    )
+
+    request = AURARequest(user_input="Hello AURA")
+    response = orchestrator.run(request)
+
+    assert isinstance(response, AURAResponse)
+    assert response.request_id == request.request_id
+    assert response.content == "Model generation failed."
+    assert response.metadata == {
+        "policy": "allow",
+        "error": "model_generation_failed",
+    }
+    assert history.turns == []
