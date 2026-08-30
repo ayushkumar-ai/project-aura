@@ -34,10 +34,6 @@ class ToolSelector:
                 if re.search(keyword_pattern, normalized_request):
                     return name
 
-        # A single unknown identifier is treated as an explicit tool request.
-        if " " not in normalized_request:
-            raise KeyError(f"Unknown tool: {request}")
-
         # Natural-language request with no matching tool.
         return None
 

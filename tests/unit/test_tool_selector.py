@@ -19,8 +19,7 @@ def test_tool_selector_rejects_unknown_tool():
 
     selector = ToolSelector(registry)
 
-    with pytest.raises(KeyError):
-        selector.select("unknown")
+    assert selector.select("unknown") is None
 
 
 def test_tool_selector_rejects_empty_request():
@@ -69,8 +68,7 @@ def test_tool_selector_rejects_request_for_unavailable_tool():
 
     selector = ToolSelector(registry)
 
-    with pytest.raises(KeyError):
-        selector.select("calculator")
+    assert selector.select("calculator") is None
 
 
 def test_tool_selector_can_be_constructed_with_registry():
@@ -251,3 +249,12 @@ def test_tool_selector_matches_whole_word_keywords():
     selector = ToolSelector(registry)
 
     assert selector.select("please do this math: 2 + 2") == "calculator"
+
+
+def test_tool_selector_returns_none_for_unmatched_single_word():
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    selector = ToolSelector(registry)
+
+    assert selector.select("Hello") is None

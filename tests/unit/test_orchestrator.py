@@ -806,6 +806,7 @@ def test_orchestrator_handles_unknown_tool_selected_by_selector():
     request = AURARequest(
         user_input="calculator",
         metadata={
+            "tool": "calculator",
             "tool_input": "2 + 2",
         },
     )
@@ -953,7 +954,7 @@ def test_orchestrator_resolves_no_tool_without_selector():
     assert orchestrator._resolve_tool(request) == (None, None, False)
 
 
-def test_orchestrator_propagates_unknown_tool_from_selector():
+def test_orchestrator_resolves_no_tool_when_selector_finds_no_match():
     registry = ToolRegistry()
     selector = ToolSelector(registry)
 
@@ -968,8 +969,7 @@ def test_orchestrator_propagates_unknown_tool_from_selector():
         metadata={},
     )
 
-    with pytest.raises(KeyError):
-        orchestrator._resolve_tool(request)
+    assert orchestrator._resolve_tool(request) == (None, None, False)
 
 
 def test_orchestrator_prepares_tool_input_when_not_supplied():
@@ -1249,6 +1249,32 @@ def test_orchestrator_routes_subword_request_to_model():
     response = orchestrator.run(request)
 
     assert response.content == "Fake response to: What is the aftermath?"
+    assert response.metadata == {
+        "provider": "fake",
+        "policy": "allow",
+    }
+
+
+def test_orchestrator_routes_single_word_greeting_to_model():
+    from core.tool_registry import ToolRegistry
+    from interfaces.tool_selector import ToolSelector
+    from tools.echo import EchoTool
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_selector=selector,
+    )
+
+    request = AURARequest(user_input="Hello")
+    response = orchestrator.run(request)
+
+    assert response.content == "Fake response to: Hello"
     assert response.metadata == {
         "provider": "fake",
         "policy": "allow",
