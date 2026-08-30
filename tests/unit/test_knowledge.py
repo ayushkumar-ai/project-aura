@@ -88,3 +88,32 @@ def test_no_match_returns_empty_list():
     )
 
     assert store.retrieve("database") == []
+
+
+def test_knowledge_store_retrieves_query_with_punctuation():
+    store = InMemoryKnowledgeStore(
+        records=[
+            KnowledgeRecord(
+                content="The database stores user profiles.",
+                source="db-docs",
+            )
+        ]
+    )
+
+    results = store.retrieve("Where is the database?")
+
+    assert len(results) == 1
+    assert results[0].source == "db-docs"
+
+
+def test_knowledge_store_handles_punctuation_only_query():
+    store = InMemoryKnowledgeStore(
+        records=[
+            KnowledgeRecord(
+                content="AURA uses Python.",
+                source="architecture.md",
+            )
+        ]
+    )
+
+    assert store.retrieve("???") == []

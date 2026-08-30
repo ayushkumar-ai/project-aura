@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 
 
@@ -21,9 +22,9 @@ class InMemoryKnowledgeStore:
 
     def retrieve(self, query: str) -> list[KnowledgeRecord]:
         keywords = {
-            word.lower()
-            for word in query.split()
-            if word.strip()
+            match.group(0).lower()
+            for match in re.finditer(r"\w+", query)
+            if match.group(0).strip()
         }
 
         if not keywords:
