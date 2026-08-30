@@ -52,11 +52,11 @@ def test_default_composition_rejects_unauthorized_tool_before_execution():
     )
 
     assert executed is False
-    assert response.content == "Tool 'unauthorized' failed during execution."
+    assert response.content == "Tool 'unauthorized' is not authorized."
     assert response.metadata == {
         "tool": "unauthorized",
-        "policy": "allow",
-        "error": "tool_execution_failed",
+        "policy": "deny",
+        "error": "tool_unauthorized",
     }
 
 

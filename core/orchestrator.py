@@ -185,6 +185,17 @@ class Orchestrator:
                             },
                         )
 
+                    except PermissionError:
+                        return AURAResponse(
+                            request_id=context.request_id,
+                            content=f"Tool '{tool_name}' is not authorized.",
+                            metadata={
+                                "tool": tool_name,
+                                "policy": PolicyDecision.DENY.value,
+                                "error": "tool_unauthorized",
+                            },
+                        )
+
                     except KeyError:
                         return AURAResponse(
                             request_id=context.request_id,

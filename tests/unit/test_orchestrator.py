@@ -463,7 +463,7 @@ def test_orchestrator_handles_tool_execution_failure():
     from core.tool_registry import ToolRegistry
 
     registry = ToolRegistry()
-    registry.register("failing", FailingTool())
+    registry.register("echo", FailingTool())
 
     orchestrator = Orchestrator(
         model=FakeModelProvider(),
@@ -474,16 +474,16 @@ def test_orchestrator_handles_tool_execution_failure():
     request = AURARequest(
         user_input="Run failing tool",
         metadata={
-            "tool": "failing",
+            "tool": "echo",
             "tool_input": "Hello",
         },
     )
 
     response = orchestrator.run(request)
 
-    assert response.content == "Tool 'failing' failed during execution."
+    assert response.content == "Tool 'echo' failed during execution."
     assert response.metadata == {
-        "tool": "failing",
+        "tool": "echo",
         "policy": "allow",
         "error": "tool_execution_failed",
     }
@@ -578,7 +578,7 @@ def test_orchestrator_does_not_record_failed_tool_execution_in_history():
     from core.tool_registry import ToolRegistry
 
     registry = ToolRegistry()
-    registry.register("failing", FailingTool())
+    registry.register("echo", FailingTool())
 
     history = ConversationHistory()
 
@@ -592,7 +592,7 @@ def test_orchestrator_does_not_record_failed_tool_execution_in_history():
     request = AURARequest(
         user_input="Run failing tool",
         metadata={
-            "tool": "failing",
+            "tool": "echo",
             "tool_input": "Hello",
         },
     )
@@ -824,12 +824,12 @@ def test_orchestrator_handles_selected_tool_execution_failure():
     from core.tool_registry import ToolRegistry
     from interfaces.tool_selector import ToolSelector
 
-    class FailingTool:
+    class FailingEchoTool(EchoTool):
         def execute(self, input_data: str) -> str:
             raise RuntimeError("Tool failed")
 
     registry = ToolRegistry()
-    registry.register("failing", FailingTool())
+    registry.register("echo", FailingEchoTool())
 
     selector = ToolSelector(registry)
 
@@ -840,7 +840,7 @@ def test_orchestrator_handles_selected_tool_execution_failure():
     )
 
     request = AURARequest(
-        user_input="failing",
+        user_input="echo",
         metadata={
             "tool_input": "Hello",
         },
@@ -848,9 +848,9 @@ def test_orchestrator_handles_selected_tool_execution_failure():
 
     response = orchestrator.run(request)
 
-    assert response.content == "Tool 'failing' failed during execution."
+    assert response.content == "Tool 'echo' failed during execution."
     assert response.metadata == {
-        "tool": "failing",
+        "tool": "echo",
         "policy": "allow",
         "error": "tool_execution_failed",
     }
@@ -1148,3 +1148,40 @@ def test_retrieved_knowledge_reaches_model_prompt():
     assert "AURA is built with Python." in prompt
     assert "Source: architecture.md" in prompt
     assert "Tell me what language AURA uses" in prompt
+
+
+def test_orchestrator_handles_unauthorized_tool_execution():
+    executed = False
+
+    class UnauthorizedTool:
+        def execute(self, input_data: str) -> str:
+            nonlocal executed
+            executed = True
+            return "executed"
+
+    registry = ToolRegistry()
+    registry.register("unauthorized", UnauthorizedTool())
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+    )
+
+    request = AURARequest(
+        user_input="Run unauthorized tool",
+        metadata={
+            "tool": "unauthorized",
+            "tool_input": "Hello",
+        },
+    )
+
+    response = orchestrator.run(request)
+
+    assert executed is False
+    assert response.content == "Tool 'unauthorized' is not authorized."
+    assert response.metadata == {
+        "tool": "unauthorized",
+        "policy": "deny",
+        "error": "tool_unauthorized",
+    }

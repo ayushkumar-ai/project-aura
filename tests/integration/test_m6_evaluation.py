@@ -193,18 +193,18 @@ def test_m6_tool_execution_failure_is_handled_safely():
             raise RuntimeError("deterministic failure")
 
     registry = ToolRegistry()
-    registry.register("failing", FailingTool())
+    registry.register("echo", FailingTool())
 
     response = build_runtime(registry=registry).run(
         AURARequest(
             user_input="Run failing tool",
-            metadata={"tool": "failing", "tool_input": "test input"},
+            metadata={"tool": "echo", "tool_input": "test input"},
         )
     )
 
-    assert response.content == "Tool 'failing' failed during execution."
+    assert response.content == "Tool 'echo' failed during execution."
     assert response.metadata == {
-        "tool": "failing",
+        "tool": "echo",
         "policy": "allow",
         "error": "tool_execution_failed",
     }
