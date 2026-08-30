@@ -1,6 +1,7 @@
-﻿annotated-types==0.8.0
+annotated-types==0.8.0
 colorama==0.4.6
 iniconfig==2.3.0
+openai>=1.0.0
 packaging==26.3
 pluggy==1.6.0
 pydantic==2.13.4
