@@ -229,3 +229,25 @@ def test_tool_selector_returns_none_when_keywords_do_not_match():
     selector = ToolSelector(registry)
 
     assert selector.select("tell me the weather") is None
+
+
+def test_tool_selector_does_not_match_subwords_in_keywords():
+    from tools.calculator import CalculatorTool
+
+    registry = ToolRegistry()
+    registry.register("calculator", CalculatorTool())
+
+    selector = ToolSelector(registry)
+
+    assert selector.select("What is the aftermath of the storm?") is None
+
+
+def test_tool_selector_matches_whole_word_keywords():
+    from tools.calculator import CalculatorTool
+
+    registry = ToolRegistry()
+    registry.register("calculator", CalculatorTool())
+
+    selector = ToolSelector(registry)
+
+    assert selector.select("please do this math: 2 + 2") == "calculator"

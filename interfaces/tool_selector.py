@@ -1,3 +1,5 @@
+import re
+
 from core.tool_registry import ToolRegistry
 
 
@@ -23,11 +25,13 @@ class ToolSelector:
         for name in self.registry.list_tools():
             tool = self.registry.get(name)
 
-            if name.lower() in normalized_request:
+            pattern = r"\b" + re.escape(name.lower()) + r"\b"
+            if re.search(pattern, normalized_request):
                 return name
 
             for keyword in tool.keywords:
-                if keyword.lower() in normalized_request:
+                keyword_pattern = r"\b" + re.escape(keyword.lower()) + r"\b"
+                if re.search(keyword_pattern, normalized_request):
                     return name
 
         # A single unknown identifier is treated as an explicit tool request.

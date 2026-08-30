@@ -1227,3 +1227,29 @@ def test_orchestrator_does_not_record_denied_request_in_memory():
 
     assert response.metadata["policy"] == "deny"
     assert memory.retrieve(str(request.request_id)) is None
+
+
+def test_orchestrator_routes_subword_request_to_model():
+    from core.tool_registry import ToolRegistry
+    from interfaces.tool_selector import ToolSelector
+    from tools.calculator import CalculatorTool
+
+    registry = ToolRegistry()
+    registry.register("calculator", CalculatorTool())
+
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_selector=selector,
+    )
+
+    request = AURARequest(user_input="What is the aftermath?")
+    response = orchestrator.run(request)
+
+    assert response.content == "Fake response to: What is the aftermath?"
+    assert response.metadata == {
+        "provider": "fake",
+        "policy": "allow",
+    }
