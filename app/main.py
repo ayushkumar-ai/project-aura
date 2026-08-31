@@ -9,6 +9,7 @@ from core.policy import Policy
 from core.tool_registry import ToolRegistry
 from interfaces.tool_executor import ToolExecutor
 from interfaces.tool_selector import ToolSelector
+from interfaces.knowledge import KnowledgeInterface
 from memory.in_memory import InMemoryStore
 from providers.factory import create_model_provider
 from tools.echo import EchoTool
@@ -16,7 +17,9 @@ from tools.calculator import CalculatorTool
 
 
 
-def create_orchestrator(knowledge=None) -> Orchestrator:
+def create_orchestrator(
+    knowledge: KnowledgeInterface | None = None,
+) -> Orchestrator:
     """Create the default AURA orchestration pipeline."""
 
     config = Settings()

@@ -117,3 +117,20 @@ def test_knowledge_store_handles_punctuation_only_query():
     )
 
     assert store.retrieve("???") == []
+
+
+def test_in_memory_knowledge_store_respects_top_k():
+    store = InMemoryKnowledgeStore(
+        records=[
+            KnowledgeRecord(content="Python document one", source="1"),
+            KnowledgeRecord(content="Python document two", source="2"),
+            KnowledgeRecord(content="Python document three", source="3"),
+            KnowledgeRecord(content="Python document four", source="4"),
+            KnowledgeRecord(content="Python document five", source="5"),
+        ]
+    )
+
+    results = store.retrieve("Python", top_k=2)
+
+    assert len(results) == 2
+    assert [record.source for record in results] == ["1", "2"]

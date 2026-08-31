@@ -11,7 +11,7 @@ from core.history import ConversationHistory
 from core.tool_registry import ToolRegistry
 from interfaces.tool_executor import ToolExecutor
 from interfaces.tool_selector import ToolSelector
-from knowledge.in_memory import InMemoryKnowledgeStore
+from interfaces.knowledge import KnowledgeInterface
 
 logger = logging.getLogger("aura.orchestrator")
 
@@ -28,7 +28,7 @@ class Orchestrator:
         tool_registry: ToolRegistry | None = None,
         tool_executor: ToolExecutor | None = None,
         tool_selector: ToolSelector | None = None,
-        knowledge: InMemoryKnowledgeStore | None = None,
+        knowledge: KnowledgeInterface | None = None,
     ):
         self.model = model
         self.policy = policy
