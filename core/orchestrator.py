@@ -1,3 +1,5 @@
+import logging
+
 from core.context import AURAContext
 from core.models import AURARequest, AURAResponse
 from core.policy import Policy, PolicyDecision
@@ -10,6 +12,8 @@ from core.tool_registry import ToolRegistry
 from interfaces.tool_executor import ToolExecutor
 from interfaces.tool_selector import ToolSelector
 from knowledge.in_memory import InMemoryKnowledgeStore
+
+logger = logging.getLogger("aura.orchestrator")
 
 
 class Orchestrator:
@@ -119,16 +123,21 @@ class Orchestrator:
     def run(self, request: AURARequest) -> AURAResponse:
         """Execute a request through policy, tools, memory, and model layers."""
 
+        logger.info("Received request %s", request.request_id)
+
         context = self._build_context(request)
 
         decision = self.policy.evaluate(request)
 
         if decision == PolicyDecision.DENY:
+            logger.warning("Request %s denied by policy", context.request_id)
             return AURAResponse(
                 request_id=context.request_id,
                 content="Request denied by policy.",
                 metadata={"policy": decision.value},
             )
+
+        logger.info("Request %s allowed by policy", context.request_id)
 
         if self.memory is not None:
             self.memory.store(
@@ -144,6 +153,11 @@ class Orchestrator:
 
             except KeyError:
                 unknown_tool = request.user_input.strip()
+                logger.warning(
+                    "Tool '%s' not found for request %s",
+                    unknown_tool,
+                    context.request_id,
+                )
 
                 return AURAResponse(
                     request_id=context.request_id,
@@ -160,9 +174,19 @@ class Orchestrator:
                 # An explicitly requested tool without explicit input
                 # preserves the model-fallback behavior.
                 if explicit_tool and tool_input is None:
+                    logger.info(
+                        "Explicit tool '%s' missing input for request %s, falling back to model",
+                        tool_name,
+                        context.request_id,
+                    )
                     tool_name = None
 
                 else:
+                    logger.info(
+                        "Executing tool '%s' for request %s",
+                        tool_name,
+                        context.request_id,
+                    )
                     try:
                         tool_result = self._execute_tool(
                             tool_name=tool_name,
@@ -176,6 +200,12 @@ class Orchestrator:
                                 assistant_output=tool_result,
                             )
 
+                        logger.info(
+                            "Tool '%s' executed successfully for request %s",
+                            tool_name,
+                            context.request_id,
+                        )
+
                         return AURAResponse(
                             request_id=context.request_id,
                             content=tool_result,
@@ -186,6 +216,11 @@ class Orchestrator:
                         )
 
                     except PermissionError:
+                        logger.warning(
+                            "Tool '%s' is unauthorized for request %s",
+                            tool_name,
+                            context.request_id,
+                        )
                         return AURAResponse(
                             request_id=context.request_id,
                             content=f"Tool '{tool_name}' is not authorized.",
@@ -197,6 +232,11 @@ class Orchestrator:
                         )
 
                     except KeyError:
+                        logger.warning(
+                            "Tool '%s' not found for request %s",
+                            tool_name,
+                            context.request_id,
+                        )
                         return AURAResponse(
                             request_id=context.request_id,
                             content=f"Tool '{tool_name}' is not available.",
@@ -208,6 +248,11 @@ class Orchestrator:
                         )
 
                     except Exception:
+                        logger.warning(
+                            "Tool '%s' execution failed for request %s",
+                            tool_name,
+                            context.request_id,
+                        )
                         return AURAResponse(
                             request_id=context.request_id,
                             content=(
@@ -255,6 +300,10 @@ class Orchestrator:
         else:
             prompt = request.user_input
 
+        logger.info(
+            "Generating model response for request %s",
+            context.request_id,
+        )
 
         try:
             response = self.model.generate(
@@ -262,6 +311,10 @@ class Orchestrator:
                 request_id=context.request_id,
             )
         except Exception:
+            logger.warning(
+                "Model generation failed for request %s",
+                context.request_id,
+            )
             return AURAResponse(
                 request_id=context.request_id,
                 content="Model generation failed.",
@@ -270,6 +323,11 @@ class Orchestrator:
                     "error": "model_generation_failed",
                 },
             )
+
+        logger.info(
+            "Model generation succeeded for request %s",
+            context.request_id,
+        )
 
         if self.history is not None:
             self.history.add_turn(

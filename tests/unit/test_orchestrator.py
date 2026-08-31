@@ -1,14 +1,15 @@
+import logging
+import pytest
+
 from core.models import AURARequest, AURAResponse
 from core.orchestrator import Orchestrator
 from core.policy import Policy
 from providers.fake_model import FakeModelProvider
 from memory.in_memory import InMemoryStore
 from core.history import ConversationHistory
-import pytest
 from tools.echo import EchoTool
 from core.tool_registry import ToolRegistry
 from interfaces.tool_selector import ToolSelector
-from tools.echo import EchoTool
 from knowledge.in_memory import InMemoryKnowledgeStore, KnowledgeRecord
 
 
@@ -1279,3 +1280,76 @@ def test_orchestrator_routes_single_word_greeting_to_model():
         "provider": "fake",
         "policy": "allow",
     }
+
+
+def test_orchestrator_logs_request_lifecycle(caplog):
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+    )
+    request = AURARequest(user_input="Hello world")
+    with caplog.at_level(logging.INFO, logger="aura.orchestrator"):
+        response = orchestrator.run(request)
+
+    assert response.content == "Fake response to: Hello world"
+    assert str(request.request_id) in caplog.text
+    assert f"Received request {request.request_id}" in caplog.text
+    assert f"Request {request.request_id} allowed by policy" in caplog.text
+    assert f"Model generation succeeded for request {request.request_id}" in caplog.text
+
+
+def test_orchestrator_logs_tool_execution(caplog):
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+    selector = ToolSelector(registry)
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+        tool_selector=selector,
+    )
+    request = AURARequest(
+        user_input="test message",
+        metadata={"tool": "echo", "tool_input": "test message"},
+    )
+    with caplog.at_level(logging.INFO, logger="aura.orchestrator"):
+        response = orchestrator.run(request)
+
+    assert response.content == "test message"
+    assert f"Executing tool 'echo' for request {request.request_id}" in caplog.text
+    assert f"Tool 'echo' executed successfully for request {request.request_id}" in caplog.text
+
+
+def test_orchestrator_logs_model_generation_failure(caplog):
+    class FailingModel(FakeModelProvider):
+        def generate(self, prompt: str, request_id=None):
+            raise RuntimeError("Model crashed")
+
+    orchestrator = Orchestrator(
+        model=FailingModel(),
+        policy=Policy(),
+    )
+    request = AURARequest(user_input="Hello")
+    with caplog.at_level(logging.WARNING, logger="aura.orchestrator"):
+        response = orchestrator.run(request)
+
+    assert response.content == "Model generation failed."
+    assert response.metadata == {
+        "policy": "allow",
+        "error": "model_generation_failed",
+    }
+    assert f"Model generation failed for request {request.request_id}" in caplog.text
+
+
+def test_orchestrator_logs_policy_denial(caplog):
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+    )
+    request = AURARequest(user_input="   ")
+    with caplog.at_level(logging.WARNING, logger="aura.orchestrator"):
+        response = orchestrator.run(request)
+
+    assert response.content == "Request denied by policy."
+    assert response.metadata == {"policy": "deny"}
+    assert f"Request {request.request_id} denied by policy" in caplog.text
