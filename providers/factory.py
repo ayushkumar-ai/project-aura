@@ -17,6 +17,12 @@ def create_model_provider(
 
 
     if provider_name == "openai":
+        if not model_name.strip():
+            raise ValueError("OpenAI model name cannot be empty.")
+
+        if not api_key.strip():
+            raise ValueError("OpenAI API key cannot be empty.")
+
         return OpenAIProvider(
             model_name=model_name,
             api_key=api_key,
