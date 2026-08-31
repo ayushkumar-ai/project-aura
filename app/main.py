@@ -1,3 +1,5 @@
+import logging
+
 from app.aura import AURA
 from app.config import Settings, settings
 from core.history import ConversationHistory
@@ -18,6 +20,8 @@ def create_orchestrator(knowledge=None) -> Orchestrator:
     """Create the default AURA orchestration pipeline."""
 
     config = Settings()
+    logging.getLogger("aura").setLevel(config.aura_log_level.upper())
+
     registry = ToolRegistry()
     registry.register("echo", EchoTool())
     registry.register("calculator", CalculatorTool())

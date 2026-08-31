@@ -171,3 +171,12 @@ def test_create_orchestrator_rejects_unsupported_model_provider(
         match="Unsupported model provider",
     ):
         create_orchestrator()
+
+
+def test_create_orchestrator_configures_log_level(monkeypatch):
+    import logging
+
+    monkeypatch.setenv("AURA_LOG_LEVEL", "DEBUG")
+    create_orchestrator()
+
+    assert logging.getLogger("aura").level == logging.DEBUG
