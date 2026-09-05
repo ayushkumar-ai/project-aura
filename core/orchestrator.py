@@ -11,7 +11,7 @@ from core.history import ConversationHistory
 from core.tool_registry import ToolRegistry
 from interfaces.tool_executor import ToolExecutor
 from interfaces.tool_selector import ToolSelector
-from interfaces.knowledge import KnowledgeInterface
+from interfaces.knowledge import KnowledgeInterface, KnowledgeRecord
 
 logger = logging.getLogger("aura.orchestrator")
 
@@ -122,19 +122,36 @@ class Orchestrator:
             tool_input=tool_input,
         )
 
+    def _retrieve_knowledge(
+        self,
+        request: AURARequest,
+        context: AURAContext,
+    ) -> list[KnowledgeRecord]:
+        """Retrieve relevant knowledge records from the configured knowledge store."""
+
+        if self.knowledge is None:
+            return []
+
+        try:
+            return self.knowledge.retrieve(request.user_input)
+        except Exception:
+            logger.warning(
+                "Knowledge retrieval failed for request %s",
+                context.request_id,
+            )
+            raise
+
     def _build_prompt(
         self,
         request: AURARequest,
         context: AURAContext,
+        retrieved_knowledge: list[KnowledgeRecord] | None = None,
         tool_name: str | None = None,
         tool_result: str | None = None,
     ) -> str:
         """Construct the prompt for model generation, including memory, history, knowledge, and optional tool output."""
 
-        retrieved_knowledge = []
-
-        if self.knowledge is not None:
-            retrieved_knowledge = self.knowledge.retrieve(request.user_input)
+        knowledge_records = retrieved_knowledge or []
 
         prompt_parts = []
 
@@ -151,10 +168,10 @@ class Orchestrator:
             )
             prompt_parts.append(f"History:\n{history_text}")
 
-        if retrieved_knowledge:
+        if knowledge_records:
             knowledge_text = "\n".join(
                 f"Knowledge: {record.content}\nSource: {record.source}"
-                for record in retrieved_knowledge
+                for record in knowledge_records
             )
             prompt_parts.append(knowledge_text)
 
@@ -254,9 +271,26 @@ class Orchestrator:
                         )
 
                         if self.synthesize_tool_results:
+                            try:
+                                retrieved_knowledge = (
+                                    self._retrieve_knowledge(
+                                        request, context
+                                    )
+                                )
+                            except Exception:
+                                return AURAResponse(
+                                    request_id=context.request_id,
+                                    content="Knowledge retrieval failed.",
+                                    metadata={
+                                        "policy": decision.value,
+                                        "error": "knowledge_retrieval_failed",
+                                    },
+                                )
+
                             prompt = self._build_prompt(
                                 request=request,
                                 context=context,
+                                retrieved_knowledge=retrieved_knowledge,
                                 tool_name=tool_name,
                                 tool_result=tool_result,
                             )
@@ -376,9 +410,22 @@ class Orchestrator:
                             },
                         )
 
+        try:
+            retrieved_knowledge = self._retrieve_knowledge(request, context)
+        except Exception:
+            return AURAResponse(
+                request_id=context.request_id,
+                content="Knowledge retrieval failed.",
+                metadata={
+                    "policy": decision.value,
+                    "error": "knowledge_retrieval_failed",
+                },
+            )
+
         prompt = self._build_prompt(
             request=request,
             context=context,
+            retrieved_knowledge=retrieved_knowledge,
         )
 
         logger.info(

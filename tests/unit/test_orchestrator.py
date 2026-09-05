@@ -10,6 +10,7 @@ from core.history import ConversationHistory
 from tools.echo import EchoTool
 from core.tool_registry import ToolRegistry
 from interfaces.tool_selector import ToolSelector
+from interfaces.knowledge import KnowledgeInterface
 from knowledge.in_memory import InMemoryKnowledgeStore, KnowledgeRecord
 
 
@@ -1474,4 +1475,75 @@ def test_orchestrator_synthesize_tool_result_handles_model_failure():
     assert response.metadata == {
         "policy": "allow",
         "error": "model_generation_failed",
+    }
+
+
+def test_orchestrator_handles_knowledge_retrieval_failure():
+    class FailingKnowledgeStore(KnowledgeInterface):
+        def retrieve(self, query: str, top_k: int | None = None):
+            raise RuntimeError("Knowledge store database unavailable")
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        knowledge=FailingKnowledgeStore(),
+    )
+
+    request = AURARequest(user_input="Tell me about AURA")
+    response = orchestrator.run(request)
+
+    assert response.content == "Knowledge retrieval failed."
+    assert response.metadata == {
+        "policy": "allow",
+        "error": "knowledge_retrieval_failed",
+    }
+
+
+def test_orchestrator_logs_knowledge_retrieval_failure(caplog):
+    class FailingKnowledgeStore(KnowledgeInterface):
+        def retrieve(self, query: str, top_k: int | None = None):
+            raise RuntimeError("Knowledge store corrupted")
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        knowledge=FailingKnowledgeStore(),
+    )
+
+    request = AURARequest(user_input="Tell me about AURA")
+    with caplog.at_level(logging.WARNING, logger="aura.orchestrator"):
+        response = orchestrator.run(request)
+
+    assert response.content == "Knowledge retrieval failed."
+    assert f"Knowledge retrieval failed for request {request.request_id}" in caplog.text
+
+
+def test_orchestrator_handles_knowledge_retrieval_failure_during_tool_synthesis():
+    class FailingKnowledgeStore(KnowledgeInterface):
+        def retrieve(self, query: str, top_k: int | None = None):
+            raise RuntimeError("Knowledge store unavailable")
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+        tool_selector=selector,
+        knowledge=FailingKnowledgeStore(),
+        synthesize_tool_results=True,
+    )
+
+    request = AURARequest(
+        user_input="Repeat this",
+        metadata={"tool": "echo", "tool_input": "Hello world"},
+    )
+    response = orchestrator.run(request)
+
+    assert response.content == "Knowledge retrieval failed."
+    assert response.metadata == {
+        "policy": "allow",
+        "error": "knowledge_retrieval_failed",
     }
