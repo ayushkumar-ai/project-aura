@@ -1353,3 +1353,125 @@ def test_orchestrator_logs_policy_denial(caplog):
     assert response.content == "Request denied by policy."
     assert response.metadata == {"policy": "deny"}
     assert f"Request {request.request_id} denied by policy" in caplog.text
+
+
+def test_orchestrator_default_does_not_synthesize_tool_results():
+    class TrackingModel(FakeModelProvider):
+        def __init__(self):
+            self.generate_called = False
+
+        def generate(self, prompt: str, request_id=None):
+            self.generate_called = True
+            return super().generate(prompt, request_id)
+
+    model = TrackingModel()
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=model,
+        policy=Policy(),
+        tool_registry=registry,
+        tool_selector=selector,
+        synthesize_tool_results=False,
+    )
+
+    request = AURARequest(
+        user_input="hello",
+        metadata={"tool": "echo", "tool_input": "hello"},
+    )
+    response = orchestrator.run(request)
+
+    assert response.content == "hello"
+    assert response.metadata == {
+        "tool": "echo",
+        "policy": "allow",
+    }
+    assert model.generate_called is False
+
+
+def test_orchestrator_synthesizes_tool_results_with_model():
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+        tool_selector=selector,
+        synthesize_tool_results=True,
+    )
+
+    request = AURARequest(
+        user_input="Repeat this",
+        metadata={"tool": "echo", "tool_input": "Hello world"},
+    )
+    response = orchestrator.run(request)
+
+    assert "Tool 'echo' Output: Hello world" in response.content
+    assert response.metadata == {
+        "provider": "fake",
+        "tool": "echo",
+        "policy": "allow",
+        "synthesized": "true",
+    }
+
+
+def test_orchestrator_synthesized_tool_stores_history_observation():
+    history = ConversationHistory()
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        history=history,
+        tool_registry=registry,
+        tool_selector=selector,
+        synthesize_tool_results=True,
+    )
+
+    request = AURARequest(
+        user_input="Repeat this",
+        metadata={"tool": "echo", "tool_input": "Hello world"},
+    )
+    response = orchestrator.run(request)
+
+    assert len(history.turns) == 1
+    assert history.turns[0].user_input == "Repeat this"
+    assert history.turns[0].assistant_output == response.content
+    assert history.turns[0].tool_name == "echo"
+    assert history.turns[0].tool_result == "Hello world"
+
+
+def test_orchestrator_synthesize_tool_result_handles_model_failure():
+    class FailingModel(FakeModelProvider):
+        def generate(self, prompt: str, request_id=None):
+            raise RuntimeError("Synthesis model crashed")
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FailingModel(),
+        policy=Policy(),
+        tool_registry=registry,
+        tool_selector=selector,
+        synthesize_tool_results=True,
+    )
+
+    request = AURARequest(
+        user_input="Repeat this",
+        metadata={"tool": "echo", "tool_input": "Hello world"},
+    )
+    response = orchestrator.run(request)
+
+    assert response.content == "Model generation failed."
+    assert response.metadata == {
+        "policy": "allow",
+        "error": "model_generation_failed",
+    }

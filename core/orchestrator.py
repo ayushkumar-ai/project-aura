@@ -29,6 +29,7 @@ class Orchestrator:
         tool_executor: ToolExecutor | None = None,
         tool_selector: ToolSelector | None = None,
         knowledge: KnowledgeInterface | None = None,
+        synthesize_tool_results: bool = False,
     ):
         self.model = model
         self.policy = policy
@@ -38,6 +39,7 @@ class Orchestrator:
         self.tool_executor = tool_executor
         self.tool_selector = tool_selector
         self.knowledge = knowledge
+        self.synthesize_tool_results = synthesize_tool_results
 
         if self.tool_executor is None and self.tool_selector is not None:
             self.tool_executor = ToolExecutor(
@@ -120,6 +122,57 @@ class Orchestrator:
             tool_input=tool_input,
         )
 
+    def _build_prompt(
+        self,
+        request: AURARequest,
+        context: AURAContext,
+        tool_name: str | None = None,
+        tool_result: str | None = None,
+    ) -> str:
+        """Construct the prompt for model generation, including memory, history, knowledge, and optional tool output."""
+
+        retrieved_knowledge = []
+
+        if self.knowledge is not None:
+            retrieved_knowledge = self.knowledge.retrieve(request.user_input)
+
+        prompt_parts = []
+
+        if "memory" in context.state:
+            prompt_parts.append(f"Memory: {context.state['memory']}")
+
+        if context.history.turns:
+            history_text = "\n".join(
+                (
+                    f"User: {turn.user_input}\n"
+                    f"Assistant: {turn.assistant_output}"
+                )
+                for turn in context.history.turns
+            )
+            prompt_parts.append(f"History:\n{history_text}")
+
+        if retrieved_knowledge:
+            knowledge_text = "\n".join(
+                f"Knowledge: {record.content}\nSource: {record.source}"
+                for record in retrieved_knowledge
+            )
+            prompt_parts.append(knowledge_text)
+
+        if prompt_parts:
+            prompt_parts.append(f"User: {request.user_input}")
+            if tool_name is not None and tool_result is not None:
+                prompt_parts.append(
+                    f"Tool '{tool_name}' Output: {tool_result}"
+                )
+            return "\n".join(prompt_parts)
+        else:
+            if tool_name is not None and tool_result is not None:
+                return (
+                    f"User: {request.user_input}\n"
+                    f"Tool '{tool_name}' Output: {tool_result}"
+                )
+            return request.user_input
+
     def run(self, request: AURARequest) -> AURAResponse:
         """Execute a request through policy, tools, memory, and model layers."""
 
@@ -194,17 +247,75 @@ class Orchestrator:
                             request=request,
                         )
 
-                        if self.history is not None:
-                            self.history.add_turn(
-                                user_input=request.user_input,
-                                assistant_output=tool_result,
-                            )
-
                         logger.info(
                             "Tool '%s' executed successfully for request %s",
                             tool_name,
                             context.request_id,
                         )
+
+                        if self.synthesize_tool_results:
+                            prompt = self._build_prompt(
+                                request=request,
+                                context=context,
+                                tool_name=tool_name,
+                                tool_result=tool_result,
+                            )
+
+                            logger.info(
+                                "Generating synthesized model response for tool '%s' on request %s",
+                                tool_name,
+                                context.request_id,
+                            )
+
+                            try:
+                                response = self.model.generate(
+                                    prompt,
+                                    request_id=context.request_id,
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "Model synthesis failed for request %s",
+                                    context.request_id,
+                                )
+                                return AURAResponse(
+                                    request_id=context.request_id,
+                                    content="Model generation failed.",
+                                    metadata={
+                                        "policy": decision.value,
+                                        "error": "model_generation_failed",
+                                    },
+                                )
+
+                            logger.info(
+                                "Model synthesis succeeded for tool '%s' on request %s",
+                                tool_name,
+                                context.request_id,
+                            )
+
+                            if self.history is not None:
+                                self.history.add_turn(
+                                    user_input=request.user_input,
+                                    assistant_output=response.content,
+                                    tool_name=tool_name,
+                                    tool_result=tool_result,
+                                )
+
+                            return AURAResponse(
+                                request_id=context.request_id,
+                                content=response.content,
+                                metadata={
+                                    **response.metadata,
+                                    "tool": tool_name,
+                                    "policy": decision.value,
+                                    "synthesized": "true",
+                                },
+                            )
+
+                        if self.history is not None:
+                            self.history.add_turn(
+                                user_input=request.user_input,
+                                assistant_output=tool_result,
+                            )
 
                         return AURAResponse(
                             request_id=context.request_id,
@@ -265,40 +376,10 @@ class Orchestrator:
                             },
                         )
 
-        retrieved_knowledge = []
-
-        if self.knowledge is not None:
-            retrieved_knowledge = self.knowledge.retrieve(request.user_input)
-
-        # Default model path.
-        prompt_parts = []
-
-        if "memory" in context.state:
-            prompt_parts.append(f"Memory: {context.state['memory']}")
-
-        if context.history.turns:
-            history_text = "\n".join(
-                (
-                    f"User: {turn.user_input}\n"
-                    f"Assistant: {turn.assistant_output}"
-                )
-                for turn in context.history.turns
-            )
-            prompt_parts.append(f"History:\n{history_text}")
-
-        if retrieved_knowledge:
-            knowledge_text = "\n".join(
-
-                f"Knowledge: {record.content}\nSource: {record.source}"
-                for record in retrieved_knowledge
-            )
-            prompt_parts.append(knowledge_text)
-
-        if prompt_parts:
-            prompt_parts.append(f"User: {request.user_input}")
-            prompt = "\n".join(prompt_parts)
-        else:
-            prompt = request.user_input
+        prompt = self._build_prompt(
+            request=request,
+            context=context,
+        )
 
         logger.info(
             "Generating model response for request %s",

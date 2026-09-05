@@ -41,7 +41,7 @@ def test_conversation_histories_have_independent_turns():
     )
 
     assert len(history_one.turns) == 1
-    assert len(history_two.turns) == 0    
+    assert len(history_two.turns) == 0
 
 
 def test_conversation_history_add_turn():
@@ -54,4 +54,35 @@ def test_conversation_history_add_turn():
 
     assert len(history.turns) == 1
     assert history.turns[0].user_input == "Hello AURA"
-    assert history.turns[0].assistant_output == "Hello!"    
+    assert history.turns[0].assistant_output == "Hello!"
+    assert history.turns[0].tool_name is None
+    assert history.turns[0].tool_result is None
+
+
+def test_conversation_turn_with_tool_observation():
+    turn = ConversationTurn(
+        user_input="calculate 5 + 5",
+        assistant_output="The result is 10.",
+        tool_name="calculator",
+        tool_result="10",
+    )
+
+    assert turn.user_input == "calculate 5 + 5"
+    assert turn.assistant_output == "The result is 10."
+    assert turn.tool_name == "calculator"
+    assert turn.tool_result == "10"
+
+
+def test_conversation_history_add_turn_with_tool_observation():
+    history = ConversationHistory()
+
+    history.add_turn(
+        user_input="calculate 5 + 5",
+        assistant_output="The result is 10.",
+        tool_name="calculator",
+        tool_result="10",
+    )
+
+    assert len(history.turns) == 1
+    assert history.turns[0].tool_name == "calculator"
+    assert history.turns[0].tool_result == "10"
