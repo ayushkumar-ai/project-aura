@@ -11,6 +11,7 @@ from tools.echo import EchoTool
 from core.tool_registry import ToolRegistry
 from interfaces.tool_selector import ToolSelector
 from interfaces.knowledge import KnowledgeInterface
+from interfaces.memory import MemoryInterface
 from knowledge.in_memory import InMemoryKnowledgeStore, KnowledgeRecord
 
 
@@ -1547,3 +1548,127 @@ def test_orchestrator_handles_knowledge_retrieval_failure_during_tool_synthesis(
         "policy": "allow",
         "error": "knowledge_retrieval_failed",
     }
+
+
+def test_orchestrator_handles_memory_store_failure():
+    class FailingMemoryStore(MemoryInterface):
+        def store(self, key: str, value: str) -> None:
+            raise RuntimeError("Memory database disk full")
+
+        def retrieve(self, key: str) -> str | None:
+            return None
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=FailingMemoryStore(),
+    )
+
+    request = AURARequest(user_input="Remember this info")
+    response = orchestrator.run(request)
+
+    assert response.request_id == request.request_id
+    assert response.content == "Memory operation failed."
+    assert response.metadata == {
+        "policy": "allow",
+        "error": "memory_operation_failed",
+    }
+
+
+def test_orchestrator_logs_memory_store_failure(caplog):
+    class FailingMemoryStore(MemoryInterface):
+        def store(self, key: str, value: str) -> None:
+            raise RuntimeError("Memory database connection lost")
+
+        def retrieve(self, key: str) -> str | None:
+            return None
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=FailingMemoryStore(),
+    )
+
+    request = AURARequest(user_input="Remember this info")
+    with caplog.at_level(logging.WARNING, logger="aura.orchestrator"):
+        response = orchestrator.run(request)
+
+    assert response.content == "Memory operation failed."
+    assert f"Memory store failed for request {request.request_id}" in caplog.text
+
+
+def test_orchestrator_handles_memory_retrieval_failure():
+    class FailingMemoryStore(MemoryInterface):
+        def store(self, key: str, value: str) -> None:
+            pass
+
+        def retrieve(self, key: str) -> str | None:
+            raise RuntimeError("Memory database read error")
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=FailingMemoryStore(),
+    )
+
+    request = AURARequest(
+        user_input="What is stored?",
+        metadata={"memory_key": "user_name"},
+    )
+    response = orchestrator.run(request)
+
+    assert response.request_id == request.request_id
+    assert response.content == "Memory operation failed."
+    assert response.metadata == {
+        "policy": "allow",
+        "error": "memory_operation_failed",
+    }
+
+
+def test_orchestrator_logs_memory_retrieval_failure(caplog):
+    class FailingMemoryStore(MemoryInterface):
+        def store(self, key: str, value: str) -> None:
+            pass
+
+        def retrieve(self, key: str) -> str | None:
+            raise RuntimeError("Memory database read error")
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=FailingMemoryStore(),
+    )
+
+    request = AURARequest(
+        user_input="What is stored?",
+        metadata={"memory_key": "user_name"},
+    )
+    with caplog.at_level(logging.WARNING, logger="aura.orchestrator"):
+        response = orchestrator.run(request)
+
+    assert response.content == "Memory operation failed."
+    assert f"Memory retrieval failed for request {request.request_id}" in caplog.text
+
+
+def test_orchestrator_does_not_execute_memory_operations_when_request_is_denied():
+    class FailingMemoryStore(MemoryInterface):
+        def store(self, key: str, value: str) -> None:
+            raise RuntimeError("Should not be called")
+
+        def retrieve(self, key: str) -> str | None:
+            raise RuntimeError("Should not be called")
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=FailingMemoryStore(),
+    )
+
+    request = AURARequest(
+        user_input="   ",
+        metadata={"memory_key": "some_key"},
+    )
+    response = orchestrator.run(request)
+
+    assert response.content == "Request denied by policy."
+    assert response.metadata == {"policy": "deny"}

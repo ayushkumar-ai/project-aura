@@ -70,7 +70,14 @@ class Orchestrator:
             memory_key = request.metadata.get("memory_key")
 
             if memory_key is not None:
-                memory_value = self.memory.retrieve(memory_key)
+                try:
+                    memory_value = self.memory.retrieve(memory_key)
+                except Exception:
+                    logger.warning(
+                        "Memory retrieval failed for request %s",
+                        context.request_id,
+                    )
+                    raise
 
                 if memory_value is not None:
                     context.state["memory"] = memory_value
@@ -195,25 +202,49 @@ class Orchestrator:
 
         logger.info("Received request %s", request.request_id)
 
-        context = self._build_context(request)
-
         decision = self.policy.evaluate(request)
 
         if decision == PolicyDecision.DENY:
-            logger.warning("Request %s denied by policy", context.request_id)
+            logger.warning("Request %s denied by policy", request.request_id)
             return AURAResponse(
-                request_id=context.request_id,
+                request_id=request.request_id,
                 content="Request denied by policy.",
                 metadata={"policy": decision.value},
             )
 
-        logger.info("Request %s allowed by policy", context.request_id)
+        logger.info("Request %s allowed by policy", request.request_id)
+
+        try:
+            context = self._build_context(request)
+        except Exception:
+            return AURAResponse(
+                request_id=request.request_id,
+                content="Memory operation failed.",
+                metadata={
+                    "policy": decision.value,
+                    "error": "memory_operation_failed",
+                },
+            )
 
         if self.memory is not None:
-            self.memory.store(
-                str(request.request_id),
-                request.user_input,
-            )
+            try:
+                self.memory.store(
+                    str(request.request_id),
+                    request.user_input,
+                )
+            except Exception:
+                logger.warning(
+                    "Memory store failed for request %s",
+                    context.request_id,
+                )
+                return AURAResponse(
+                    request_id=context.request_id,
+                    content="Memory operation failed.",
+                    metadata={
+                        "policy": decision.value,
+                        "error": "memory_operation_failed",
+                    },
+                )
 
         if self.tool_executor is not None or self.tool_selector is not None:
             try:
