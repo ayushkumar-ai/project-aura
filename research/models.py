@@ -5,10 +5,10 @@ from urllib.parse import urlparse
 
 
 def _extract_domain(url: str) -> str:
-    """Extract domain from URL if valid, else return empty string."""
+    """Extract domain/hostname from URL if valid, else return empty string."""
     try:
         parsed = urlparse(url)
-        return parsed.netloc or ""
+        return parsed.hostname or parsed.netloc or ""
     except Exception:
         return ""
 
@@ -290,6 +290,7 @@ class ResearchSource:
     rank_score: float = 0.0
     hop: int = 0
     parent_url: str | None = None
+    quality_score: float = 1.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -337,6 +338,224 @@ class ResearchSource:
         if self.parent_url is not None and not isinstance(self.parent_url, str):
             raise TypeError("parent_url must be a string or None.")
 
+        if not isinstance(self.quality_score, (int, float)):
+            raise TypeError("quality_score must be a numeric value.")
+        object.__setattr__(self, "quality_score", float(self.quality_score))
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+        object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
+
+
+@dataclass(frozen=True)
+class ResearchSubQuestion:
+    """Represents a decomposed sub-question derived from a complex research query."""
+
+    sub_question_id: str
+    query: str
+    rationale: str = ""
+    weight: float = 1.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.sub_question_id, str) or not self.sub_question_id.strip():
+            raise ValueError("sub_question_id must be a non-empty string.")
+        object.__setattr__(self, "sub_question_id", self.sub_question_id.strip())
+
+        if not isinstance(self.query, str) or not self.query.strip():
+            raise ValueError("query must be a non-empty string.")
+        object.__setattr__(self, "query", self.query.strip())
+
+        if not isinstance(self.rationale, str):
+            raise TypeError("rationale must be a string.")
+        object.__setattr__(self, "rationale", self.rationale.strip())
+
+        if not isinstance(self.weight, (int, float)) or self.weight <= 0:
+            raise ValueError("weight must be a positive number.")
+        object.__setattr__(self, "weight", float(self.weight))
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+        object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
+
+
+@dataclass(frozen=True)
+class ClaimEvidence:
+    """Associates an evidence passage with a specific claim, source, and stance."""
+
+    source_url: str
+    source_title: str
+    passage: str
+    stance: str = "supports"  # "supports" | "refutes" | "neutral"
+    confidence: float = 1.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.source_url, str) or not self.source_url.strip():
+            raise ValueError("source_url must be a non-empty string.")
+        object.__setattr__(self, "source_url", self.source_url.strip())
+
+        if not isinstance(self.source_title, str):
+            raise TypeError("source_title must be a string.")
+        object.__setattr__(self, "source_title", self.source_title.strip())
+
+        if not isinstance(self.passage, str) or not self.passage.strip():
+            raise ValueError("passage must be a non-empty string.")
+        object.__setattr__(self, "passage", self.passage.strip())
+
+        if not isinstance(self.stance, str) or self.stance not in ("supports", "refutes", "neutral"):
+            raise ValueError("stance must be one of: 'supports', 'refutes', 'neutral'.")
+        object.__setattr__(self, "stance", self.stance.strip())
+
+        if not isinstance(self.confidence, (int, float)) or not (0.0 <= self.confidence <= 1.0):
+            raise ValueError("confidence must be a float between 0.0 and 1.0.")
+        object.__setattr__(self, "confidence", float(self.confidence))
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+        object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
+
+
+@dataclass(frozen=True)
+class ResearchClaim:
+    """Represents an extracted factual claim with supporting and refuting evidence linkages."""
+
+    claim_id: str
+    statement: str
+    sub_question_id: str = ""
+    supporting_sources: tuple[ClaimEvidence, ...] = field(default_factory=tuple)
+    refuting_sources: tuple[ClaimEvidence, ...] = field(default_factory=tuple)
+    consensus_status: str = "supported"  # "supported" | "disputed" | "unverified"
+    confidence_score: float = 1.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.claim_id, str) or not self.claim_id.strip():
+            raise ValueError("claim_id must be a non-empty string.")
+        object.__setattr__(self, "claim_id", self.claim_id.strip())
+
+        if not isinstance(self.statement, str) or not self.statement.strip():
+            raise ValueError("statement must be a non-empty string.")
+        object.__setattr__(self, "statement", self.statement.strip())
+
+        if not isinstance(self.sub_question_id, str):
+            raise TypeError("sub_question_id must be a string.")
+        object.__setattr__(self, "sub_question_id", self.sub_question_id.strip())
+
+        if isinstance(self.supporting_sources, (list, tuple)):
+            for ev in self.supporting_sources:
+                if not isinstance(ev, ClaimEvidence):
+                    raise TypeError("All items in supporting_sources must be ClaimEvidence instances.")
+            object.__setattr__(self, "supporting_sources", tuple(self.supporting_sources))
+        else:
+            raise TypeError("supporting_sources must be a list or tuple of ClaimEvidence instances.")
+
+        if isinstance(self.refuting_sources, (list, tuple)):
+            for ev in self.refuting_sources:
+                if not isinstance(ev, ClaimEvidence):
+                    raise TypeError("All items in refuting_sources must be ClaimEvidence instances.")
+            object.__setattr__(self, "refuting_sources", tuple(self.refuting_sources))
+        else:
+            raise TypeError("refuting_sources must be a list or tuple of ClaimEvidence instances.")
+
+        if not isinstance(self.consensus_status, str) or self.consensus_status not in ("supported", "disputed", "unverified"):
+            raise ValueError("consensus_status must be one of: 'supported', 'disputed', 'unverified'.")
+        object.__setattr__(self, "consensus_status", self.consensus_status.strip())
+
+        if not isinstance(self.confidence_score, (int, float)) or not (0.0 <= self.confidence_score <= 1.0):
+            raise ValueError("confidence_score must be a float between 0.0 and 1.0.")
+        object.__setattr__(self, "confidence_score", float(self.confidence_score))
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+        object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
+
+    @property
+    def total_sources_count(self) -> int:
+        """Return total distinct sources referencing this claim."""
+        seen = {ev.source_url for ev in self.supporting_sources} | {ev.source_url for ev in self.refuting_sources}
+        return len(seen)
+
+
+@dataclass(frozen=True)
+class CitationValidationResult:
+    """Outcome of citation verification against retrieved research sources."""
+
+    is_valid: bool
+    total_citations_found: int
+    valid_citations: tuple[int, ...] = field(default_factory=tuple)
+    invalid_citations: tuple[int, ...] = field(default_factory=tuple)
+    unreferenced_sources: tuple[int, ...] = field(default_factory=tuple)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.is_valid, bool):
+            raise TypeError("is_valid must be a boolean.")
+
+        if not isinstance(self.total_citations_found, int) or self.total_citations_found < 0:
+            raise ValueError("total_citations_found must be a non-negative integer.")
+
+        if isinstance(self.valid_citations, (list, tuple)):
+            for c in self.valid_citations:
+                if not isinstance(c, int) or c <= 0:
+                    raise ValueError("All valid_citations must be positive integers.")
+            object.__setattr__(self, "valid_citations", tuple(self.valid_citations))
+        else:
+            raise TypeError("valid_citations must be a sequence of positive integers.")
+
+        if isinstance(self.invalid_citations, (list, tuple)):
+            for c in self.invalid_citations:
+                if not isinstance(c, int) or c <= 0:
+                    raise ValueError("All invalid_citations must be positive integers.")
+            object.__setattr__(self, "invalid_citations", tuple(self.invalid_citations))
+        else:
+            raise TypeError("invalid_citations must be a sequence of positive integers.")
+
+        if isinstance(self.unreferenced_sources, (list, tuple)):
+            for c in self.unreferenced_sources:
+                if not isinstance(c, int) or c <= 0:
+                    raise ValueError("All unreferenced_sources must be positive integers.")
+            object.__setattr__(self, "unreferenced_sources", tuple(self.unreferenced_sources))
+        else:
+            raise TypeError("unreferenced_sources must be a sequence of positive integers.")
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+        object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
+
+    @property
+    def has_hallucinated_citations(self) -> bool:
+        """Check if any invalid or out-of-bounds citations were detected."""
+        return len(self.invalid_citations) > 0
+
+
+@dataclass(frozen=True)
+class ResearchConfidence:
+    """Aggregate confidence and coverage signals for a research operation."""
+
+    overall_score: float  # 0.0 to 1.0
+    coverage_ratio: float  # Sub-questions covered / total sub-questions
+    source_diversity_score: float  # Distinct domains ratio
+    evidence_density: float  # Average evidence items per source
+    contradiction_penalty: float = 0.0  # Deduction for unresolved contradictions
+    citation_validity_score: float = 1.0  # Ratio of valid citations
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        for field_name in ("overall_score", "coverage_ratio", "source_diversity_score", "citation_validity_score"):
+            val = getattr(self, field_name)
+            if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
+                raise ValueError(f"{field_name} must be a float between 0.0 and 1.0.")
+            object.__setattr__(self, field_name, float(val))
+
+        if not isinstance(self.evidence_density, (int, float)) or self.evidence_density < 0:
+            raise ValueError("evidence_density must be a non-negative float.")
+        object.__setattr__(self, "evidence_density", float(self.evidence_density))
+
+        if not isinstance(self.contradiction_penalty, (int, float)) or self.contradiction_penalty < 0:
+            raise ValueError("contradiction_penalty must be a non-negative float.")
+        object.__setattr__(self, "contradiction_penalty", float(self.contradiction_penalty))
+
         if not isinstance(self.metadata, dict):
             raise TypeError("metadata must be a dict.")
         object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
@@ -344,7 +563,7 @@ class ResearchSource:
 
 @dataclass(frozen=True)
 class ResearchReport:
-    """Aggregated outcome of a research operation with full source, evidence, and traversal attribution."""
+    """Aggregated outcome of a research operation with full source, evidence, claim, and traversal attribution."""
 
     query: str
     sources: tuple[ResearchSource, ...] = field(default_factory=tuple)
@@ -354,6 +573,11 @@ class ResearchReport:
     contradictions: tuple[EvidenceConflict, ...] = field(default_factory=tuple)
     discovered_links: tuple[DiscoveredLink, ...] = field(default_factory=tuple)
     traversal_stats: dict[str, Any] = field(default_factory=dict)
+    # M9.6 additions (default empty / None for backward compatibility)
+    sub_questions: tuple[ResearchSubQuestion, ...] = field(default_factory=tuple)
+    claims: tuple[ResearchClaim, ...] = field(default_factory=tuple)
+    confidence: ResearchConfidence | None = None
+    citation_validation: CitationValidationResult | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -408,6 +632,28 @@ class ResearchReport:
             raise TypeError("traversal_stats must be a dict.")
         object.__setattr__(self, "traversal_stats", _sanitize_metadata(self.traversal_stats))
 
+        if isinstance(self.sub_questions, (list, tuple)):
+            for sq in self.sub_questions:
+                if not isinstance(sq, ResearchSubQuestion):
+                    raise TypeError("All items in sub_questions must be ResearchSubQuestion instances.")
+            object.__setattr__(self, "sub_questions", tuple(self.sub_questions))
+        else:
+            raise TypeError("sub_questions must be a list or tuple of ResearchSubQuestion instances.")
+
+        if isinstance(self.claims, (list, tuple)):
+            for cl in self.claims:
+                if not isinstance(cl, ResearchClaim):
+                    raise TypeError("All items in claims must be ResearchClaim instances.")
+            object.__setattr__(self, "claims", tuple(self.claims))
+        else:
+            raise TypeError("claims must be a list or tuple of ResearchClaim instances.")
+
+        if self.confidence is not None and not isinstance(self.confidence, ResearchConfidence):
+            raise TypeError("confidence must be an instance of ResearchConfidence or None.")
+
+        if self.citation_validation is not None and not isinstance(self.citation_validation, CitationValidationResult):
+            raise TypeError("citation_validation must be an instance of CitationValidationResult or None.")
+
         if not isinstance(self.metadata, dict):
             raise TypeError("metadata must be a dict.")
         object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
@@ -421,6 +667,11 @@ class ResearchReport:
     def has_contradictions(self) -> bool:
         """Check if any potential evidence contradictions were detected."""
         return len(self.contradictions) > 0
+
+    @property
+    def has_claims(self) -> bool:
+        """Check if any structured research claims were extracted."""
+        return len(self.claims) > 0
 
     def format_citations(self) -> str:
         """Format source citations for prompt injection or report rendering."""
@@ -437,4 +688,14 @@ class ResearchReport:
         lines = []
         for idx, ev in enumerate(self.evidence, 1):
             lines.append(f"[{idx}] ({ev.source_title}) {ev.content}")
+        return "\n".join(lines)
+
+    def format_claims_summary(self) -> str:
+        """Format structured factual claims and consensus statuses."""
+        if not self.claims:
+            return "No structured claims extracted."
+        lines = []
+        for idx, cl in enumerate(self.claims, 1):
+            status_tag = f"[{cl.consensus_status.upper()}]"
+            lines.append(f"{idx}. {status_tag} {cl.statement} (Sources: {cl.total_sources_count})")
         return "\n".join(lines)

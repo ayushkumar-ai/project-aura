@@ -6,7 +6,7 @@ from research.service import ResearchService
 
 
 class WebSearchTool(ToolInterface):
-    """Tool enabling AURA skills and agents to perform controlled web research."""
+    """Tool enabling AURA skills and agents to perform controlled web research with deep research intelligence."""
 
     def __init__(self, service: ResearchService):
         if not isinstance(service, ResearchService):
@@ -19,11 +19,11 @@ class WebSearchTool(ToolInterface):
 
     @property
     def description(self) -> str:
-        return "Search the web for up-to-date information and research sources."
+        return "Search the web for up-to-date information, research sources, and structured evidence."
 
     @property
     def keywords(self) -> tuple[str, ...]:
-        return ("search", "web", "research", "lookup", "find", "browser", "crawler")
+        return ("search", "web", "research", "lookup", "find", "browser", "crawler", "deep_research")
 
     def execute(self, input_data: str) -> str:
         if not isinstance(input_data, str) or not input_data.strip():
@@ -36,6 +36,9 @@ class WebSearchTool(ToolInterface):
         multi_hop = False
         max_hops = 2
         max_pages = 6
+        deep_research = False
+        decompose = False
+        max_sub_questions = 3
 
         # Check if input is structured JSON
         if query.startswith("{") and query.endswith("}"):
@@ -58,6 +61,12 @@ class WebSearchTool(ToolInterface):
                         max_hops = int(parsed["max_hops"])
                     if "max_pages" in parsed:
                         max_pages = int(parsed["max_pages"])
+                    if "deep_research" in parsed:
+                        deep_research = bool(parsed["deep_research"])
+                    if "decompose" in parsed:
+                        decompose = bool(parsed["decompose"])
+                    if "max_sub_questions" in parsed:
+                        max_sub_questions = int(parsed["max_sub_questions"])
             except Exception:
                 pass  # Fall back to treating as raw query string
 
@@ -69,6 +78,9 @@ class WebSearchTool(ToolInterface):
             multi_hop=multi_hop,
             max_hops=max_hops,
             max_pages=max_pages,
+            deep_research=deep_research,
+            decompose=decompose,
+            max_sub_questions=max_sub_questions,
         )
 
         sources_data = []
@@ -80,6 +92,7 @@ class WebSearchTool(ToolInterface):
                 "content": src.content,
                 "domain": src.source_domain,
                 "rank_score": src.rank_score,
+                "quality_score": src.quality_score,
                 "hop": src.hop,
                 "parent_url": src.parent_url,
             })
@@ -123,6 +136,34 @@ class WebSearchTool(ToolInterface):
                 "hop": dl.hop,
             })
 
+        sub_q_data = []
+        for sq in report.sub_questions:
+            sub_q_data.append({
+                "sub_question_id": sq.sub_question_id,
+                "query": sq.query,
+                "rationale": sq.rationale,
+            })
+
+        claims_data = []
+        for cl in report.claims:
+            claims_data.append({
+                "claim_id": cl.claim_id,
+                "statement": cl.statement,
+                "consensus_status": cl.consensus_status,
+                "confidence_score": cl.confidence_score,
+                "sources_count": cl.total_sources_count,
+            })
+
+        confidence_data = None
+        if report.confidence is not None:
+            confidence_data = {
+                "overall_score": report.confidence.overall_score,
+                "coverage_ratio": report.confidence.coverage_ratio,
+                "source_diversity_score": report.confidence.source_diversity_score,
+                "evidence_density": report.confidence.evidence_density,
+                "contradiction_penalty": report.confidence.contradiction_penalty,
+            }
+
         return json.dumps({
             "query": report.query,
             "sources": sources_data,
@@ -130,6 +171,9 @@ class WebSearchTool(ToolInterface):
             "evidence": evidence_data,
             "contradictions": contradictions_data,
             "discovered_links": links_data,
+            "sub_questions": sub_q_data,
+            "claims": claims_data,
+            "confidence": confidence_data,
             "traversal_stats": report.traversal_stats,
             "total_sources": len(sources_data),
         })

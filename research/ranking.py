@@ -16,6 +16,10 @@ STOP_WORDS = frozenset({
     "why", "with", "would", "you", "your", "yours", "yourself", "yourselves"
 })
 
+AUTHORITATIVE_TLDS = frozenset({".gov", ".edu", ".mil", ".ac.uk", ".gov.uk", ".org"})
+DOCS_KEYWORDS = frozenset({"docs", "documentation", "guide", "manual", "spec", "specification", "rfc", "arxiv", "developer", "api"})
+LOW_QUALITY_INDICATORS = frozenset({"spam", "promoted", "sponsored", "adclick", "affiliate", "popup", "track"})
+
 
 def _extract_query_keywords(query: str) -> list[str]:
     """Extract distinct meaningful lowercase search tokens from query."""
@@ -23,12 +27,57 @@ def _extract_query_keywords(query: str) -> list[str]:
     return [t for t in tokens if t not in STOP_WORDS and len(t) > 1]
 
 
+def evaluate_source_quality(source: ResearchSource) -> float:
+    """Deterministically evaluate the quality, domain authority, and credibility of a ResearchSource."""
+    if not isinstance(source, ResearchSource):
+        raise TypeError("source must be a ResearchSource instance.")
+
+    if source.status != "success":
+        return 0.0
+
+    domain = (source.source_domain or "").lower().strip()
+    url = source.url.lower().strip()
+    content = source.content or source.snippet or ""
+
+    quality = 1.0
+
+    # 1. Domain Authority Signals
+    if any(domain.endswith(tld) for tld in AUTHORITATIVE_TLDS):
+        quality += 0.5
+
+    if any(kw in domain or kw in url for kw in DOCS_KEYWORDS):
+        quality += 0.4
+
+    # 2. Content Substance Signals
+    content_len = len(content.strip())
+    if content_len >= 500:
+        quality += 0.3
+    elif content_len >= 200:
+        quality += 0.15
+    elif content_len < 40:
+        quality -= 0.4
+
+    if source.title and source.title.lower() != "untitled" and len(source.title) > 5:
+        quality += 0.2
+
+    # 3. Low-Quality & Spam Signals
+    if any(ind in url for ind in LOW_QUALITY_INDICATORS):
+        quality -= 0.6
+
+    # 4. Freshness hints
+    current_year_str = "2026"
+    if current_year_str in content or current_year_str in url or "2025" in content:
+        quality += 0.2
+
+    return max(round(quality, 4), 0.1)
+
+
 def score_search_item(item: SearchItem, query: str, position_index: int = 0) -> float:
     """Deterministically score a SearchItem based on provider position and keyword relevance."""
     if not isinstance(item, SearchItem):
         raise TypeError("item must be a SearchItem instance.")
 
-    # 1. Base position score (earlier positions get higher initial weight from search engine)
+    # 1. Base position score
     base_pos = 3.0 / (1.0 + 0.5 * position_index)
 
     # 2. Keyword relevance
@@ -61,7 +110,6 @@ def rank_search_items(items: Sequence[SearchItem], query: str) -> list[SearchIte
     scored_items: list[tuple[float, str, str, SearchItem]] = []
     for idx, item in enumerate(items):
         score = score_search_item(item, query, position_index=idx)
-        # Tie break on -score, url, title for deterministic repeatability
         scored_items.append((-score, item.url, item.title, item))
 
     scored_items.sort(key=lambda x: (x[0], x[1], x[2]))
@@ -74,14 +122,14 @@ def score_research_source(
     position_index: int = 0,
     domain_counts: dict[str, int] | None = None,
 ) -> float:
-    """Deterministically score a ResearchSource based on relevance, content quality, and domain diversity."""
+    """Deterministically score a ResearchSource based on relevance, quality, and domain diversity."""
     if not isinstance(source, ResearchSource):
         raise TypeError("source must be a ResearchSource instance.")
 
     if source.status != "success":
         return 0.0
 
-    # 1. Base position factor (provider search rank has prominent baseline weight)
+    # 1. Base position factor
     base_pos = 3.0 / (1.0 + 0.6 * position_index)
 
     # 2. Keyword relevance in title, snippet, and content
@@ -102,28 +150,21 @@ def score_research_source(
 
         kw_score = (title_ratio * 2.0) + (snippet_ratio * 0.8) + (content_ratio * 1.5)
 
-    # 3. Content quality signals
-    content_len = len(source.content)
-    quality_score = 0.0
-    if content_len >= 50:
-        quality_score += 0.5
-    if content_len >= 300:
-        quality_score += 0.5
-    if source.title and source.title.lower() != "untitled":
-        quality_score += 0.3
+    # 3. Quality evaluation factor
+    quality_val = evaluate_source_quality(source)
 
-    # 4. Domain diversity balancing (slight decay for repeated domains)
+    # 4. Domain diversity balancing
     domain_decay = 1.0
     if domain_counts is not None and source.source_domain:
         seen = domain_counts.get(source.source_domain, 0)
         domain_decay = 1.0 / (1.0 + 0.25 * seen)
 
-    total_score = (base_pos + kw_score + quality_score) * domain_decay
+    total_score = (base_pos + kw_score + (quality_val * 0.5)) * domain_decay
     return round(total_score, 4)
 
 
 def rank_research_sources(sources: Sequence[ResearchSource], query: str) -> list[ResearchSource]:
-    """Deterministically rank a collection of ResearchSource objects, setting rank_score and tie-breaking."""
+    """Deterministically rank a collection of ResearchSource objects, setting rank_score and quality_score."""
     if not isinstance(sources, (list, tuple)):
         raise TypeError("sources must be a list or tuple of ResearchSource instances.")
 
@@ -132,10 +173,10 @@ def rank_research_sources(sources: Sequence[ResearchSource], query: str) -> list
 
     for idx, src in enumerate(sources):
         score = score_research_source(src, query, position_index=idx, domain_counts=domain_counts)
+        q_score = evaluate_source_quality(src)
         if src.source_domain:
             domain_counts[src.source_domain] = domain_counts.get(src.source_domain, 0) + 1
 
-        # Return updated ResearchSource with computed rank_score
         ranked_src = ResearchSource(
             url=src.url,
             title=src.title,
@@ -148,6 +189,7 @@ def rank_research_sources(sources: Sequence[ResearchSource], query: str) -> list
             rank_score=score,
             hop=src.hop,
             parent_url=src.parent_url,
+            quality_score=q_score,
             metadata=dict(src.metadata),
         )
         scored_sources.append((-score, ranked_src.url, ranked_src.title, ranked_src))
