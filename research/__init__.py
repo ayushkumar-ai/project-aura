@@ -1,19 +1,26 @@
+from research.contradictions import detect_contradictions
+from research.evidence import extract_evidence_from_text, extract_source_evidence
 from research.extractor import HTMLTextExtractor, extract_text_and_title_from_html
 from research.interfaces import FetchProvider, SearchProvider, WebProvider
 from research.models import (
+    EvidenceConflict,
+    EvidenceItem,
     ResearchReport,
     ResearchSource,
     SearchItem,
     SearchResult,
     WebDocument,
 )
-from research.providers.factory import create_fetch_provider, create_search_provider
-from research.providers.generic_http import GenericHttpSearchProvider
-from research.providers.http_fetch import HttpFetchProvider
-from research.providers.tavily import TavilySearchProvider
+from research.ranking import (
+    rank_research_sources,
+    rank_search_items,
+    score_research_source,
+    score_search_item,
+)
 from research.service import ResearchService
 from research.skill import create_research_skill
 from research.tool import WebSearchTool
+from research.url_utils import deduplicate_urls, normalize_url
 
 __all__ = [
     "SearchProvider",
@@ -22,16 +29,22 @@ __all__ = [
     "SearchItem",
     "SearchResult",
     "WebDocument",
+    "EvidenceItem",
+    "EvidenceConflict",
     "ResearchSource",
     "ResearchReport",
+    "HTMLTextExtractor",
+    "extract_text_and_title_from_html",
+    "normalize_url",
+    "deduplicate_urls",
+    "score_search_item",
+    "rank_search_items",
+    "score_research_source",
+    "rank_research_sources",
+    "extract_evidence_from_text",
+    "extract_source_evidence",
+    "detect_contradictions",
     "ResearchService",
     "WebSearchTool",
     "create_research_skill",
-    "create_search_provider",
-    "create_fetch_provider",
-    "HttpFetchProvider",
-    "TavilySearchProvider",
-    "GenericHttpSearchProvider",
-    "HTMLTextExtractor",
-    "extract_text_and_title_from_html",
 ]

@@ -139,6 +139,89 @@ class WebDocument:
 
 
 @dataclass(frozen=True)
+class EvidenceItem:
+    """Represents an extracted, bounded piece of evidence from a specific research source."""
+
+    source_url: str
+    source_title: str
+    source_domain: str
+    content: str
+    relevance_score: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.source_url, str) or not self.source_url.strip():
+            raise ValueError("source_url must be a non-empty string.")
+        url_clean = self.source_url.strip()
+        if not (url_clean.startswith("http://") or url_clean.startswith("https://")):
+            raise ValueError(f"Invalid URL scheme in '{url_clean}'. Must start with http:// or https://.")
+        object.__setattr__(self, "source_url", url_clean)
+
+        if not isinstance(self.source_title, str):
+            raise TypeError("source_title must be a string.")
+        object.__setattr__(self, "source_title", self.source_title.strip())
+
+        if not isinstance(self.source_domain, str):
+            raise TypeError("source_domain must be a string.")
+        domain = self.source_domain.strip() if self.source_domain else _extract_domain(url_clean)
+        object.__setattr__(self, "source_domain", domain)
+
+        if not isinstance(self.content, str) or not self.content.strip():
+            raise ValueError("content must be a non-empty string.")
+        object.__setattr__(self, "content", self.content.strip())
+
+        if not isinstance(self.relevance_score, (int, float)):
+            raise TypeError("relevance_score must be a numeric value.")
+        object.__setattr__(self, "relevance_score", float(self.relevance_score))
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+        object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
+
+
+@dataclass(frozen=True)
+class EvidenceConflict:
+    """Represents a potential factual or metric contradiction identified across research sources."""
+
+    claim: str
+    source_a_url: str
+    source_a_evidence: str
+    source_b_url: str
+    source_b_evidence: str
+    conflict_type: str = "divergent_claim"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.claim, str) or not self.claim.strip():
+            raise ValueError("claim must be a non-empty string.")
+        object.__setattr__(self, "claim", self.claim.strip())
+
+        if not isinstance(self.source_a_url, str) or not self.source_a_url.strip():
+            raise ValueError("source_a_url must be a non-empty string.")
+        object.__setattr__(self, "source_a_url", self.source_a_url.strip())
+
+        if not isinstance(self.source_a_evidence, str) or not self.source_a_evidence.strip():
+            raise ValueError("source_a_evidence must be a non-empty string.")
+        object.__setattr__(self, "source_a_evidence", self.source_a_evidence.strip())
+
+        if not isinstance(self.source_b_url, str) or not self.source_b_url.strip():
+            raise ValueError("source_b_url must be a non-empty string.")
+        object.__setattr__(self, "source_b_url", self.source_b_url.strip())
+
+        if not isinstance(self.source_b_evidence, str) or not self.source_b_evidence.strip():
+            raise ValueError("source_b_evidence must be a non-empty string.")
+        object.__setattr__(self, "source_b_evidence", self.source_b_evidence.strip())
+
+        if not isinstance(self.conflict_type, str) or not self.conflict_type.strip():
+            raise ValueError("conflict_type must be a non-empty string.")
+        object.__setattr__(self, "conflict_type", self.conflict_type.strip())
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+        object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
+
+
+@dataclass(frozen=True)
 class ResearchSource:
     """Represents a verified source utilized for research and attribution."""
 
@@ -149,6 +232,8 @@ class ResearchSource:
     status: str = "success"  # "success" | "failed" | "skipped"
     error: str | None = None
     source_domain: str = ""
+    evidence: tuple[EvidenceItem, ...] = field(default_factory=tuple)
+    rank_score: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -178,6 +263,18 @@ class ResearchSource:
         domain = self.source_domain.strip() if self.source_domain else _extract_domain(url_clean)
         object.__setattr__(self, "source_domain", domain)
 
+        if isinstance(self.evidence, (list, tuple)):
+            for ev in self.evidence:
+                if not isinstance(ev, EvidenceItem):
+                    raise TypeError("All items in evidence must be EvidenceItem instances.")
+            object.__setattr__(self, "evidence", tuple(self.evidence))
+        else:
+            raise TypeError("evidence must be a list or tuple of EvidenceItem instances.")
+
+        if not isinstance(self.rank_score, (int, float)):
+            raise TypeError("rank_score must be a numeric value.")
+        object.__setattr__(self, "rank_score", float(self.rank_score))
+
         if not isinstance(self.metadata, dict):
             raise TypeError("metadata must be a dict.")
         object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
@@ -185,12 +282,14 @@ class ResearchSource:
 
 @dataclass(frozen=True)
 class ResearchReport:
-    """Aggregated outcome of a research operation with full source attribution."""
+    """Aggregated outcome of a research operation with full source and evidence attribution."""
 
     query: str
     sources: tuple[ResearchSource, ...] = field(default_factory=tuple)
     failed_sources: tuple[ResearchSource, ...] = field(default_factory=tuple)
     summary: str | None = None
+    evidence: tuple[EvidenceItem, ...] = field(default_factory=tuple)
+    contradictions: tuple[EvidenceConflict, ...] = field(default_factory=tuple)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -217,6 +316,22 @@ class ResearchReport:
         if self.summary is not None and not isinstance(self.summary, str):
             raise TypeError("summary must be a string or None.")
 
+        if isinstance(self.evidence, (list, tuple)):
+            for ev in self.evidence:
+                if not isinstance(ev, EvidenceItem):
+                    raise TypeError("All items in evidence must be EvidenceItem instances.")
+            object.__setattr__(self, "evidence", tuple(self.evidence))
+        else:
+            raise TypeError("evidence must be a list or tuple of EvidenceItem instances.")
+
+        if isinstance(self.contradictions, (list, tuple)):
+            for ct in self.contradictions:
+                if not isinstance(ct, EvidenceConflict):
+                    raise TypeError("All items in contradictions must be EvidenceConflict instances.")
+            object.__setattr__(self, "contradictions", tuple(self.contradictions))
+        else:
+            raise TypeError("contradictions must be a list or tuple of EvidenceConflict instances.")
+
         if not isinstance(self.metadata, dict):
             raise TypeError("metadata must be a dict.")
         object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
@@ -226,9 +341,23 @@ class ResearchReport:
         """Check if any successful sources are available."""
         return len(self.sources) > 0
 
+    @property
+    def has_contradictions(self) -> bool:
+        """Check if any potential evidence contradictions were detected."""
+        return len(self.contradictions) > 0
+
     def format_citations(self) -> str:
         """Format source citations for prompt injection or report rendering."""
         lines = []
         for idx, src in enumerate(self.sources, 1):
             lines.append(f"[{idx}] {src.title} - {src.url}")
+        return "\n".join(lines)
+
+    def format_evidence_summary(self) -> str:
+        """Format bounded evidence passages with source linkage."""
+        if not self.evidence:
+            return "No specific evidence passages extracted."
+        lines = []
+        for idx, ev in enumerate(self.evidence, 1):
+            lines.append(f"[{idx}] ({ev.source_title}) {ev.content}")
         return "\n".join(lines)

@@ -61,6 +61,7 @@ class WebSearchTool(ToolInterface):
                 "snippet": src.snippet,
                 "content": src.content,
                 "domain": src.source_domain,
+                "rank_score": src.rank_score,
             })
 
         failed_data = []
@@ -71,9 +72,32 @@ class WebSearchTool(ToolInterface):
                 "error": fsrc.error,
             })
 
+        evidence_data = []
+        for ev in report.evidence:
+            evidence_data.append({
+                "source_url": ev.source_url,
+                "source_title": ev.source_title,
+                "source_domain": ev.source_domain,
+                "content": ev.content,
+                "relevance_score": ev.relevance_score,
+            })
+
+        contradictions_data = []
+        for ct in report.contradictions:
+            contradictions_data.append({
+                "claim": ct.claim,
+                "source_a_url": ct.source_a_url,
+                "source_a_evidence": ct.source_a_evidence,
+                "source_b_url": ct.source_b_url,
+                "source_b_evidence": ct.source_b_evidence,
+                "conflict_type": ct.conflict_type,
+            })
+
         return json.dumps({
             "query": report.query,
             "sources": sources_data,
             "failed_sources": failed_data,
+            "evidence": evidence_data,
+            "contradictions": contradictions_data,
             "total_sources": len(sources_data),
         })
