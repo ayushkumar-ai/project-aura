@@ -193,13 +193,19 @@ class TaskPlanner:
             if not isinstance(metadata, dict):
                 raise ValueError(f"Metadata for step '{step_id}' must be a dictionary.")
 
+            # Model Plan Safety: Strip any untrusted model-supplied approval/permission claims
+            clean_metadata = {
+                k: v for k, v in metadata.items()
+                if k.lower() not in ("approved", "approval_status", "is_approved", "auto_approve", "permission")
+            }
+
             plan_steps.append(
                 PlanStep(
                     step_id=step_id,
                     skill_name=skill_name,
                     input_data=input_data,
                     dependencies=tuple(dependencies),
-                    metadata=metadata,
+                    metadata=clean_metadata,
                 )
             )
 

@@ -1,3 +1,10 @@
+from core.approval import (
+    ApprovalDecision,
+    ApprovalDecisionType,
+    ApprovalGateway,
+    ApprovalRequest,
+    ApprovalStatus,
+)
 from core.task_state import StepState, StepStatus, TaskState, TaskStatus
 from core.task_state_store import InMemoryTaskStateStore, TaskStateStore
 from core.workflow_executor import WorkflowExecutor, WorkflowResult
@@ -11,4 +18,9 @@ __all__ = [
     "TaskState",
     "TaskStateStore",
     "InMemoryTaskStateStore",
+    "ApprovalGateway",
+    "ApprovalRequest",
+    "ApprovalDecision",
+    "ApprovalDecisionType",
+    "ApprovalStatus",
 ]

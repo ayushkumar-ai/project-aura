@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from core.agent_runtime import AgentRequest, AgentResult, AgentRuntime
+from core.approval import ApprovalDecisionType, ApprovalGateway, ApprovalRequest
 from core.task_planner import ExecutionPlan, PlanStep, TaskPlanner
 from core.task_state import StepState, StepStatus, TaskState, TaskStatus
 from core.task_state_store import TaskStateStore
@@ -24,17 +25,19 @@ class WorkflowResult:
     final_output: Any = None
     error: str | None = None
     task_id: str | None = None
+    approval_request: ApprovalRequest | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class WorkflowExecutor:
-    """Executes multi-step ExecutionPlans using AgentRuntime and optional TaskStateStore."""
+    """Executes multi-step ExecutionPlans using AgentRuntime, optional TaskStateStore, and ApprovalGateway."""
 
     def __init__(
         self,
         runtime: AgentRuntime,
         planner: TaskPlanner | None = None,
         state_store: TaskStateStore | None = None,
+        approval_gateway: ApprovalGateway | None = None,
     ):
         if not isinstance(runtime, AgentRuntime):
             raise TypeError("runtime must be an instance of AgentRuntime.")
@@ -45,9 +48,13 @@ class WorkflowExecutor:
         if state_store is not None and not isinstance(state_store, TaskStateStore):
             raise TypeError("state_store must be an instance of TaskStateStore or None.")
 
+        if approval_gateway is not None and not isinstance(approval_gateway, ApprovalGateway):
+            raise TypeError("approval_gateway must be an instance of ApprovalGateway or None.")
+
         self.runtime = runtime
         self.planner = planner if planner is not None else TaskPlanner(runtime.skill_registry)
         self.state_store = state_store
+        self.approval_gateway = approval_gateway
 
     def _resolve_step_input(
         self,
@@ -84,7 +91,7 @@ class WorkflowExecutor:
         task_id: str | None = None,
         timeout: float | None = None,
     ) -> WorkflowResult:
-        """Execute an ExecutionPlan in dependency order with optional state persistence."""
+        """Execute an ExecutionPlan in dependency order with optional state persistence and approval gating."""
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("plan must be an instance of ExecutionPlan.")
 
@@ -197,6 +204,70 @@ class WorkflowExecutor:
                         failed_step_id=step.step_id,
                         error=f"Prerequisite step '{dep}' failed for step '{step.step_id}'.",
                         task_id=actual_task_id,
+                    )
+
+            # Approval Gateway Evaluation
+            if self.approval_gateway is not None:
+                eval_task_id = actual_task_id or "ephemeral_task"
+                decision = self.approval_gateway.evaluate_step(step, plan, eval_task_id)
+
+                if decision.is_denied:
+                    logger.warning(
+                        "Step '%s' denied by approval gateway: %s",
+                        step.step_id,
+                        decision.reason,
+                    )
+                    if task_state is not None:
+                        task_state.step_states[step.step_id].status = StepStatus.FAILED
+                        task_state.step_states[step.step_id].error = decision.reason
+                        for remaining_step in ordered_steps:
+                            if remaining_step.step_id != step.step_id:
+                                rem_st = task_state.step_states.get(remaining_step.step_id)
+                                if rem_st and rem_st.status == StepStatus.NOT_STARTED:
+                                    rem_st.status = StepStatus.SKIPPED
+                        task_state.status = TaskStatus.FAILED
+                        task_state.failed_step_id = step.step_id
+                        task_state.error = decision.reason
+                        self.state_store.save(task_state)
+
+                    return WorkflowResult(
+                        success=False,
+                        plan_id=plan.plan_id,
+                        step_results=step_results,
+                        executed_steps=executed_steps,
+                        failed_step_id=step.step_id,
+                        error=decision.reason,
+                        task_id=actual_task_id,
+                        approval_request=decision.approval_request,
+                        metadata={"denied": True},
+                    )
+
+                elif decision.requires_approval:
+                    logger.info(
+                        "Step '%s' requires approval: %s",
+                        step.step_id,
+                        decision.reason,
+                    )
+                    if task_state is not None:
+                        task_state.status = TaskStatus.PAUSED
+                        task_state.metadata["approval_required"] = True
+                        if decision.approval_request is not None:
+                            task_state.metadata["approval_id"] = decision.approval_request.approval_id
+                        self.state_store.save(task_state)
+
+                    return WorkflowResult(
+                        success=False,
+                        plan_id=plan.plan_id,
+                        step_results=step_results,
+                        executed_steps=executed_steps,
+                        failed_step_id=step.step_id,
+                        error=f"Step '{step.step_id}' requires approval: {decision.reason}",
+                        task_id=actual_task_id,
+                        approval_request=decision.approval_request,
+                        metadata={
+                            "approval_required": True,
+                            "approval_id": decision.approval_request.approval_id if decision.approval_request else None,
+                        },
                     )
 
             # Resolve input
