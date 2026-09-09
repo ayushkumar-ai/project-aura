@@ -6,11 +6,37 @@ from uuid import UUID, uuid4
 
 from core.agent_runtime import AgentRequest, AgentResult, AgentRuntime
 from core.approval import ApprovalDecisionType, ApprovalGateway, ApprovalRequest
-from core.task_planner import ExecutionPlan, PlanStep, TaskPlanner
+from core.task_planner import ExecutionPlan, PlanStep, ReplanContext, TaskPlanner
 from core.task_state import StepState, StepStatus, TaskState, TaskStatus
 from core.task_state_store import TaskStateStore
 
 logger = logging.getLogger("aura.workflow_executor")
+
+
+def is_recoverable_failure(agent_result: AgentResult | None = None, error: str | None = None) -> bool:
+    """Check whether an execution failure is potentially recoverable via adaptive re-planning."""
+    err_text = error
+    if err_text is None and agent_result is not None:
+        err_text = agent_result.error
+
+    if not err_text:
+        return True
+
+    err_lower = err_text.lower()
+    non_recoverable_markers = [
+        "not authorized",
+        "denied by policy",
+        "permissionerror",
+        "approval rejected",
+        "security review denied",
+        "unauthorized",
+        "denied by approval gateway",
+    ]
+    for marker in non_recoverable_markers:
+        if marker in err_lower:
+            return False
+
+    return True
 
 
 @dataclass(frozen=True)
@@ -38,6 +64,8 @@ class WorkflowExecutor:
         planner: TaskPlanner | None = None,
         state_store: TaskStateStore | None = None,
         approval_gateway: ApprovalGateway | None = None,
+        max_replans: int = 0,
+        task_description: str | None = None,
     ):
         if not isinstance(runtime, AgentRuntime):
             raise TypeError("runtime must be an instance of AgentRuntime.")
@@ -51,10 +79,15 @@ class WorkflowExecutor:
         if approval_gateway is not None and not isinstance(approval_gateway, ApprovalGateway):
             raise TypeError("approval_gateway must be an instance of ApprovalGateway or None.")
 
+        if not isinstance(max_replans, int) or max_replans < 0:
+            raise ValueError("max_replans must be a non-negative integer.")
+
         self.runtime = runtime
         self.planner = planner if planner is not None else TaskPlanner(runtime.skill_registry)
         self.state_store = state_store
         self.approval_gateway = approval_gateway
+        self.max_replans = max_replans
+        self.task_description = task_description
 
     def _resolve_step_input(
         self,
@@ -91,14 +124,15 @@ class WorkflowExecutor:
         task_id: str | None = None,
         timeout: float | None = None,
     ) -> WorkflowResult:
-        """Execute an ExecutionPlan in dependency order with optional state persistence and approval gating."""
+        """Execute an ExecutionPlan in dependency order with state persistence, approval gating, and adaptive re-planning."""
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("plan must be an instance of ExecutionPlan.")
 
         # Validate plan before execution
         self.planner.validate_plan(plan)
 
-        ordered_steps = self.planner.get_execution_order(plan)
+        current_plan = plan
+        ordered_steps = self.planner.get_execution_order(current_plan)
 
         task_state: TaskState | None = None
         actual_task_id = task_id
@@ -107,10 +141,11 @@ class WorkflowExecutor:
         if self.state_store is not None:
             if actual_task_id is not None and self.state_store.exists(actual_task_id):
                 task_state = self.state_store.get(actual_task_id)
-                if task_state.plan_id != plan.plan_id:
+                # If plan ID mismatch and not replanned, validate
+                if task_state.plan_id != current_plan.plan_id and not task_state.metadata.get("replan_count"):
                     raise ValueError(
                         f"Plan ID mismatch: task '{actual_task_id}' has plan '{task_state.plan_id}', "
-                        f"but got '{plan.plan_id}'."
+                        f"but got '{current_plan.plan_id}'."
                     )
 
                 # If already completed, return cached result
@@ -127,7 +162,7 @@ class WorkflowExecutor:
                     ]
                     return WorkflowResult(
                         success=True,
-                        plan_id=plan.plan_id,
+                        plan_id=current_plan.plan_id,
                         step_results=step_res,
                         executed_steps=exec_steps,
                         final_output=task_state.final_output,
@@ -145,8 +180,8 @@ class WorkflowExecutor:
                 actual_task_id = actual_task_id or str(uuid4())
                 task_state = self.state_store.create(
                     task_id=actual_task_id,
-                    plan_id=plan.plan_id,
-                    plan=plan,
+                    plan_id=current_plan.plan_id,
+                    plan=current_plan,
                 )
                 task_state.status = TaskStatus.RUNNING
                 for step in ordered_steps:
@@ -166,14 +201,19 @@ class WorkflowExecutor:
                 if st.status == StepStatus.COMPLETED and st.agent_result is not None:
                     step_results[s_id] = st.agent_result
 
-        for step in ordered_steps:
+        step_index = 0
+        while step_index < len(ordered_steps):
+            step = ordered_steps[step_index]
+
             # Check if this step is already completed
             if task_state is not None:
                 st = task_state.step_states.get(step.step_id)
                 if st is not None and st.status == StepStatus.COMPLETED:
-                    executed_steps.append(step.step_id)
+                    if step.step_id not in executed_steps:
+                        executed_steps.append(step.step_id)
                     if st.output is not None:
                         last_output = st.output
+                    step_index += 1
                     continue
 
             # Check that all prerequisites completed successfully
@@ -198,7 +238,7 @@ class WorkflowExecutor:
 
                     return WorkflowResult(
                         success=False,
-                        plan_id=plan.plan_id,
+                        plan_id=current_plan.plan_id,
                         step_results=step_results,
                         executed_steps=executed_steps,
                         failed_step_id=step.step_id,
@@ -209,7 +249,7 @@ class WorkflowExecutor:
             # Approval Gateway Evaluation
             if self.approval_gateway is not None:
                 eval_task_id = actual_task_id or "ephemeral_task"
-                decision = self.approval_gateway.evaluate_step(step, plan, eval_task_id)
+                decision = self.approval_gateway.evaluate_step(step, current_plan, eval_task_id)
 
                 if decision.is_denied:
                     logger.warning(
@@ -232,7 +272,7 @@ class WorkflowExecutor:
 
                     return WorkflowResult(
                         success=False,
-                        plan_id=plan.plan_id,
+                        plan_id=current_plan.plan_id,
                         step_results=step_results,
                         executed_steps=executed_steps,
                         failed_step_id=step.step_id,
@@ -257,7 +297,7 @@ class WorkflowExecutor:
 
                     return WorkflowResult(
                         success=False,
-                        plan_id=plan.plan_id,
+                        plan_id=current_plan.plan_id,
                         step_results=step_results,
                         executed_steps=executed_steps,
                         failed_step_id=step.step_id,
@@ -281,7 +321,7 @@ class WorkflowExecutor:
 
             # Prepare metadata
             meta = dict(step.metadata)
-            meta["workflow_plan_id"] = plan.plan_id
+            meta["workflow_plan_id"] = current_plan.plan_id
             meta["step_id"] = step.step_id
             if actual_task_id:
                 meta["task_id"] = actual_task_id
@@ -301,9 +341,100 @@ class WorkflowExecutor:
                 logger.warning(
                     "Step '%s' failed in workflow '%s': %s",
                     step.step_id,
-                    plan.plan_id,
+                    current_plan.plan_id,
                     agent_res.error,
                 )
+
+                # Check if adaptive re-planning is enabled and recoverable
+                replan_count = task_state.metadata.get("replan_count", 0) if task_state is not None else 0
+                can_replan = (
+                    self.max_replans > 0
+                    and replan_count < self.max_replans
+                    and is_recoverable_failure(agent_res, agent_res.error)
+                )
+
+                if can_replan:
+                    logger.info(
+                        "Triggering adaptive re-planning for failed step '%s' (attempt %d/%d)",
+                        step.step_id,
+                        replan_count + 1,
+                        self.max_replans,
+                    )
+                    task_goal = (
+                        self.task_description
+                        or current_plan.metadata.get("task")
+                        or f"Task {actual_task_id or current_plan.plan_id}"
+                    )
+                    replan_ctx = ReplanContext(
+                        task=task_goal,
+                        failed_step_id=step.step_id,
+                        error_message=agent_res.error or "Step execution failed",
+                        completed_steps=tuple(executed_steps),
+                        step_outputs={
+                            s_id: step_results[s_id].output
+                            for s_id in executed_steps
+                            if s_id in step_results and step_results[s_id].output is not None
+                        },
+                        original_plan_id=current_plan.plan_id,
+                    )
+
+                    try:
+                        new_plan = self.planner.replan(replan_ctx)
+                        logger.info(
+                            "Generated replacement plan '%s' with %d steps",
+                            new_plan.plan_id,
+                            len(new_plan.steps),
+                        )
+
+                        # Update TaskState
+                        if task_state is not None:
+                            task_state.plan_id = new_plan.plan_id
+                            task_state.plan = new_plan
+                            task_state.metadata["replan_count"] = replan_count + 1
+                            # Register new step states while keeping completed ones
+                            for s in new_plan.steps:
+                                if s.step_id not in task_state.step_states:
+                                    task_state.step_states[s.step_id] = StepState(
+                                        step_id=s.step_id,
+                                        status=StepStatus.NOT_STARTED,
+                                    )
+                            self.state_store.save(task_state)
+
+                        # Restart loop over new plan
+                        current_plan = new_plan
+                        ordered_steps = self.planner.get_execution_order(current_plan)
+                        step_index = 0
+                        continue
+                    except Exception as replan_err:
+                        logger.warning("Adaptive re-planning failed: %s", replan_err)
+                        fail_msg = f"Step '{step.step_id}' failed: {agent_res.error}. Re-planning failed: {str(replan_err)}"
+                        if task_state is not None:
+                            task_state.step_states[step.step_id].status = StepStatus.FAILED
+                            task_state.step_states[step.step_id].agent_result = agent_res
+                            task_state.step_states[step.step_id].error = agent_res.error
+                            task_state.step_states[step.step_id].completed_at = time.time()
+                            for remaining_step in ordered_steps:
+                                if remaining_step.step_id != step.step_id:
+                                    rem_st = task_state.step_states.get(remaining_step.step_id)
+                                    if rem_st and rem_st.status == StepStatus.NOT_STARTED:
+                                        rem_st.status = StepStatus.SKIPPED
+                            task_state.status = TaskStatus.FAILED
+                            task_state.failed_step_id = step.step_id
+                            task_state.error = fail_msg
+                            self.state_store.save(task_state)
+
+                        return WorkflowResult(
+                            success=False,
+                            plan_id=current_plan.plan_id,
+                            step_results=step_results,
+                            executed_steps=executed_steps,
+                            failed_step_id=step.step_id,
+                            error=fail_msg,
+                            task_id=actual_task_id,
+                            metadata={"replan_failed": True},
+                        )
+
+                # Re-planning not enabled or not possible
                 if task_state is not None:
                     task_state.step_states[step.step_id].status = StepStatus.FAILED
                     task_state.step_states[step.step_id].agent_result = agent_res
@@ -321,7 +452,7 @@ class WorkflowExecutor:
 
                 return WorkflowResult(
                     success=False,
-                    plan_id=plan.plan_id,
+                    plan_id=current_plan.plan_id,
                     step_results=step_results,
                     executed_steps=executed_steps,
                     failed_step_id=step.step_id,
@@ -337,8 +468,10 @@ class WorkflowExecutor:
                 task_state.step_states[step.step_id].completed_at = time.time()
                 self.state_store.save(task_state)
 
-            executed_steps.append(step.step_id)
+            if step.step_id not in executed_steps:
+                executed_steps.append(step.step_id)
             last_output = agent_res.output
+            step_index += 1
 
         if task_state is not None:
             task_state.status = TaskStatus.COMPLETED
@@ -347,11 +480,12 @@ class WorkflowExecutor:
 
         return WorkflowResult(
             success=True,
-            plan_id=plan.plan_id,
+            plan_id=current_plan.plan_id,
             step_results=step_results,
             executed_steps=executed_steps,
             final_output=last_output,
             task_id=actual_task_id,
+            metadata={"replan_count": task_state.metadata.get("replan_count", 0)} if task_state is not None else {},
         )
 
     def resume(

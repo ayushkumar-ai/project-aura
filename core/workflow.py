@@ -5,9 +5,10 @@ from core.approval import (
     ApprovalRequest,
     ApprovalStatus,
 )
+from core.task_planner import ReplanContext
 from core.task_state import StepState, StepStatus, TaskState, TaskStatus
 from core.task_state_store import InMemoryTaskStateStore, TaskStateStore
-from core.workflow_executor import WorkflowExecutor, WorkflowResult
+from core.workflow_executor import WorkflowExecutor, WorkflowResult, is_recoverable_failure
 
 __all__ = [
     "WorkflowExecutor",
@@ -23,4 +24,6 @@ __all__ = [
     "ApprovalDecision",
     "ApprovalDecisionType",
     "ApprovalStatus",
+    "ReplanContext",
+    "is_recoverable_failure",
 ]

@@ -77,8 +77,36 @@ class ExecutionPlan:
             raise TypeError("metadata must be a dict.")
 
 
+@dataclass(frozen=True)
+class ReplanContext:
+    """Structured context provided to TaskPlanner for generating an adapted replacement plan."""
+
+    task: str
+    failed_step_id: str
+    error_message: str
+    completed_steps: tuple[str, ...] = field(default_factory=tuple)
+    step_outputs: dict[str, Any] = field(default_factory=dict)
+    original_plan_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.task, str) or not self.task.strip():
+            raise ValueError("task must be a non-empty string.")
+        if not isinstance(self.failed_step_id, str) or not self.failed_step_id.strip():
+            raise ValueError("failed_step_id must be a non-empty string.")
+        if not isinstance(self.error_message, str):
+            raise TypeError("error_message must be a string.")
+        if not isinstance(self.completed_steps, (list, tuple, set, frozenset)):
+            raise TypeError("completed_steps must be a sequence of strings.")
+        object.__setattr__(self, "completed_steps", tuple(str(s).strip() for s in self.completed_steps if str(s).strip()))
+        if not isinstance(self.step_outputs, dict):
+            raise TypeError("step_outputs must be a dict.")
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+
+
 class TaskPlanner:
-    """Creates, generates, and validates deterministic execution plans."""
+    """Creates, generates, validates, and adapts deterministic execution plans."""
 
     def __init__(
         self,
@@ -135,6 +163,46 @@ class TaskPlanner:
             "- 'skill_name': name of an available skill\n"
             "- 'input_data': input payload for the skill (optional dict or value)\n"
             "- 'dependencies': list of prerequisite step_ids (can be empty)\n\n"
+            "Respond ONLY with valid JSON."
+        )
+
+    def _build_replanning_prompt(self, context: ReplanContext) -> str:
+        """Construct a structured prompt for generating a replacement plan given failure context."""
+        available_skills = self.skill_registry.list_skills()
+        skills_desc = []
+        for s in available_skills:
+            caps = ", ".join(sorted(s.required_capabilities)) if s.required_capabilities else "none"
+            tools = ", ".join(sorted(s.tools)) if s.tools else "none"
+            skills_desc.append(
+                f"- Name: {s.name}\n"
+                f"  Description: {s.description}\n"
+                f"  Required Capabilities: {caps}\n"
+                f"  Tools: {tools}"
+            )
+        skills_text = "\n".join(skills_desc) if skills_desc else "No skills registered."
+
+        completed_desc = ", ".join(context.completed_steps) if context.completed_steps else "None"
+
+        outputs_summary = []
+        for k, v in sorted(context.step_outputs.items()):
+            outputs_summary.append(f"  * {k}: {str(v)[:200]}")
+        outputs_text = "\n".join(outputs_summary) if outputs_summary else "  None"
+
+        return (
+            "You are an adaptive task planner in AURA.\n"
+            "A multi-step workflow failed during execution. Create a replacement execution plan to achieve the task.\n\n"
+            f"Available Skills:\n{skills_text}\n\n"
+            f"Overall Task Goal:\n{context.task.strip()}\n\n"
+            f"Execution Failure Context:\n"
+            f"- Completed Steps (will not be re-executed): {completed_desc}\n"
+            f"- Completed Step Outputs:\n{outputs_text}\n"
+            f"- Failed Step: {context.failed_step_id}\n"
+            f"- Failure Reason: {context.error_message}\n\n"
+            "Output the replacement execution plan as a JSON object with a 'steps' list where each step has:\n"
+            "- 'step_id': unique string\n"
+            "- 'skill_name': name of an available skill\n"
+            "- 'input_data': input payload for the skill (optional)\n"
+            "- 'dependencies': list of prerequisite step_ids (can include completed step_ids)\n\n"
             "Respond ONLY with valid JSON."
         )
 
@@ -328,6 +396,47 @@ class TaskPlanner:
         meta = metadata if metadata is not None else {}
         plan = ExecutionPlan(steps=tuple(plan_steps), plan_id=p_id, metadata=meta)
 
+        self.validate_plan(plan)
+        return plan
+
+    def replan(
+        self,
+        context: ReplanContext,
+        task_requirements: TaskRequirements | None = None,
+        plan_id: str | UUID | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ExecutionPlan:
+        """Generate and validate a replacement ExecutionPlan for an adaptive workflow recovery."""
+        if not isinstance(context, ReplanContext):
+            raise TypeError("context must be an instance of ReplanContext.")
+
+        active_model: ModelInterface | None = self.model
+        if active_model is None and self.model_router is not None:
+            reqs = task_requirements or TaskRequirements(
+                required_capabilities=[ModelCapability.REASONING]
+            )
+            route_res = self.model_router.route(reqs)
+            active_model = route_res.provider
+
+        if active_model is None:
+            raise ValueError("ModelInterface or ModelRouter required for model-assisted replanning.")
+
+        prompt = self._build_replanning_prompt(context)
+        request_id = uuid4()
+        response = active_model.generate(prompt=prompt, request_id=request_id)
+
+        if response is None or not hasattr(response, "content"):
+            raise ValueError("Model response is invalid or missing.")
+
+        plan_steps = self._parse_model_plan(response.content)
+
+        p_id = str(plan_id) if plan_id is not None else str(uuid4())
+        meta = dict(metadata) if metadata is not None else {}
+        meta["replanned"] = True
+        if context.original_plan_id:
+            meta["original_plan_id"] = context.original_plan_id
+
+        plan = ExecutionPlan(steps=tuple(plan_steps), plan_id=p_id, metadata=meta)
         self.validate_plan(plan)
         return plan
 
