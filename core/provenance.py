@@ -80,13 +80,24 @@ class TaintedValue:
         cleaned_meta = _sanitize_metadata(self.metadata)
         object.__setattr__(self, "metadata", cleaned_meta)
 
+    def _wrap_child(self, val: Any) -> "TaintedValue":
+        """Helper to wrap extracted child values with inherited provenance and taint status."""
+        return wrap_tainted(
+            value=val,
+            is_untrusted=self.is_untrusted,
+            source_type=self.source_type,
+            originating_step_id=self.originating_step_id,
+            source_urls=self.source_urls,
+            metadata=self.metadata,
+        )
+
     @property
     def value(self) -> Any:
         """Alias for raw_value."""
         return self.raw_value
 
     def unwrap(self) -> Any:
-        """Return the underlying raw value."""
+        """Explicitly return the underlying raw value."""
         return self.raw_value
 
     def to_prompt_text(self, wrap_untrusted: bool = True) -> str:
@@ -128,12 +139,14 @@ class TaintedValue:
 
     def __getitem__(self, key: Any) -> Any:
         if hasattr(self.raw_value, "__getitem__"):
-            return self.raw_value[key]
+            return self._wrap_child(self.raw_value[key])
         raise TypeError(f"'{type(self.raw_value).__name__}' object is not subscriptable")
 
     def __iter__(self):
         if hasattr(self.raw_value, "__iter__"):
-            return iter(self.raw_value)
+            if isinstance(self.raw_value, dict):
+                return iter(self.raw_value.keys())
+            return (self._wrap_child(item) for item in self.raw_value)
         raise TypeError(f"'{type(self.raw_value).__name__}' object is not iterable")
 
     def __len__(self) -> int:
@@ -154,25 +167,11 @@ class TaintedValue:
 
     def __add__(self, other: Any) -> "TaintedValue":
         res_str = str(self.raw_value) + str(other)
-        return TaintedValue(
-            raw_value=res_str,
-            is_untrusted=self.is_untrusted,
-            source_type=self.source_type,
-            originating_step_id=self.originating_step_id,
-            source_urls=self.source_urls,
-            metadata=dict(self.metadata),
-        )
+        return self._wrap_child(res_str)
 
     def __radd__(self, other: Any) -> "TaintedValue":
         res_str = str(other) + str(self.raw_value)
-        return TaintedValue(
-            raw_value=res_str,
-            is_untrusted=self.is_untrusted,
-            source_type=self.source_type,
-            originating_step_id=self.originating_step_id,
-            source_urls=self.source_urls,
-            metadata=dict(self.metadata),
-        )
+        return self._wrap_child(res_str)
 
     # String proxy helpers
     def strip(self, *args: Any, **kwargs: Any) -> "TaintedValue":
@@ -180,61 +179,23 @@ class TaintedValue:
             res = self.raw_value.strip(*args, **kwargs)
         else:
             res = str(self.raw_value).strip(*args, **kwargs)
-        return TaintedValue(
-            raw_value=res,
-            is_untrusted=self.is_untrusted,
-            source_type=self.source_type,
-            originating_step_id=self.originating_step_id,
-            source_urls=self.source_urls,
-            metadata=dict(self.metadata),
-        )
+        return self._wrap_child(res)
 
     def lower(self) -> "TaintedValue":
         res = str(self.raw_value).lower()
-        return TaintedValue(
-            raw_value=res,
-            is_untrusted=self.is_untrusted,
-            source_type=self.source_type,
-            originating_step_id=self.originating_step_id,
-            source_urls=self.source_urls,
-            metadata=dict(self.metadata),
-        )
+        return self._wrap_child(res)
 
     def upper(self) -> "TaintedValue":
         res = str(self.raw_value).upper()
-        return TaintedValue(
-            raw_value=res,
-            is_untrusted=self.is_untrusted,
-            source_type=self.source_type,
-            originating_step_id=self.originating_step_id,
-            source_urls=self.source_urls,
-            metadata=dict(self.metadata),
-        )
+        return self._wrap_child(res)
 
     def split(self, *args: Any, **kwargs: Any) -> list["TaintedValue"]:
         parts = str(self.raw_value).split(*args, **kwargs)
-        return [
-            TaintedValue(
-                raw_value=p,
-                is_untrusted=self.is_untrusted,
-                source_type=self.source_type,
-                originating_step_id=self.originating_step_id,
-                source_urls=self.source_urls,
-                metadata=dict(self.metadata),
-            )
-            for p in parts
-        ]
+        return [self._wrap_child(p) for p in parts]
 
     def replace(self, old: str, new: str, *args: Any, **kwargs: Any) -> "TaintedValue":
         res = str(self.raw_value).replace(old, new, *args, **kwargs)
-        return TaintedValue(
-            raw_value=res,
-            is_untrusted=self.is_untrusted,
-            source_type=self.source_type,
-            originating_step_id=self.originating_step_id,
-            source_urls=self.source_urls,
-            metadata=dict(self.metadata),
-        )
+        return self._wrap_child(res)
 
     def startswith(self, prefix: Any, *args: Any, **kwargs: Any) -> bool:
         return str(self.raw_value).startswith(prefix, *args, **kwargs)
@@ -245,7 +206,9 @@ class TaintedValue:
     # Dict proxy helpers
     def get(self, key: Any, default: Any = None) -> Any:
         if isinstance(self.raw_value, dict):
-            return self.raw_value.get(key, default)
+            if key in self.raw_value:
+                return self._wrap_child(self.raw_value[key])
+            return default
         return default
 
     def keys(self) -> Any:
@@ -253,15 +216,15 @@ class TaintedValue:
             return self.raw_value.keys()
         return [].keys() if hasattr([].keys, "__call__") else ()
 
-    def values(self) -> Any:
+    def values(self) -> list["TaintedValue"]:
         if isinstance(self.raw_value, dict):
-            return self.raw_value.values()
-        return ()
+            return [self._wrap_child(v) for v in self.raw_value.values()]
+        return []
 
-    def items(self) -> Any:
+    def items(self) -> list[tuple[Any, "TaintedValue"]]:
         if isinstance(self.raw_value, dict):
-            return self.raw_value.items()
-        return ()
+            return [(k, self._wrap_child(v)) for k, v in self.raw_value.items()]
+        return []
 
 
 def wrap_tainted(

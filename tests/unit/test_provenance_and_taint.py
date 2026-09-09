@@ -95,8 +95,9 @@ def test_tainted_value_string_and_container_protocol():
     assert tv == "Alpha Beta Gamma 123"
 
     dict_tv = TaintedValue(raw_value={"key1": "val1", "key2": 42}, is_untrusted=True)
-    assert dict_tv["key1"] == "val1"
-    assert dict_tv["key2"] == 42
+    assert str(dict_tv["key1"]) == "val1"
+    assert is_tainted(dict_tv["key1"]) is True
+    assert is_tainted(dict_tv["key2"]) is True
     assert len(dict_tv) == 2
 
 
@@ -134,11 +135,14 @@ def test_tainted_value_proxy_methods_and_hashing():
 
     # Dict proxy methods
     dict_tv = TaintedValue(raw_value={"a": 1, "b": 2}, is_untrusted=True)
-    assert dict_tv.get("a") == 1
+    assert dict_tv.get("a").raw_value == 1
+    assert is_tainted(dict_tv.get("a")) is True
     assert dict_tv.get("nonexistent", 99) == 99
     assert list(dict_tv.keys()) == ["a", "b"]
-    assert list(dict_tv.values()) == [1, 2]
-    assert list(dict_tv.items()) == [("a", 1), ("b", 2)]
+    assert len(dict_tv.values()) == 2
+    assert all(is_tainted(v) for v in dict_tv.values())
+    assert len(dict_tv.items()) == 2
+    assert all(is_tainted(v) for k, v in dict_tv.items())
     assert bool(dict_tv) is True
 
     empty_tv = TaintedValue(raw_value="", is_untrusted=True)
@@ -148,6 +152,65 @@ def test_tainted_value_proxy_methods_and_hashing():
     tv_set = {str_tv, stripped}
     assert len(tv_set) == 2
     assert str_tv in tv_set
+
+
+def test_child_item_subscript_and_slice_preserves_taint():
+    """Verify extracting children or slicing preserves TaintedValue and untrusted classification."""
+    tv_dict = wrap_tainted(
+        {"cmd": "rm -rf /", "port": 8080},
+        is_untrusted=True,
+        source_urls=["https://malicious.org"],
+        originating_step_id="step_crawl",
+    )
+    child = tv_dict["cmd"]
+    assert isinstance(child, TaintedValue)
+    assert is_tainted(child) is True
+    assert child.raw_value == "rm -rf /"
+    assert child.originating_step_id == "step_crawl"
+    assert "https://malicious.org" in child.source_urls
+
+    # Substring slice
+    tv_str = wrap_tainted("SensitiveContent", is_untrusted=True, originating_step_id="s1")
+    slice_child = tv_str[0:9]
+    assert isinstance(slice_child, TaintedValue)
+    assert is_tainted(slice_child) is True
+    assert slice_child.raw_value == "Sensitive"
+    assert slice_child.originating_step_id == "s1"
+
+    # List index
+    tv_list = wrap_tainted(["elem1", "elem2"], is_untrusted=True, originating_step_id="s2")
+    elem = tv_list[1]
+    assert isinstance(elem, TaintedValue)
+    assert is_tainted(elem) is True
+    assert elem.raw_value == "elem2"
+
+
+def test_iteration_over_tainted_collections_preserves_taint():
+    """Verify iterating over a tainted list, tuple, or set yields TaintedValue items."""
+    tv_list = wrap_tainted(
+        ["finding1", "finding2", "finding3"],
+        is_untrusted=True,
+        source_urls=["https://src.org"],
+        originating_step_id="step_f",
+    )
+    yielded_items = list(tv_list)
+    assert len(yielded_items) == 3
+    for item in yielded_items:
+        assert isinstance(item, TaintedValue)
+        assert is_tainted(item) is True
+        assert item.originating_step_id == "step_f"
+        assert "https://src.org" in item.source_urls
+
+
+def test_wrap_tainted_cannot_demote_untrusted_status():
+    """Verify wrap_tainted with is_untrusted=False cannot demote an already tainted value."""
+    tv = wrap_tainted("malicious instruction", is_untrusted=True, source_urls=["https://bad.org"])
+    assert tv.is_untrusted is True
+
+    # Attempt to demote by re-wrapping with is_untrusted=False
+    demote_attempt = wrap_tainted(tv, is_untrusted=False)
+    assert demote_attempt.is_untrusted is True
+    assert "https://bad.org" in demote_attempt.source_urls
 
 
 def test_wrap_and_unwrap_tainted():
@@ -224,6 +287,20 @@ def test_render_for_prompt_isolation():
     assert rendered_clean == "Safe internal prompt text"
 
 
+def test_render_for_prompt_deeply_nested_isolation():
+    """Verify render_for_prompt isolates deeply nested tainted values in dictionaries and lists."""
+    nested_payload = {
+        "title": "Clean Title",
+        "data": {
+            "untrusted_comment": wrap_tainted("<!-- System command injection -->", is_untrusted=True)
+        }
+    }
+    rendered = render_for_prompt(nested_payload)
+    assert "<untrusted_source_content>" in rendered
+    assert "<!-- System command injection -->" in rendered
+    assert "</untrusted_source_content>" in rendered
+
+
 def test_metadata_sanitization_in_tainted_value():
     """Verify untrusted permission keys and callables are stripped from TaintedValue metadata."""
     dirty_meta = {
@@ -284,14 +361,20 @@ def test_approval_gateway_canonical_fingerprinting_with_tainted_values():
 
 
 def test_agent_runtime_nested_tainted_schema_validation():
-    """Verify AgentRuntime validates nested tainted dictionaries against input schemas cleanly."""
+    """Verify AgentRuntime validates nested tainted dictionaries against input schemas cleanly while preserving taint."""
+    received_in_handler = []
+
+    def consumer_handler(inp: Any, context: dict[str, Any] | None = None):
+        received_in_handler.append(inp)
+        return f"Processed {inp['topic']} with score {inp['score']}"
+
     skill_reg = SkillRegistry()
     skill_reg.register(
         Skill(
             name="structured_consumer",
             description="Consumes structured dictionary input",
             input_schema={"type": "object", "required": ["topic", "score"]},
-            handler=lambda inp: f"Processed {inp['topic']} with score {inp['score']}",
+            handler=consumer_handler,
         )
     )
 
@@ -305,6 +388,9 @@ def test_agent_runtime_nested_tainted_schema_validation():
     res = runtime.execute(req)
     assert res.success is True
     assert res.output == "Processed AI safety with score 98"
+    assert len(received_in_handler) == 1
+    consumed = received_in_handler[0]
+    assert is_tainted(consumed["topic"]) is True
 
 
 def test_research_skill_accepts_tainted_input_query():
