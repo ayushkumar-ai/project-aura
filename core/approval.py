@@ -12,6 +12,7 @@ from core.policy import Policy, PolicyDecision
 from core.provenance import TaintedValue
 from core.skill_registry import SkillRegistry
 from core.task_planner import ExecutionPlan, PlanStep
+from core.agent_plan import AgentPlan, AgentPlanStep
 
 logger = logging.getLogger("aura.approval")
 
@@ -178,10 +179,10 @@ class ApprovalGateway:
         self._step_index: dict[tuple[str, str, str], str] = {}
 
     @staticmethod
-    def compute_plan_fingerprint(plan: ExecutionPlan) -> str:
+    def compute_plan_fingerprint(plan: ExecutionPlan | AgentPlan) -> str:
         """Compute a deterministic SHA-256 fingerprint covering all approval-relevant plan content."""
-        if not isinstance(plan, ExecutionPlan):
-            raise TypeError("plan must be an instance of ExecutionPlan.")
+        if not isinstance(plan, (ExecutionPlan, AgentPlan)):
+            raise TypeError("plan must be an instance of ExecutionPlan or AgentPlan.")
 
         steps_data = []
         for step in plan.steps:
@@ -212,7 +213,7 @@ class ApprovalGateway:
         canonical_str = json.dumps(plan_data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
 
-    def _get_declared_tools(self, step: PlanStep) -> tuple[str, ...]:
+    def _get_declared_tools(self, step: PlanStep | AgentPlanStep) -> tuple[str, ...]:
         """Resolve declared tools from the step and skill registry."""
         tools: set[str] = set()
         if self.skill_registry is not None and self.skill_registry.has(step.skill_name):
@@ -228,15 +229,15 @@ class ApprovalGateway:
 
     def evaluate_step(
         self,
-        step: PlanStep,
-        plan: ExecutionPlan,
+        step: PlanStep | AgentPlanStep,
+        plan: ExecutionPlan | AgentPlan,
         task_id: str,
     ) -> ApprovalDecision:
         """Evaluate whether a planned step can execute automatically, requires approval, or is denied."""
-        if not isinstance(step, PlanStep):
-            raise TypeError("step must be an instance of PlanStep.")
-        if not isinstance(plan, ExecutionPlan):
-            raise TypeError("plan must be an instance of ExecutionPlan.")
+        if not isinstance(step, (PlanStep, AgentPlanStep)):
+            raise TypeError("step must be an instance of PlanStep or AgentPlanStep.")
+        if not isinstance(plan, (ExecutionPlan, AgentPlan)):
+            raise TypeError("plan must be an instance of ExecutionPlan or AgentPlan.")
         if not isinstance(task_id, str) or not task_id.strip():
             raise ValueError("task_id must be a non-empty string.")
 
@@ -367,8 +368,8 @@ class ApprovalGateway:
 
     def evaluate_plan(self, plan: ExecutionPlan, task_id: str) -> ApprovalDecision:
         """Evaluate all steps in an ExecutionPlan."""
-        if not isinstance(plan, ExecutionPlan):
-            raise TypeError("plan must be an instance of ExecutionPlan.")
+        if not isinstance(plan, (ExecutionPlan, AgentPlan)):
+            raise TypeError("plan must be an instance of ExecutionPlan or AgentPlan.")
 
         for step in plan.steps:
             dec = self.evaluate_step(step, plan, task_id)

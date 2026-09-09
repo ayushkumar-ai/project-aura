@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     aura_browser_timeout: float = 15.0
     aura_browser_render_wait: float = 1.0
 
+    # M10 Autonomous Agent Configuration
+    aura_max_plan_steps: int = 20
+    aura_max_execution_iterations: int = 50
+    aura_max_retries_per_step: int = 2
+    aura_max_total_execution_time: float = 300.0
+    aura_max_tool_calls: int = 50
+    aura_max_replan_depth: int = 3
+
     # M9.9 Decomposition, Iterative Research & Coverage Configuration
     aura_max_sub_questions: int = 3
     aura_max_research_rounds: int = 2

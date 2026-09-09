@@ -9,6 +9,13 @@ from core.capability_registry import ModelCapability
 from core.model_router import ModelRouter, TaskRequirements
 from core.skill_registry import SkillRegistry
 from core.provenance import TaintedValue, is_tainted, render_for_prompt
+from core.agent_plan import (
+    AgentPlan,
+    AgentPlanStep,
+    StepStatus,
+    serialize_agent_plan,
+    deserialize_agent_plan,
+)
 from interfaces.model import ModelInterface
 
 logger = logging.getLogger("aura.task_planner")
@@ -503,3 +510,199 @@ class TaskPlanner:
             raise ValueError("Circular dependency detected in execution plan.")
 
         return [step_map[s_id] for s_id in ordered_ids]
+
+
+    def create_agent_plan(
+        self,
+        steps: Sequence[AgentPlanStep],
+        task_goal: str = "",
+        plan_id: str | UUID | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> AgentPlan:
+        """Create and validate an immutable AgentPlan from an explicit sequence of steps."""
+        p_id = str(plan_id) if plan_id is not None else str(uuid4())
+        meta = metadata if metadata is not None else {}
+        plan = AgentPlan(
+            plan_id=p_id,
+            task_goal=task_goal,
+            steps=tuple(steps),
+            metadata=meta,
+        )
+        self.validate_agent_plan(plan)
+        return plan
+
+    def plan_agent(
+        self,
+        task: str,
+        task_requirements: TaskRequirements | None = None,
+        plan_id: str | UUID | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> AgentPlan:
+        """Generate and validate an AgentPlan from a task description using a model."""
+        exec_plan = self.plan(
+            task=task,
+            task_requirements=task_requirements,
+            plan_id=plan_id,
+            metadata=metadata,
+        )
+        agent_steps = [
+            AgentPlanStep(
+                step_id=s.step_id,
+                skill_name=s.skill_name,
+                objective=s.skill_name,
+                input_data=s.input_data,
+                dependencies=s.dependencies,
+                task_requirements=s.task_requirements,
+                metadata=dict(s.metadata),
+            )
+            for s in exec_plan.steps
+        ]
+        p_id = str(plan_id) if plan_id is not None else exec_plan.plan_id
+        agent_plan = AgentPlan(
+            plan_id=p_id,
+            task_goal=task.strip(),
+            steps=tuple(agent_steps),
+            metadata=dict(exec_plan.metadata),
+        )
+        self.validate_agent_plan(agent_plan)
+        return agent_plan
+
+    def replan_agent(
+        self,
+        context: ReplanContext,
+        task_requirements: TaskRequirements | None = None,
+        plan_id: str | UUID | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> AgentPlan:
+        """Generate and validate a replacement AgentPlan for adaptive workflow recovery."""
+        exec_plan = self.replan(
+            context=context,
+            task_requirements=task_requirements,
+            plan_id=plan_id,
+            metadata=metadata,
+        )
+        agent_steps = [
+            AgentPlanStep(
+                step_id=s.step_id,
+                skill_name=s.skill_name,
+                objective=s.skill_name,
+                input_data=s.input_data,
+                dependencies=s.dependencies,
+                task_requirements=s.task_requirements,
+                metadata=dict(s.metadata),
+            )
+            for s in exec_plan.steps
+        ]
+        p_id = str(plan_id) if plan_id is not None else exec_plan.plan_id
+        agent_plan = AgentPlan(
+            plan_id=p_id,
+            task_goal=context.task.strip(),
+            steps=tuple(agent_steps),
+            metadata=dict(exec_plan.metadata),
+        )
+        self.validate_agent_plan(agent_plan)
+        return agent_plan
+
+    def validate_agent_plan(self, plan: AgentPlan) -> None:
+        """Validate that an AgentPlan is coherent, complete, and acyclic."""
+        if not isinstance(plan, AgentPlan):
+            raise TypeError("plan must be an instance of AgentPlan.")
+
+        if not plan.steps:
+            raise ValueError("AgentPlan must contain at least one step.")
+
+        step_ids: set[str] = set()
+        for step in plan.steps:
+            if step.step_id in step_ids:
+                raise ValueError(f"Duplicate step ID detected: '{step.step_id}'.")
+            step_ids.add(step.step_id)
+
+            if not self.skill_registry.has(step.skill_name):
+                raise KeyError(
+                    f"Unknown skill '{step.skill_name}' required by step '{step.step_id}'."
+                )
+
+        for step in plan.steps:
+            for dep in step.dependencies:
+                if dep == step.step_id:
+                    raise ValueError(f"Step '{step.step_id}' cannot depend on itself.")
+                if dep not in step_ids:
+                    raise ValueError(
+                        f"Step '{step.step_id}' depends on nonexistent step '{dep}'."
+                    )
+
+        # Topological sort check
+        self.get_agent_execution_order(plan)
+
+    def get_agent_execution_order(self, plan: AgentPlan) -> list[AgentPlanStep]:
+        """Compute a deterministic topological execution order of AgentPlan steps."""
+        step_map = {step.step_id: step for step in plan.steps}
+        in_degree = {step.step_id: len(step.dependencies) for step in plan.steps}
+        dependents: dict[str, list[str]] = {step.step_id: [] for step in plan.steps}
+
+        for step in plan.steps:
+            for dep in step.dependencies:
+                dependents[dep].append(step.step_id)
+
+        queue = [step.step_id for step in plan.steps if in_degree[step.step_id] == 0]
+        ordered_ids: list[str] = []
+
+        while queue:
+            curr = queue.pop(0)
+            ordered_ids.append(curr)
+
+            for nxt in dependents[curr]:
+                in_degree[nxt] -= 1
+                if in_degree[nxt] == 0:
+                    queue.append(nxt)
+
+        if len(ordered_ids) < len(plan.steps):
+            raise ValueError("Circular dependency detected in execution plan.")
+
+        return [step_map[s_id] for s_id in ordered_ids]
+
+    @staticmethod
+    def convert_execution_plan_to_agent_plan(plan: ExecutionPlan, task_goal: str = "") -> AgentPlan:
+        """Convert a legacy ExecutionPlan to an immutable AgentPlan."""
+        if not isinstance(plan, ExecutionPlan):
+            raise TypeError("plan must be an instance of ExecutionPlan.")
+        agent_steps = [
+            AgentPlanStep(
+                step_id=s.step_id,
+                skill_name=s.skill_name,
+                objective=s.skill_name,
+                input_data=s.input_data,
+                dependencies=s.dependencies,
+                task_requirements=s.task_requirements,
+                metadata=dict(s.metadata),
+            )
+            for s in plan.steps
+        ]
+        return AgentPlan(
+            plan_id=plan.plan_id,
+            task_goal=task_goal,
+            steps=tuple(agent_steps),
+            metadata=dict(plan.metadata),
+        )
+
+    @staticmethod
+    def convert_agent_plan_to_execution_plan(plan: AgentPlan) -> ExecutionPlan:
+        """Convert an AgentPlan to a legacy ExecutionPlan."""
+        if not isinstance(plan, AgentPlan):
+            raise TypeError("plan must be an instance of AgentPlan.")
+        exec_steps = [
+            PlanStep(
+                step_id=s.step_id,
+                skill_name=s.skill_name,
+                input_data=s.input_data,
+                dependencies=s.dependencies,
+                task_requirements=s.task_requirements,
+                metadata=dict(s.metadata),
+            )
+            for s in plan.steps
+        ]
+        return ExecutionPlan(
+            steps=tuple(exec_steps),
+            plan_id=plan.plan_id,
+            metadata=dict(plan.metadata),
+        )

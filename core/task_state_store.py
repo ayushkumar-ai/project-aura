@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from core.task_planner import ExecutionPlan
+from core.agent_plan import AgentPlan
 from core.task_state import StepState, StepStatus, TaskState, TaskStatus
 
 
@@ -15,7 +16,7 @@ class TaskStateStore(ABC):
         self,
         task_id: str,
         plan_id: str,
-        plan: ExecutionPlan | None = None,
+        plan: ExecutionPlan | AgentPlan | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> TaskState:
         """Create and persist a new TaskState."""
@@ -52,7 +53,7 @@ class InMemoryTaskStateStore(TaskStateStore):
         self,
         task_id: str,
         plan_id: str,
-        plan: ExecutionPlan | None = None,
+        plan: ExecutionPlan | AgentPlan | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> TaskState:
         """Create and store a new TaskState."""

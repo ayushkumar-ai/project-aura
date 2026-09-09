@@ -5,6 +5,7 @@ from typing import Any
 
 from core.agent_runtime import AgentResult
 from core.task_planner import ExecutionPlan
+from core.agent_plan import AgentPlan
 
 
 class TaskStatus(str, Enum):
@@ -65,7 +66,7 @@ class TaskState:
     plan_id: str
     status: TaskStatus = TaskStatus.PENDING
     step_states: dict[str, StepState] = field(default_factory=dict)
-    plan: ExecutionPlan | None = None
+    plan: ExecutionPlan | AgentPlan | None = None
     failed_step_id: str | None = None
     error: str | None = None
     final_output: Any = None
@@ -90,8 +91,8 @@ class TaskState:
         if not isinstance(self.step_states, dict):
             raise TypeError("step_states must be a dict.")
 
-        if self.plan is not None and not isinstance(self.plan, ExecutionPlan):
-            raise TypeError("plan must be an instance of ExecutionPlan or None.")
+        if self.plan is not None and not isinstance(self.plan, (ExecutionPlan, AgentPlan)):
+            raise TypeError("plan must be an instance of ExecutionPlan, AgentPlan, or None.")
 
         if not isinstance(self.metadata, dict):
             raise TypeError("metadata must be a dict.")
