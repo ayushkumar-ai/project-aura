@@ -1,10 +1,16 @@
+import json
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID, uuid4
 
-from core.model_router import TaskRequirements
+from core.capability_registry import ModelCapability
+from core.model_router import ModelRouter, TaskRequirements
 from core.skill_registry import SkillRegistry
+from interfaces.model import ModelInterface
+
+logger = logging.getLogger("aura.task_planner")
 
 
 @dataclass(frozen=True)
@@ -72,12 +78,24 @@ class ExecutionPlan:
 
 
 class TaskPlanner:
-    """Creates and validates deterministic execution plans."""
+    """Creates, generates, and validates deterministic execution plans."""
 
-    def __init__(self, skill_registry: SkillRegistry):
+    def __init__(
+        self,
+        skill_registry: SkillRegistry,
+        model: ModelInterface | None = None,
+        model_router: ModelRouter | None = None,
+    ):
         if not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry.")
+        if model is not None and not isinstance(model, ModelInterface):
+            raise TypeError("model must be an instance of ModelInterface or None.")
+        if model_router is not None and not isinstance(model_router, ModelRouter):
+            raise TypeError("model_router must be an instance of ModelRouter or None.")
+
         self.skill_registry = skill_registry
+        self.model = model
+        self.model_router = model_router
 
     def create_plan(
         self,
@@ -85,10 +103,141 @@ class TaskPlanner:
         plan_id: str | UUID | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ExecutionPlan:
-        """Create and validate an ExecutionPlan from a sequence of steps."""
+        """Create and validate an ExecutionPlan from an explicit sequence of steps."""
         p_id = str(plan_id) if plan_id is not None else str(uuid4())
         meta = metadata if metadata is not None else {}
         plan = ExecutionPlan(steps=tuple(steps), plan_id=p_id, metadata=meta)
+        self.validate_plan(plan)
+        return plan
+
+    def _build_planning_prompt(self, task: str) -> str:
+        """Construct a structured prompt describing available skills to the model."""
+        available_skills = self.skill_registry.list_skills()
+        skills_desc = []
+        for s in available_skills:
+            caps = ", ".join(sorted(s.required_capabilities)) if s.required_capabilities else "none"
+            tools = ", ".join(sorted(s.tools)) if s.tools else "none"
+            skills_desc.append(
+                f"- Name: {s.name}\n"
+                f"  Description: {s.description}\n"
+                f"  Required Capabilities: {caps}\n"
+                f"  Tools: {tools}"
+            )
+        skills_text = "\n".join(skills_desc) if skills_desc else "No skills registered."
+
+        return (
+            "You are a task planner in AURA.\n"
+            "Decompose the following task into an execution plan using ONLY the available skills.\n\n"
+            f"Available Skills:\n{skills_text}\n\n"
+            f"Task to accomplish:\n{task.strip()}\n\n"
+            "Output the execution plan as a JSON object with a 'steps' list where each step has:\n"
+            "- 'step_id': unique string (e.g. 'step_1')\n"
+            "- 'skill_name': name of an available skill\n"
+            "- 'input_data': input payload for the skill (optional dict or value)\n"
+            "- 'dependencies': list of prerequisite step_ids (can be empty)\n\n"
+            "Respond ONLY with valid JSON."
+        )
+
+    def _parse_model_plan(self, raw_content: str) -> list[PlanStep]:
+        """Parse model output text into PlanStep objects."""
+        content = raw_content.strip()
+
+        # Strip markdown code fences if present
+        if content.startswith("```"):
+            lines = content.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            content = "\n".join(lines).strip()
+
+        try:
+            data = json.loads(content)
+        except Exception as e:
+            raise ValueError(f"Failed to parse model plan output as JSON: {e}")
+
+        if isinstance(data, dict):
+            raw_steps = data.get("steps")
+            if raw_steps is None:
+                raise ValueError("Model output JSON missing 'steps' key.")
+        elif isinstance(data, list):
+            raw_steps = data
+        else:
+            raise ValueError("Model output must be a JSON object with 'steps' or a JSON list of steps.")
+
+        if not isinstance(raw_steps, list):
+            raise ValueError("'steps' must be a list in model output.")
+
+        if not raw_steps:
+            raise ValueError("Model generated an empty list of steps.")
+
+        plan_steps = []
+        for raw_step in raw_steps:
+            if not isinstance(raw_step, dict):
+                raise ValueError("Each step in model output must be a JSON object/dictionary.")
+
+            step_id = raw_step.get("step_id")
+            skill_name = raw_step.get("skill_name")
+
+            if not step_id or not isinstance(step_id, str):
+                raise ValueError("Each step must have a valid non-empty 'step_id'.")
+            if not skill_name or not isinstance(skill_name, str):
+                raise ValueError("Each step must have a valid non-empty 'skill_name'.")
+
+            input_data = raw_step.get("input_data", {})
+            dependencies = raw_step.get("dependencies", [])
+            metadata = raw_step.get("metadata", {})
+
+            if not isinstance(dependencies, (list, tuple)):
+                raise ValueError(f"Dependencies for step '{step_id}' must be a list.")
+            if not isinstance(metadata, dict):
+                raise ValueError(f"Metadata for step '{step_id}' must be a dictionary.")
+
+            plan_steps.append(
+                PlanStep(
+                    step_id=step_id,
+                    skill_name=skill_name,
+                    input_data=input_data,
+                    dependencies=tuple(dependencies),
+                    metadata=metadata,
+                )
+            )
+
+        return plan_steps
+
+    def plan(
+        self,
+        task: str,
+        task_requirements: TaskRequirements | None = None,
+        plan_id: str | UUID | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ExecutionPlan:
+        """Generate and validate an ExecutionPlan from a natural-language task description using a model."""
+        if not isinstance(task, str) or not task.strip():
+            raise ValueError("Task description must be a non-empty string.")
+
+        # Resolve active model
+        active_model: ModelInterface | None = self.model
+        if active_model is None and self.model_router is not None:
+            reqs = task_requirements or TaskRequirements(
+                required_capabilities=[ModelCapability.REASONING]
+            )
+            route_res = self.model_router.route(reqs)
+            active_model = route_res.provider
+
+        if active_model is None:
+            raise ValueError("ModelInterface or ModelRouter required for model-assisted planning.")
+
+        prompt = self._build_planning_prompt(task)
+        request_id = uuid4()
+        response = active_model.generate(prompt=prompt, request_id=request_id)
+
+        plan_steps = self._parse_model_plan(response.content)
+
+        p_id = str(plan_id) if plan_id is not None else str(uuid4())
+        meta = metadata if metadata is not None else {}
+        plan = ExecutionPlan(steps=tuple(plan_steps), plan_id=p_id, metadata=meta)
+
         self.validate_plan(plan)
         return plan
 

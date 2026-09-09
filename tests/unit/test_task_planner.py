@@ -1,17 +1,43 @@
+import json
 import pytest
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from core.model_router import TaskRequirements
+from core.capability_registry import (
+    CapabilityRegistry,
+    ModelCapability,
+    ModelDescriptor,
+)
+from core.model_router import ModelRouter, TaskRequirements
+from core.models import AURAResponse
+from core.provider_registry import ProviderRegistry
 from core.skill_registry import Skill, SkillRegistry
 from core.task_planner import ExecutionPlan, PlanStep, TaskPlanner
+from interfaces.model import ModelInterface
+from providers.fake_model import FakeModelProvider
+
+
+class ProgrammableModelProvider(ModelInterface):
+    """Test model double returning canned plan outputs."""
+
+    def __init__(self, response_content: str = ""):
+        self.response_content = response_content
+        self.last_prompt = ""
+        self.calls = 0
+
+    def generate(self, prompt: str, request_id: UUID) -> AURAResponse:
+        self.last_prompt = prompt
+        self.calls += 1
+        if self.response_content == "RAISE_ERROR":
+            raise RuntimeError("Model generation failed.")
+        return AURAResponse(request_id=request_id, content=self.response_content)
 
 
 @pytest.fixture
 def skill_registry():
     reg = SkillRegistry()
-    reg.register(Skill(name="fetch_data", handler=lambda x: "data"))
-    reg.register(Skill(name="process_data", handler=lambda x: "processed"))
-    reg.register(Skill(name="report", handler=lambda x: "report"))
+    reg.register(Skill(name="fetch_data", description="Fetches web data", handler=lambda x: "data"))
+    reg.register(Skill(name="process_data", description="Processes raw data", handler=lambda x: "processed"))
+    reg.register(Skill(name="report", description="Generates reports", handler=lambda x: "report"))
     return reg
 
 
@@ -143,6 +169,193 @@ def test_planner_rejects_circular_dependency(skill_registry):
 
     with pytest.raises(ValueError, match="Circular dependency detected"):
         planner.create_plan([s1, s2])
+
+
+# ==========================================================
+# MODEL-ASSISTED PLANNING TESTS
+# ==========================================================
+
+
+def test_model_assisted_plan_generation_valid(skill_registry):
+    canned_plan = {
+        "steps": [
+            {
+                "step_id": "step_1",
+                "skill_name": "fetch_data",
+                "input_data": {"url": "https://api.example.com"},
+                "dependencies": [],
+            },
+            {
+                "step_id": "step_2",
+                "skill_name": "process_data",
+                "dependencies": ["step_1"],
+            },
+            {
+                "step_id": "step_3",
+                "skill_name": "report",
+                "dependencies": ["step_2"],
+            },
+        ]
+    }
+    model = ProgrammableModelProvider(json.dumps(canned_plan))
+    planner = TaskPlanner(skill_registry=skill_registry, model=model)
+
+    plan = planner.plan("Fetch data, process it, and generate a summary report.")
+
+    assert model.calls == 1
+    assert "fetch_data" in model.last_prompt
+    assert "Fetch data, process it" in model.last_prompt
+    assert len(plan.steps) == 3
+    assert plan.steps[0].step_id == "step_1"
+    assert plan.steps[1].step_id == "step_2"
+    assert plan.steps[2].step_id == "step_3"
+    assert plan.steps[1].dependencies == ("step_1",)
+    assert plan.steps[2].dependencies == ("step_2",)
+
+
+def test_model_assisted_plan_generation_with_markdown_fences(skill_registry):
+    canned_plan = {
+        "steps": [
+            {
+                "step_id": "s1",
+                "skill_name": "fetch_data",
+                "dependencies": [],
+            }
+        ]
+    }
+    raw_content = f"```json\n{json.dumps(canned_plan)}\n```"
+    model = ProgrammableModelProvider(raw_content)
+    planner = TaskPlanner(skill_registry=skill_registry, model=model)
+
+    plan = planner.plan("Get data")
+    assert len(plan.steps) == 1
+    assert plan.steps[0].step_id == "s1"
+
+
+def test_model_assisted_plan_rejects_empty_task(skill_registry):
+    planner = TaskPlanner(skill_registry, model=ProgrammableModelProvider("{}"))
+    with pytest.raises(ValueError, match="Task description must be a non-empty string"):
+        planner.plan("")
+
+    with pytest.raises(ValueError, match="Task description must be a non-empty string"):
+        planner.plan("   ")
+
+
+def test_model_assisted_plan_requires_model_or_router(skill_registry):
+    planner = TaskPlanner(skill_registry)
+    with pytest.raises(ValueError, match="ModelInterface or ModelRouter required"):
+        planner.plan("Do task")
+
+
+def test_model_assisted_plan_via_model_router(skill_registry):
+    cap_reg = CapabilityRegistry()
+    prov_reg = ProviderRegistry()
+
+    canned_plan = {
+        "steps": [{"step_id": "s1", "skill_name": "fetch_data", "dependencies": []}]
+    }
+    p_model = ProgrammableModelProvider(json.dumps(canned_plan))
+    prov_reg.register("prov", p_model)
+
+    m_desc = ModelDescriptor(
+        model_id="reasoning_model",
+        provider_id="prov",
+        capabilities={ModelCapability.REASONING},
+    )
+    cap_reg.register_model(m_desc)
+
+    router = ModelRouter(cap_reg, prov_reg)
+    planner = TaskPlanner(skill_registry=skill_registry, model_router=router)
+
+    plan = planner.plan("Fetch data")
+    assert len(plan.steps) == 1
+    assert plan.steps[0].skill_name == "fetch_data"
+
+
+def test_model_assisted_plan_rejects_unknown_skill(skill_registry):
+    canned_plan = {
+        "steps": [
+            {"step_id": "s1", "skill_name": "invented_alien_skill", "dependencies": []}
+        ]
+    }
+    model = ProgrammableModelProvider(json.dumps(canned_plan))
+    planner = TaskPlanner(skill_registry=skill_registry, model=model)
+
+    with pytest.raises(KeyError, match="Unknown skill 'invented_alien_skill'"):
+        planner.plan("Do something alien")
+
+
+def test_model_assisted_plan_rejects_malformed_json(skill_registry):
+    model = ProgrammableModelProvider("I cannot do this task because I am an AI.")
+    planner = TaskPlanner(skill_registry=skill_registry, model=model)
+
+    with pytest.raises(ValueError, match="Failed to parse model plan output as JSON"):
+        planner.plan("Do something")
+
+
+def test_model_assisted_plan_rejects_missing_steps_key(skill_registry):
+    model = ProgrammableModelProvider(json.dumps({"wrong_key": []}))
+    planner = TaskPlanner(skill_registry=skill_registry, model=model)
+
+    with pytest.raises(ValueError, match="missing 'steps' key"):
+        planner.plan("Do something")
+
+
+def test_model_assisted_plan_rejects_invalid_dependencies(skill_registry):
+    canned_plan = {
+        "steps": [
+            {"step_id": "s1", "skill_name": "fetch_data", "dependencies": ["nonexistent_step"]}
+        ]
+    }
+    model = ProgrammableModelProvider(json.dumps(canned_plan))
+    planner = TaskPlanner(skill_registry=skill_registry, model=model)
+
+    with pytest.raises(ValueError, match="depends on nonexistent step 'nonexistent_step'"):
+        planner.plan("Do something")
+
+
+def test_model_assisted_plan_rejects_circular_dependencies(skill_registry):
+    canned_plan = {
+        "steps": [
+            {"step_id": "s1", "skill_name": "fetch_data", "dependencies": ["s2"]},
+            {"step_id": "s2", "skill_name": "process_data", "dependencies": ["s1"]},
+        ]
+    }
+    model = ProgrammableModelProvider(json.dumps(canned_plan))
+    planner = TaskPlanner(skill_registry=skill_registry, model=model)
+
+    with pytest.raises(ValueError, match="Circular dependency detected"):
+        planner.plan("Do circular task")
+
+
+def test_model_assisted_plan_handles_model_failure(skill_registry):
+    model = ProgrammableModelProvider("RAISE_ERROR")
+    planner = TaskPlanner(skill_registry=skill_registry, model=model)
+
+    with pytest.raises(RuntimeError, match="Model generation failed"):
+        planner.plan("Do failing task")
+
+
+def test_model_plan_does_not_execute_automatically(skill_registry):
+    executed = []
+
+    def tracking_handler(inp):
+        executed.append(inp)
+        return "ok"
+
+    skill_registry.register(Skill(name="track_skill", handler=tracking_handler))
+
+    canned_plan = {
+        "steps": [{"step_id": "s1", "skill_name": "track_skill", "dependencies": []}]
+    }
+    model = ProgrammableModelProvider(json.dumps(canned_plan))
+    planner = TaskPlanner(skill_registry=skill_registry, model=model)
+
+    plan = planner.plan("Run track skill")
+
+    # The plan is created and validated, but NOT executed!
+    assert len(plan.steps) == 1
+    assert executed == []
 
 
 def test_planner_alias_module_imports():
