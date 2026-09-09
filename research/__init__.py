@@ -1,8 +1,10 @@
 from research.contradictions import detect_contradictions
+from research.crawler import BoundedWebCrawler, score_discovered_link
 from research.evidence import extract_evidence_from_text, extract_source_evidence
-from research.extractor import HTMLTextExtractor, extract_text_and_title_from_html
+from research.extractor import HTMLTextExtractor, extract_links_from_html, extract_text_and_title_from_html
 from research.interfaces import BrowserProvider, FetchProvider, SearchProvider, WebProvider
 from research.models import (
+    DiscoveredLink,
     EvidenceConflict,
     EvidenceItem,
     ResearchReport,
@@ -38,10 +40,12 @@ __all__ = [
     "WebDocument",
     "EvidenceItem",
     "EvidenceConflict",
+    "DiscoveredLink",
     "ResearchSource",
     "ResearchReport",
     "HTMLTextExtractor",
     "extract_text_and_title_from_html",
+    "extract_links_from_html",
     "normalize_url",
     "deduplicate_urls",
     "score_search_item",
@@ -51,6 +55,8 @@ __all__ = [
     "extract_evidence_from_text",
     "extract_source_evidence",
     "detect_contradictions",
+    "score_discovered_link",
+    "BoundedWebCrawler",
     "BrowserFetchProvider",
     "FakeBrowserProvider",
     "create_search_provider",

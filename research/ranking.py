@@ -146,6 +146,8 @@ def rank_research_sources(sources: Sequence[ResearchSource], query: str) -> list
             source_domain=src.source_domain,
             evidence=src.evidence,
             rank_score=score,
+            hop=src.hop,
+            parent_url=src.parent_url,
             metadata=dict(src.metadata),
         )
         scored_sources.append((-score, ranked_src.url, ranked_src.title, ranked_src))

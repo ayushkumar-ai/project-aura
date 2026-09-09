@@ -26,10 +26,12 @@ def _build_synthesis_prompt(
         title = src.get("title", "Untitled")
         url = src.get("url", "")
         domain = src.get("domain", "")
+        hop = src.get("hop", 0)
+        hop_tag = f" [Hop {hop}]" if hop > 0 else ""
         content = src.get("content") or src.get("snippet", "")
 
         sources_text_parts.append(
-            f"--- Source [{idx}]: {title} ({url}) [Domain: {domain}] ---\n"
+            f"--- Source [{idx}]: {title}{hop_tag} ({url}) [Domain: {domain}] ---\n"
             f"<untrusted_source_content>\n{content}\n</untrusted_source_content>"
         )
 
@@ -80,6 +82,9 @@ def create_research_skill(
         max_sources = None
         fetch_content = True
         use_dynamic = False
+        multi_hop = False
+        max_hops = 2
+        max_pages = 6
         synthesize = True
 
         if isinstance(input_data, str):
@@ -93,6 +98,12 @@ def create_research_skill(
                 use_dynamic = bool(input_data["dynamic"])
             elif "use_browser" in input_data:
                 use_dynamic = bool(input_data["use_browser"])
+            if "multi_hop" in input_data:
+                multi_hop = bool(input_data["multi_hop"])
+            if "max_hops" in input_data:
+                max_hops = int(input_data["max_hops"])
+            if "max_pages" in input_data:
+                max_pages = int(input_data["max_pages"])
             if "synthesize" in input_data:
                 synthesize = bool(input_data["synthesize"])
         else:
@@ -109,6 +120,9 @@ def create_research_skill(
                 "max_sources": max_sources,
                 "fetch": fetch_content,
                 "dynamic": use_dynamic,
+                "multi_hop": multi_hop,
+                "max_hops": max_hops,
+                "max_pages": max_pages,
             })
             raw_result_str = exec_tool.execute("web_search", tool_input)
         elif service is not None:
@@ -117,6 +131,9 @@ def create_research_skill(
                 max_sources=max_sources,
                 fetch_content=fetch_content,
                 use_dynamic=use_dynamic,
+                multi_hop=multi_hop,
+                max_hops=max_hops,
+                max_pages=max_pages,
             )
             sources_data = [
                 {
@@ -126,10 +143,15 @@ def create_research_skill(
                     "content": s.content,
                     "domain": s.source_domain,
                     "rank_score": s.rank_score,
+                    "hop": s.hop,
+                    "parent_url": s.parent_url,
                 }
                 for s in report.sources
             ]
-            failed_data = [{"title": s.title, "url": s.url, "error": s.error} for s in report.failed_sources]
+            failed_data = [
+                {"title": s.title, "url": s.url, "error": s.error, "hop": s.hop}
+                for s in report.failed_sources
+            ]
             evidence_data = [
                 {
                     "source_url": ev.source_url,
@@ -155,6 +177,11 @@ def create_research_skill(
                 "failed_sources": failed_data,
                 "evidence": evidence_data,
                 "contradictions": contradictions_data,
+                "discovered_links": [
+                    {"source_url": dl.source_url, "target_url": dl.target_url, "anchor_text": dl.anchor_text, "hop": dl.hop}
+                    for dl in report.discovered_links
+                ],
+                "traversal_stats": report.traversal_stats,
                 "total_sources": len(sources_data),
             })
         else:
@@ -176,10 +203,11 @@ def create_research_skill(
                 logger.warning("Model synthesis failed for research query '%s': %s", query, e)
                 synthesis_text = f"Research completed with {len(sources)} sources (synthesis unavailable: {e})."
 
-            # Format final attributed output
             citations = []
             for idx, s in enumerate(sources, 1):
-                citations.append(f"[{idx}] {s.get('title')} - {s.get('url')}")
+                hop = s.get("hop", 0)
+                hop_str = f" [Hop {hop}]" if hop > 0 else ""
+                citations.append(f"[{idx}] {s.get('title')}{hop_str} - {s.get('url')}")
             citations_block = "\n".join(citations)
 
             return f"{synthesis_text}\n\nSources:\n{citations_block}"
@@ -193,7 +221,9 @@ def create_research_skill(
             title = s.get("title", "Untitled")
             url = s.get("url", "")
             snippet = s.get("snippet", "")
-            lines.append(f"[{idx}] {title} ({url})\n    {snippet}")
+            hop = s.get("hop", 0)
+            hop_str = f" [Hop {hop}]" if hop > 0 else ""
+            lines.append(f"[{idx}] {title}{hop_str} ({url})\n    {snippet}")
 
         return "\n\n".join(lines)
 

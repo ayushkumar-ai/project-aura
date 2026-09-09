@@ -6,9 +6,11 @@ from uuid import UUID, uuid4
 from core.models import AURAResponse
 from interfaces.model import ModelInterface
 from research.contradictions import detect_contradictions
+from research.crawler import BoundedWebCrawler
 from research.evidence import extract_source_evidence
 from research.interfaces import BrowserProvider, FetchProvider, SearchProvider
 from research.models import (
+    DiscoveredLink,
     EvidenceConflict,
     EvidenceItem,
     ResearchReport,
@@ -34,8 +36,8 @@ def default_text_extractor(raw_text: str, max_chars: int) -> str:
 
 
 class ResearchService:
-    """Coordinates search, fetch, dynamic browser rendering, source ranking, evidence extraction,
-    contradiction detection, and structured research synthesis with bounded execution."""
+    """Coordinates search, fetch, dynamic browser rendering, multi-hop discovery, source ranking,
+    evidence extraction, contradiction detection, and structured research synthesis with bounded execution."""
 
     def __init__(
         self,
@@ -108,7 +110,6 @@ class ResearchService:
             logger.warning("Search provider failed for query '%s': %s", q_clean, e)
             raise RuntimeError(f"Search provider error: {str(e)}") from e
 
-        # URL normalization and deduplication preserving order
         seen_urls: set[str] = set()
         deduped_items: list[SearchItem] = []
         for itm in raw_result.items:
@@ -121,7 +122,6 @@ class ResearchService:
                 seen_urls.add(norm)
                 deduped_items.append(itm)
 
-        # Deterministic ranking
         ranked_items = rank_search_items(deduped_items, query=q_clean)
 
         return SearchResult(
@@ -166,6 +166,7 @@ class ResearchService:
             content=extracted_content,
             status_code=raw_doc.status_code,
             error=raw_doc.error,
+            raw_html=raw_doc.raw_html or raw_doc.content,
             metadata=dict(raw_doc.metadata),
         )
 
@@ -206,6 +207,7 @@ class ResearchService:
             content=extracted_content,
             status_code=raw_doc.status_code,
             error=raw_doc.error,
+            raw_html=raw_doc.raw_html or raw_doc.content,
             metadata=dict(raw_doc.metadata),
         )
 
@@ -215,10 +217,13 @@ class ResearchService:
         max_sources: int | None = None,
         fetch_content: bool = True,
         use_dynamic: bool = False,
+        multi_hop: bool = False,
+        max_hops: int = 2,
+        max_pages: int = 6,
+        max_links_per_page: int = 3,
         timeout: float | None = None,
     ) -> ResearchReport:
-        """Perform end-to-end bounded web research with source ranking, dynamic browser support,
-        evidence extraction, contradiction detection, and fault isolation."""
+        """Perform end-to-end bounded web research with optional autonomous multi-hop traversal."""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("Query must be a non-empty string.")
 
@@ -227,7 +232,7 @@ class ResearchService:
         if effective_max_sources <= 0:
             effective_max_sources = self.max_fetch_sources
 
-        # 1. Execute bounded search and ranking
+        # 1. Execute bounded initial search
         search_res = self.search(
             query=query,
             max_results=self.max_search_results,
@@ -242,14 +247,83 @@ class ResearchService:
                 summary="No search results found.",
                 evidence=(),
                 contradictions=(),
+                discovered_links=(),
+                traversal_stats={},
                 metadata={"provider": self.search_provider.name},
             )
 
-        successful_sources: list[ResearchSource] = []
-        failed_sources: list[ResearchSource] = []
+        # 2. Multi-hop traversal pathway
+        if multi_hop:
+            def crawl_fetcher(url: str, tout: float | None) -> WebDocument:
+                if use_dynamic and self.browser_provider is not None:
+                    return self.fetch_dynamic(url, timeout=tout)
+                elif self.fetch_provider is not None:
+                    doc = self.fetch(url, timeout=tout)
+                    if (not doc.is_success or len(doc.content.strip()) < 30) and self.browser_provider is not None:
+                        try:
+                            dyn = self.fetch_dynamic(url, timeout=tout)
+                            if dyn.is_success and len(dyn.content.strip()) > len(doc.content.strip()):
+                                return dyn
+                        except Exception:
+                            pass
+                    return doc
+                elif self.browser_provider is not None:
+                    return self.fetch_dynamic(url, timeout=tout)
+                else:
+                    raise RuntimeError("No fetch or browser provider available.")
+
+            crawler = BoundedWebCrawler(
+                fetch_fn=crawl_fetcher,
+                max_hops=max_hops,
+                max_pages=max_pages,
+                max_links_per_page=max_links_per_page,
+                max_total_fetches=max_pages * 2,
+                max_total_document_chars=self.max_document_chars * max_pages,
+                max_evidence_per_source=self.max_evidence_per_source,
+                max_passage_chars=self.max_passage_chars,
+                default_timeout=effective_timeout,
+            )
+
+            successful_sources, failed_sources, discovered_links, stats = crawler.crawl(
+                query=query,
+                seed_items=search_res.items[:effective_max_sources],
+                timeout=effective_timeout,
+            )
+
+            ranked_sources = rank_research_sources(successful_sources, query=query)
+            aggregated_evidence: list[EvidenceItem] = []
+            for src in ranked_sources:
+                aggregated_evidence.extend(src.evidence)
+
+            contradictions = detect_contradictions(aggregated_evidence, query=query)
+
+            return ResearchReport(
+                query=query.strip(),
+                sources=tuple(ranked_sources),
+                failed_sources=tuple(failed_sources),
+                evidence=tuple(aggregated_evidence),
+                contradictions=contradictions,
+                discovered_links=discovered_links,
+                traversal_stats=stats,
+                metadata={
+                    "search_provider": self.search_provider.name,
+                    "fetch_provider": self.fetch_provider.name if self.fetch_provider else None,
+                    "browser_provider": self.browser_provider.name if self.browser_provider else None,
+                    "multi_hop": True,
+                    "max_hops": max_hops,
+                    "total_queried": len(search_res.items),
+                    "successful_count": len(ranked_sources),
+                    "failed_count": len(failed_sources),
+                    "evidence_count": len(aggregated_evidence),
+                    "contradictions_count": len(contradictions),
+                },
+            )
+
+        # 3. Single-hop pathway (default, preserving M9.1–M9.4 behavior)
+        successful_sources_list: list[ResearchSource] = []
+        failed_sources_list: list[ResearchSource] = []
         seen_urls: set[str] = set()
 
-        # 2. Fetch and extract evidence for top ranked search items
         for item in search_res.items[:effective_max_sources]:
             try:
                 norm_url = normalize_url(item.url)
@@ -262,20 +336,18 @@ class ResearchService:
 
             if fetch_content and (self.fetch_provider is not None or self.browser_provider is not None):
                 try:
-                    # Choose dynamic browser retrieval if requested or if only browser is configured
                     doc = None
                     if use_dynamic and self.browser_provider is not None:
                         doc = self.fetch_dynamic(norm_url, timeout=effective_timeout)
                     elif self.fetch_provider is not None:
                         doc = self.fetch(norm_url, timeout=effective_timeout)
-                        # Automatic dynamic fallback if static fetch yielded no content and browser is available
                         if (not doc.is_success or len(doc.content.strip()) < 30) and self.browser_provider is not None:
                             try:
                                 dyn_doc = self.fetch_dynamic(norm_url, timeout=effective_timeout)
                                 if dyn_doc.is_success and len(dyn_doc.content.strip()) > len(doc.content.strip()):
                                     doc = dyn_doc
                             except Exception:
-                                pass  # Retain original doc
+                                pass
                     elif self.browser_provider is not None:
                         doc = self.fetch_dynamic(norm_url, timeout=effective_timeout)
 
@@ -305,7 +377,7 @@ class ResearchService:
                             evidence=evidence_items,
                             metadata=dict(initial_src.metadata),
                         )
-                        successful_sources.append(src)
+                        successful_sources_list.append(src)
                     else:
                         err_msg = doc.error if doc else "No fetch provider available."
                         src = ResearchSource(
@@ -317,7 +389,7 @@ class ResearchService:
                             error=err_msg,
                             source_domain=item.source_domain,
                         )
-                        failed_sources.append(src)
+                        failed_sources_list.append(src)
                 except Exception as fetch_err:
                     logger.warning("Fetch failed for source '%s': %s", item.url, fetch_err)
                     src = ResearchSource(
@@ -329,7 +401,7 @@ class ResearchService:
                         error=str(fetch_err),
                         source_domain=item.source_domain,
                     )
-                    failed_sources.append(src)
+                    failed_sources_list.append(src)
             else:
                 initial_src = ResearchSource(
                     url=norm_url,
@@ -354,32 +426,30 @@ class ResearchService:
                     source_domain=initial_src.source_domain,
                     evidence=evidence_items,
                 )
-                successful_sources.append(src)
+                successful_sources_list.append(src)
 
-        # 3. Deterministic source ranking
-        ranked_sources = rank_research_sources(successful_sources, query=query)
-
-        # 4. Collect aggregated evidence from ranked sources
-        aggregated_evidence: list[EvidenceItem] = []
+        ranked_sources = rank_research_sources(successful_sources_list, query=query)
+        aggregated_evidence = []
         for src in ranked_sources:
             aggregated_evidence.extend(src.evidence)
 
-        # 5. Deterministic contradiction detection
         contradictions = detect_contradictions(aggregated_evidence, query=query)
 
         return ResearchReport(
             query=query.strip(),
             sources=tuple(ranked_sources),
-            failed_sources=tuple(failed_sources),
+            failed_sources=tuple(failed_sources_list),
             evidence=tuple(aggregated_evidence),
             contradictions=contradictions,
+            discovered_links=(),
+            traversal_stats={},
             metadata={
                 "search_provider": self.search_provider.name,
                 "fetch_provider": self.fetch_provider.name if self.fetch_provider else None,
                 "browser_provider": self.browser_provider.name if self.browser_provider else None,
                 "total_queried": len(search_res.items),
                 "successful_count": len(ranked_sources),
-                "failed_count": len(failed_sources),
+                "failed_count": len(failed_sources_list),
                 "evidence_count": len(aggregated_evidence),
                 "contradictions_count": len(contradictions),
                 "dynamic_requested": use_dynamic,
@@ -405,9 +475,10 @@ class ResearchService:
 
         evidence_parts = []
         for idx, src in enumerate(report.sources, 1):
+            hop_note = f" (Hop {src.hop})" if src.hop > 0 else ""
             content_text = src.content or src.snippet
             evidence_parts.append(
-                f"--- Source [{idx}]: {src.title} ({src.url}) [Domain: {src.source_domain}] ---\n"
+                f"--- Source [{idx}]: {src.title}{hop_note} ({src.url}) [Domain: {src.source_domain}] ---\n"
                 f"<untrusted_source_content>\n{content_text}\n</untrusted_source_content>"
             )
 

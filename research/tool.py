@@ -23,7 +23,7 @@ class WebSearchTool(ToolInterface):
 
     @property
     def keywords(self) -> tuple[str, ...]:
-        return ("search", "web", "research", "lookup", "find", "browser")
+        return ("search", "web", "research", "lookup", "find", "browser", "crawler")
 
     def execute(self, input_data: str) -> str:
         if not isinstance(input_data, str) or not input_data.strip():
@@ -33,6 +33,9 @@ class WebSearchTool(ToolInterface):
         max_sources = None
         fetch_content = True
         use_dynamic = False
+        multi_hop = False
+        max_hops = 2
+        max_pages = 6
 
         # Check if input is structured JSON
         if query.startswith("{") and query.endswith("}"):
@@ -49,6 +52,12 @@ class WebSearchTool(ToolInterface):
                         use_dynamic = bool(parsed["dynamic"])
                     elif "use_browser" in parsed:
                         use_dynamic = bool(parsed["use_browser"])
+                    if "multi_hop" in parsed:
+                        multi_hop = bool(parsed["multi_hop"])
+                    if "max_hops" in parsed:
+                        max_hops = int(parsed["max_hops"])
+                    if "max_pages" in parsed:
+                        max_pages = int(parsed["max_pages"])
             except Exception:
                 pass  # Fall back to treating as raw query string
 
@@ -57,6 +66,9 @@ class WebSearchTool(ToolInterface):
             max_sources=max_sources,
             fetch_content=fetch_content,
             use_dynamic=use_dynamic,
+            multi_hop=multi_hop,
+            max_hops=max_hops,
+            max_pages=max_pages,
         )
 
         sources_data = []
@@ -68,6 +80,8 @@ class WebSearchTool(ToolInterface):
                 "content": src.content,
                 "domain": src.source_domain,
                 "rank_score": src.rank_score,
+                "hop": src.hop,
+                "parent_url": src.parent_url,
             })
 
         failed_data = []
@@ -76,6 +90,7 @@ class WebSearchTool(ToolInterface):
                 "title": fsrc.title,
                 "url": fsrc.url,
                 "error": fsrc.error,
+                "hop": fsrc.hop,
             })
 
         evidence_data = []
@@ -99,11 +114,22 @@ class WebSearchTool(ToolInterface):
                 "conflict_type": ct.conflict_type,
             })
 
+        links_data = []
+        for dl in report.discovered_links:
+            links_data.append({
+                "source_url": dl.source_url,
+                "target_url": dl.target_url,
+                "anchor_text": dl.anchor_text,
+                "hop": dl.hop,
+            })
+
         return json.dumps({
             "query": report.query,
             "sources": sources_data,
             "failed_sources": failed_data,
             "evidence": evidence_data,
             "contradictions": contradictions_data,
+            "discovered_links": links_data,
+            "traversal_stats": report.traversal_stats,
             "total_sources": len(sources_data),
         })

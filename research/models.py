@@ -105,6 +105,7 @@ class WebDocument:
     content: str = ""
     status_code: int = 200
     error: str | None = None
+    raw_html: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -127,6 +128,9 @@ class WebDocument:
 
         if self.error is not None and not isinstance(self.error, str):
             raise TypeError("error must be a string or None.")
+
+        if not isinstance(self.raw_html, str):
+            raise TypeError("raw_html must be a string.")
 
         if not isinstance(self.metadata, dict):
             raise TypeError("metadata must be a dict.")
@@ -222,6 +226,56 @@ class EvidenceConflict:
 
 
 @dataclass(frozen=True)
+class DiscoveredLink:
+    """Represents a hyperlink discovered during document extraction or web traversal."""
+
+    source_url: str
+    target_url: str
+    anchor_text: str = ""
+    source_title: str = ""
+    source_domain: str = ""
+    hop: int = 0
+    relevance_score: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.source_url, str):
+            raise TypeError("source_url must be a string.")
+        object.__setattr__(self, "source_url", self.source_url.strip())
+
+        if not isinstance(self.target_url, str) or not self.target_url.strip():
+            raise ValueError("target_url must be a non-empty string.")
+        t_clean = self.target_url.strip()
+        if not (t_clean.startswith("http://") or t_clean.startswith("https://")):
+            raise ValueError(f"Invalid URL scheme in '{t_clean}'. Must start with http:// or https://.")
+        object.__setattr__(self, "target_url", t_clean)
+
+        if not isinstance(self.anchor_text, str):
+            raise TypeError("anchor_text must be a string.")
+        object.__setattr__(self, "anchor_text", self.anchor_text.strip())
+
+        if not isinstance(self.source_title, str):
+            raise TypeError("source_title must be a string.")
+        object.__setattr__(self, "source_title", self.source_title.strip())
+
+        if not isinstance(self.source_domain, str):
+            raise TypeError("source_domain must be a string.")
+        domain = self.source_domain.strip() if self.source_domain else _extract_domain(t_clean)
+        object.__setattr__(self, "source_domain", domain)
+
+        if not isinstance(self.hop, int) or self.hop < 0:
+            raise ValueError("hop must be a non-negative integer.")
+
+        if not isinstance(self.relevance_score, (int, float)):
+            raise TypeError("relevance_score must be a numeric value.")
+        object.__setattr__(self, "relevance_score", float(self.relevance_score))
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+        object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
+
+
+@dataclass(frozen=True)
 class ResearchSource:
     """Represents a verified source utilized for research and attribution."""
 
@@ -234,6 +288,8 @@ class ResearchSource:
     source_domain: str = ""
     evidence: tuple[EvidenceItem, ...] = field(default_factory=tuple)
     rank_score: float = 0.0
+    hop: int = 0
+    parent_url: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -275,6 +331,12 @@ class ResearchSource:
             raise TypeError("rank_score must be a numeric value.")
         object.__setattr__(self, "rank_score", float(self.rank_score))
 
+        if not isinstance(self.hop, int) or self.hop < 0:
+            raise ValueError("hop must be a non-negative integer.")
+
+        if self.parent_url is not None and not isinstance(self.parent_url, str):
+            raise TypeError("parent_url must be a string or None.")
+
         if not isinstance(self.metadata, dict):
             raise TypeError("metadata must be a dict.")
         object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
@@ -282,7 +344,7 @@ class ResearchSource:
 
 @dataclass(frozen=True)
 class ResearchReport:
-    """Aggregated outcome of a research operation with full source and evidence attribution."""
+    """Aggregated outcome of a research operation with full source, evidence, and traversal attribution."""
 
     query: str
     sources: tuple[ResearchSource, ...] = field(default_factory=tuple)
@@ -290,6 +352,8 @@ class ResearchReport:
     summary: str | None = None
     evidence: tuple[EvidenceItem, ...] = field(default_factory=tuple)
     contradictions: tuple[EvidenceConflict, ...] = field(default_factory=tuple)
+    discovered_links: tuple[DiscoveredLink, ...] = field(default_factory=tuple)
+    traversal_stats: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -332,6 +396,18 @@ class ResearchReport:
         else:
             raise TypeError("contradictions must be a list or tuple of EvidenceConflict instances.")
 
+        if isinstance(self.discovered_links, (list, tuple)):
+            for dl in self.discovered_links:
+                if not isinstance(dl, DiscoveredLink):
+                    raise TypeError("All items in discovered_links must be DiscoveredLink instances.")
+            object.__setattr__(self, "discovered_links", tuple(self.discovered_links))
+        else:
+            raise TypeError("discovered_links must be a list or tuple of DiscoveredLink instances.")
+
+        if not isinstance(self.traversal_stats, dict):
+            raise TypeError("traversal_stats must be a dict.")
+        object.__setattr__(self, "traversal_stats", _sanitize_metadata(self.traversal_stats))
+
         if not isinstance(self.metadata, dict):
             raise TypeError("metadata must be a dict.")
         object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
@@ -350,7 +426,8 @@ class ResearchReport:
         """Format source citations for prompt injection or report rendering."""
         lines = []
         for idx, src in enumerate(self.sources, 1):
-            lines.append(f"[{idx}] {src.title} - {src.url}")
+            hop_tag = f" [Hop {src.hop}]" if src.hop > 0 else ""
+            lines.append(f"[{idx}] {src.title} - {src.url}{hop_tag}")
         return "\n".join(lines)
 
     def format_evidence_summary(self) -> str:
