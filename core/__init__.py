@@ -18,6 +18,26 @@ from core.autonomous_agent import (
     AutonomousAgentResult,
     is_recoverable_failure,
 )
+from core.goal import (
+    Goal,
+    GoalObservation,
+    GoalPriority,
+    GoalProgress,
+    GoalStatus,
+    GoalTrigger,
+    TriggerType,
+    deserialize_goal,
+    deserialize_goal_observation,
+    deserialize_goal_progress,
+    deserialize_goal_trigger,
+    serialize_goal,
+    serialize_goal_observation,
+    serialize_goal_progress,
+    serialize_goal_trigger,
+)
+from core.goal_engine import GoalEngine, GoalEngineConfig
+from core.goal_reasoner import GoalEvaluationResult, GoalReasoner
+from core.goal_store import GoalStore, InMemoryGoalStore
 from core.provenance import (
     TaintedValue,
     extract_provenance,
@@ -28,6 +48,7 @@ from core.provenance import (
 )
 
 __all__ = [
+
     # M8.9 Provenance
     "TaintedValue",
     "wrap_tainted",
@@ -52,4 +73,26 @@ __all__ = [
     "AutonomousAgentResult",
     "AutonomousAgentExecutor",
     "is_recoverable_failure",
+    # M11 Proactive / Goal-Oriented Intelligence
+    "Goal",
+    "GoalStatus",
+    "GoalPriority",
+    "TriggerType",
+    "GoalTrigger",
+    "GoalObservation",
+    "GoalProgress",
+    "serialize_goal",
+    "deserialize_goal",
+    "serialize_goal_progress",
+    "deserialize_goal_progress",
+    "serialize_goal_trigger",
+    "deserialize_goal_trigger",
+    "serialize_goal_observation",
+    "deserialize_goal_observation",
+    "GoalStore",
+    "InMemoryGoalStore",
+    "GoalEvaluationResult",
+    "GoalReasoner",
+    "GoalEngineConfig",
+    "GoalEngine",
 ]

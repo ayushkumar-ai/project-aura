@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     aura_max_queries_total: int = 6
     aura_research_min_coverage_ratio: float = 0.7
 
+    # M11 Proactive & Goal-Oriented Configuration
+    aura_max_active_goals: int = 10
+    aura_max_evaluations_per_goal: int = 50
+    aura_max_actions_per_goal: int = 20
+    aura_goal_cooldown_seconds: float = 5.0
+    aura_goal_timeout_seconds: float = 3600.0
+
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
