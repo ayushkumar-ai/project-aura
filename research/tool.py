@@ -19,11 +19,11 @@ class WebSearchTool(ToolInterface):
 
     @property
     def description(self) -> str:
-        return "Search the web for up-to-date information, research sources, and structured evidence."
+        return "Search the web for up-to-date information, research sources, structured evidence, and verified findings."
 
     @property
     def keywords(self) -> tuple[str, ...]:
-        return ("search", "web", "research", "lookup", "find", "browser", "crawler", "deep_research", "iterative")
+        return ("search", "web", "research", "lookup", "find", "browser", "crawler", "deep_research", "iterative", "verify")
 
     def execute(self, input_data: str) -> str:
         if not isinstance(input_data, str) or not input_data.strip():
@@ -138,6 +138,7 @@ class WebSearchTool(ToolInterface):
                 "source_domain": ev.source_domain,
                 "content": ev.content,
                 "relevance_score": ev.relevance_score,
+                "metadata": ev.metadata,
             })
 
         contradictions_data = []
@@ -178,6 +179,50 @@ class WebSearchTool(ToolInterface):
                 "sources_count": cl.total_sources_count,
             })
 
+        verified_claims_data = []
+        for vc in report.verified_claims:
+            verified_claims_data.append({
+                "claim_id": vc.claim_id,
+                "statement": vc.statement,
+                "verification_status": vc.verification_status.value,
+                "confidence_score": vc.confidence_score,
+                "reasoning": vc.reasoning,
+                "supporting_evidence_count": len(vc.supporting_evidence),
+                "refuting_evidence_count": len(vc.refuting_evidence),
+                "contradiction_ids": list(vc.contradiction_ids),
+            })
+
+        assembled_answer_data = None
+        if report.assembled_answer is not None:
+            assembled_answer_data = {
+                "summary": report.assembled_answer.summary,
+                "formatted_answer": report.assembled_answer.formatted_answer,
+                "is_grounded": report.assembled_answer.is_grounded,
+                "confidence_score": report.assembled_answer.confidence_score,
+                "unsupported_claims_flagged": list(report.assembled_answer.unsupported_claims_flagged),
+                "conflicts_flagged": list(report.assembled_answer.conflicts_flagged),
+                "citations": [
+                    {
+                        "citation_index": c.citation_index,
+                        "source_url": c.source_url,
+                        "source_title": c.source_title,
+                        "domain": c.domain,
+                        "hop": c.hop,
+                    }
+                    for c in report.assembled_answer.citations
+                ],
+                "sections": [
+                    {
+                        "title": sec.title,
+                        "content": sec.content,
+                        "section_type": sec.section_type,
+                        "citations": list(sec.citations),
+                        "claim_ids": list(sec.claim_ids),
+                    }
+                    for sec in report.assembled_answer.sections
+                ],
+            }
+
         confidence_data = None
         if report.confidence is not None:
             confidence_data = {
@@ -209,6 +254,8 @@ class WebSearchTool(ToolInterface):
             "discovered_links": links_data,
             "sub_questions": sub_q_data,
             "claims": claims_data,
+            "verified_claims": verified_claims_data,
+            "assembled_answer": assembled_answer_data,
             "confidence": confidence_data,
             "coverage": coverage_data,
             "traversal_stats": report.traversal_stats,

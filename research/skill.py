@@ -22,6 +22,7 @@ def _build_synthesis_prompt(
     evidence: list[dict[str, Any]] | None = None,
     contradictions: list[dict[str, Any]] | None = None,
     claims: list[dict[str, Any]] | None = None,
+    verified_claims: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build a hardened synthesis prompt ensuring untrusted web data is treated strictly as reference data."""
     sources_text_parts = []
@@ -41,19 +42,22 @@ def _build_synthesis_prompt(
     sources_block = "\n\n".join(sources_text_parts) if sources_text_parts else "No sources available."
 
     claims_block = ""
-    if claims:
+    if verified_claims:
+        cl_lines = [f"- [{c.get('verification_status', 'supported').upper()}] {c.get('statement')}" for c in verified_claims]
+        claims_block = "\n\nSTRUCTURED VERIFIED CLAIMS:\n" + "\n".join(cl_lines)
+    elif claims:
         cl_lines = [f"- [{c.get('consensus_status', 'supported').upper()}] {c.get('statement')}" for c in claims]
         claims_block = "\n\nSTRUCTURED RESEARCH CLAIMS:\n" + "\n".join(cl_lines)
 
     contradiction_notes = ""
     if contradictions:
         c_list = [f"- {c.get('claim')} ({c.get('source_a_url')} vs {c.get('source_b_url')})" for c in contradictions]
-        contradiction_notes = f"\n\nPOTENTIAL EVIDENCE CONFLICTS DETECTED:\n" + "\n".join(c_list)
+        contradiction_notes = "\n\nPOTENTIAL EVIDENCE CONFLICTS DETECTED:\n" + "\n".join(c_list)
 
     failed_notes = ""
     if failed_sources:
         failed_list = [f"- {fs.get('url')}: {fs.get('error')}" for fs in failed_sources]
-        failed_notes = f"\n\nNote: The following sources could not be retrieved:\n" + "\n".join(failed_list)
+        failed_notes = "\n\nNote: The following sources could not be retrieved:\n" + "\n".join(failed_list)
 
     return (
         "You are an evidence-based research synthesis assistant in Project AURA.\n"
@@ -66,7 +70,7 @@ def _build_synthesis_prompt(
         "5. If there are conflicting statements or uncertainty between sources, explicitly acknowledge the conflict.\n"
         "6. If the sources do not contain enough information to answer the question, state that clearly.\n\n"
         f"Research Question: {query}\n\n"
-        f"Sources:\n{sources_block}"
+        f"Sources & Evidence:\n{sources_block}"
         f"{claims_block}"
         f"{contradiction_notes}"
         f"{failed_notes}\n\n"
@@ -78,7 +82,7 @@ def create_research_skill(
     service: ResearchService | None = None,
     skill_name: str = "research_web",
 ) -> Skill:
-    """Create a configured research skill for integration into SkillRegistry."""
+    """Create a configured research skill providing verified, citation-grounded research synthesis."""
 
     def handler(input_data: Any, context: dict[str, Any] | None = None) -> Any:
         ctx = context or {}
@@ -152,6 +156,8 @@ def create_research_skill(
 
         # 1. Execute research through ToolExecutor if configured (enforcing Policy)
         raw_result_str = ""
+        report = None
+
         if exec_tool is not None:
             tool_input = json.dumps({
                 "query": query,
@@ -239,6 +245,15 @@ def create_research_skill(
                 }
                 for cl in report.claims
             ]
+            verified_claims_data = [
+                {
+                    "claim_id": vc.claim_id,
+                    "statement": vc.statement,
+                    "verification_status": vc.verification_status.value if hasattr(vc.verification_status, "value") else str(vc.verification_status),
+                    "confidence_score": vc.confidence_score,
+                }
+                for vc in report.verified_claims
+            ]
             confidence_data = None
             if report.confidence:
                 confidence_data = {
@@ -252,6 +267,12 @@ def create_research_skill(
                     "coverage_ratio": report.coverage.coverage_ratio,
                     "is_sufficient": report.coverage.is_sufficient,
                 }
+            assembled_answer_data = None
+            if report.assembled_answer:
+                assembled_answer_data = {
+                    "formatted_answer": report.assembled_answer.formatted_answer,
+                    "confidence_score": report.assembled_answer.confidence_score,
+                }
             raw_result_str = json.dumps({
                 "query": report.query,
                 "sources": sources_data,
@@ -259,8 +280,10 @@ def create_research_skill(
                 "evidence": evidence_data,
                 "contradictions": contradictions_data,
                 "claims": claims_data,
+                "verified_claims": verified_claims_data,
                 "confidence": confidence_data,
                 "coverage": coverage_data,
+                "assembled_answer": assembled_answer_data,
                 "total_sources": len(sources_data),
             })
         else:
@@ -274,17 +297,24 @@ def create_research_skill(
             evidence = res_dict.get("evidence", [])
             contradictions = res_dict.get("contradictions", [])
             claims = res_dict.get("claims", [])
+            verified_claims = res_dict.get("verified_claims", [])
+            assembled_answer = res_dict.get("assembled_answer")
         except Exception:
             sources = []
             failed_sources = []
             evidence = []
             contradictions = []
             claims = []
+            verified_claims = []
+            assembled_answer = None
+
+        source_urls = [s.get("url") for s in sources if isinstance(s, dict) and s.get("url")]
+
+        if not sources:
+            return f"No sources found for query: '{query}'."
 
         # 2. Model synthesis if requested and model available
-        source_urls = [s.get("url") for s in sources if s.get("url")]
-
-        if synthesize and model is not None and sources:
+        if synthesize and model is not None:
             prompt = _build_synthesis_prompt(
                 query=query,
                 sources=sources,
@@ -292,6 +322,7 @@ def create_research_skill(
                 evidence=evidence,
                 contradictions=contradictions,
                 claims=claims,
+                verified_claims=verified_claims,
             )
             try:
                 response = model.generate(prompt=prompt, request_id=req_id)
@@ -318,29 +349,34 @@ def create_research_skill(
                     "sources_count": len(sources),
                     "evidence_count": len(evidence),
                     "claims_count": len(claims),
+                    "verified_claims_count": len(verified_claims),
                 },
             )
 
-        # Fallback: structured textual overview without model synthesis
-        if not sources:
-            return f"No sources found for query: '{query}'."
+        # 3. Grounded answer assembly fallback when model is not present
+        if assembled_answer and isinstance(assembled_answer, dict) and assembled_answer.get("formatted_answer"):
+            full_text = assembled_answer["formatted_answer"]
+        else:
+            lines = [f"Research findings for '{query}':"]
+            for idx, s in enumerate(sources, 1):
+                title = s.get("title", "Untitled")
+                url = s.get("url", "")
+                snippet = s.get("snippet", "")
+                hop = s.get("hop", 0)
+                hop_str = f" [Hop {hop}]" if hop > 0 else ""
+                lines.append(f"[{idx}] {title}{hop_str} ({url})\n    {snippet}")
+            full_text = "\n\n".join(lines)
 
-        lines = [f"Research findings for '{query}':"]
-        for idx, s in enumerate(sources, 1):
-            title = s.get("title", "Untitled")
-            url = s.get("url", "")
-            snippet = s.get("snippet", "")
-            hop = s.get("hop", 0)
-            hop_str = f" [Hop {hop}]" if hop > 0 else ""
-            lines.append(f"[{idx}] {title}{hop_str} ({url})\n    {snippet}")
-
-        fallback_text = "\n\n".join(lines)
         return wrap_tainted(
-            value=fallback_text,
+            value=full_text,
             is_untrusted=True,
             source_type="external_web",
             source_urls=source_urls,
-            metadata={"query": query, "total_sources": len(sources)},
+            metadata={
+                "query": query,
+                "total_sources": len(sources),
+                "verified_claims_count": len(verified_claims),
+            },
         )
 
     return Skill(

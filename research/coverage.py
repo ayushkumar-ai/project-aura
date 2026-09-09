@@ -26,11 +26,12 @@ _STOPWORDS = frozenset({
 
 
 def _extract_tokens(text: str) -> set[str]:
-    """Extract normalized alphanumeric words excluding common stopwords."""
+    """Extract normalized alphanumeric and technical compound words excluding common stopwords."""
     if not text:
         return set()
-    words = re.findall(r"[a-z0-9_]+", text.lower())
-    return {w for w in words if len(w) > 1 and w not in _STOPWORDS}
+    raw = re.findall(r"(?:\.?[a-zA-Z0-9_]+(?:[+#.-][a-zA-Z0-9_]+)*[+#]*)", text.lower())
+    tokens = {t.strip() for t in raw if t.strip()}
+    return {t for t in tokens if (len(t) > 1 or t in {"c", "r"}) and t not in _STOPWORDS}
 
 
 def evaluate_research_coverage(
@@ -129,8 +130,6 @@ def evaluate_research_coverage(
             unresolved_list.append(sq.query)
         elif has_conflict:
             status = "conflicted"
-            # If there's multiple sources supporting one side and resolved, is_resolved could be conditional,
-            # but conflicting evidence requires flagging
             is_resolved = ev_count >= 2 and src_count >= max(2, min_sources_per_question)
             if not is_resolved:
                 unresolved_list.append(sq.query)

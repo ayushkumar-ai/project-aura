@@ -67,7 +67,8 @@ from research.state import (
     serialize_research_checkpoint,
 )
 from research.tool import WebSearchTool
-from research.url_utils import deduplicate_urls, normalize_url
+from research.reformulation import QueryReformulator
+from research.url_utils import deduplicate_urls, is_safe_url, normalize_url, resolve_and_validate_ip
 from research.verification import ClaimVerifier, verify_claims
 from research.assembly import AnswerAssembler, assemble_answer
 
@@ -101,6 +102,8 @@ __all__ = [
     "extract_links_from_html",
     "normalize_url",
     "deduplicate_urls",
+    "resolve_and_validate_ip",
+    "is_safe_url",
     "score_search_item",
     "rank_search_items",
     "evaluate_source_quality",
@@ -128,6 +131,7 @@ __all__ = [
     "create_browser_provider",
     "ResearchPlanner",
     "QueryDecomposer",
+    "QueryReformulator",
     "decompose_query",
     "decompose_query_heuristic",
     "should_decompose_query",

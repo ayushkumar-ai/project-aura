@@ -36,8 +36,9 @@ from research.models import (
 )
 from research.planner import ResearchPlanner
 from research.ranking import evaluate_source_quality, rank_research_sources, rank_search_items
+from research.reformulation import QueryReformulator
 from research.state import ResearchCheckpoint
-from research.url_utils import deduplicate_urls, normalize_url
+from research.url_utils import deduplicate_urls, is_safe_url, normalize_url
 from research.verification import verify_claims
 
 logger = logging.getLogger("aura.research.service")
@@ -55,7 +56,8 @@ def default_text_extractor(raw_text: str, max_chars: int) -> str:
 
 class ResearchService:
     """Coordinates search, fetch, dynamic browser rendering, multi-hop discovery, query decomposition,
-    iterative evidence expansion, coverage evaluation, claim verification, and answer assembly with bounded execution."""
+    adaptive query reformulation, iterative evidence expansion, coverage evaluation, claim verification,
+    and authoritative answer assembly with bounded execution."""
 
     def __init__(
         self,
@@ -153,7 +155,7 @@ class ResearchService:
         url: str,
         timeout: float | None = None,
     ) -> WebDocument:
-        """Fetch a web document with normalized URL, bounded size, and sanitized content extraction."""
+        """Fetch a web document with normalized URL, SSRF checks, bounded size, and sanitized extraction."""
         if not isinstance(url, str) or not url.strip():
             raise ValueError("URL must be a non-empty string.")
 
@@ -164,6 +166,16 @@ class ResearchService:
 
         if not (url_clean.startswith("http://") or url_clean.startswith("https://")):
             raise ValueError(f"Invalid URL scheme in '{url_clean}'. Must start with http:// or https://.")
+
+        # SSRF Pre-flight validation
+        is_safe, err_msg = is_safe_url(url_clean)
+        if not is_safe:
+            return WebDocument(
+                url=url_clean,
+                status_code=403,
+                error=f"SSRF Protection: {err_msg}",
+                metadata={"provider": "fetch", "blocked": True},
+            )
 
         if self.fetch_provider is None:
             raise RuntimeError("Fetch provider is not configured.")
@@ -194,7 +206,7 @@ class ResearchService:
         timeout: float | None = None,
         wait_for_render: float | None = None,
     ) -> WebDocument:
-        """Fetch and render a dynamic web document using the configured BrowserProvider."""
+        """Fetch and render a dynamic web document using the configured BrowserProvider with SSRF protections."""
         if not isinstance(url, str) or not url.strip():
             raise ValueError("URL must be a non-empty string.")
 
@@ -205,6 +217,16 @@ class ResearchService:
 
         if not (url_clean.startswith("http://") or url_clean.startswith("https://")):
             raise ValueError(f"Invalid URL scheme in '{url_clean}'. Must start with http:// or https://.")
+
+        # SSRF Pre-flight validation
+        is_safe, err_msg = is_safe_url(url_clean)
+        if not is_safe:
+            return WebDocument(
+                url=url_clean,
+                status_code=403,
+                error=f"SSRF Protection: {err_msg}",
+                metadata={"provider": "browser", "blocked": True},
+            )
 
         if self.browser_provider is None:
             raise RuntimeError("Browser provider is not configured.")
@@ -396,7 +418,7 @@ class ResearchService:
                 },
             )
 
-        # 3. Single-hop pathway (default, preserving M9.1–M9.5 behavior)
+        # 3. Single-hop pathway (default)
         successful_sources_list: list[ResearchSource] = []
         failed_sources_list: list[ResearchSource] = []
         seen_urls: set[str] = set()
@@ -582,13 +604,14 @@ class ResearchService:
         max_queries_total: int = 6,
         min_coverage_ratio: float = 0.7,
     ) -> ResearchReport:
-        """Perform iterative deep research intelligence with query decomposition, multi-round evidence expansion,
-        and deterministic coverage evaluation."""
+        """Perform iterative deep research intelligence with query decomposition, adaptive query reformulation,
+        multi-round evidence expansion, and deterministic coverage evaluation."""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("Query must be a non-empty string.")
 
         effective_timeout = timeout if timeout is not None else self.default_timeout
         decomposer = QueryDecomposer(max_sub_questions=max_sub_questions)
+        reformulator = QueryReformulator(max_reformulations_per_question=2)
 
         # 1. Decompose Query (or resume from checkpoint if present)
         sub_questions: tuple[ResearchSubQuestion, ...]
@@ -637,7 +660,7 @@ class ResearchService:
 
             # Determine questions to research in this round
             if rounds_executed == 1:
-                target_questions = [sq for sq in sub_questions if sq.query not in completed_sub_q]
+                target_questions = [(sq, sq.query) for sq in sub_questions if sq.query not in completed_sub_q]
             else:
                 # In round 2+, evaluate current coverage and focus on unresolved questions
                 curr_coverage = evaluate_research_coverage(
@@ -651,15 +674,31 @@ class ResearchService:
                     break  # Stop early if sufficient coverage achieved
 
                 unresolved_set = set(curr_coverage.unresolved_sub_questions)
-                target_questions = [sq for sq in sub_questions if sq.query in unresolved_set and sq.query not in completed_sub_q]
-                if not target_questions:
-                    # Allow targeted re-queries for unresolved questions
-                    target_questions = [sq for sq in sub_questions if sq.query in unresolved_set]
+                target_questions = []
+
+                for sq in sub_questions:
+                    if sq.query in unresolved_set:
+                        if sq.query in completed_sub_q:
+                            # Generate adaptive reformulation for unresolved question
+                            curr_contradictions = detect_contradictions(all_evidence, query=query)
+                            alts = reformulator.reformulate(
+                                unresolved_sub_question=sq.query,
+                                original_query=query,
+                                evidence=all_evidence,
+                                contradictions=curr_contradictions,
+                                model=model,
+                                max_alternatives=1,
+                            )
+                            effective_q = alts[0] if alts else sq.query
+                            if effective_q not in completed_sub_q:
+                                target_questions.append((sq, effective_q))
+                        else:
+                            target_questions.append((sq, sq.query))
 
             if not target_questions:
                 break
 
-            for sq in target_questions:
+            for sq, search_query in target_questions:
                 if len(aggregated_sources) >= global_max_sources:
                     break
                 if total_queries_count >= max_queries_total:
@@ -670,7 +709,7 @@ class ResearchService:
 
                 total_queries_count += 1
                 sub_report = self.research(
-                    query=sq.query,
+                    query=search_query,
                     max_sources=sub_limit,
                     fetch_content=fetch_content,
                     use_dynamic=use_dynamic,
@@ -724,6 +763,7 @@ class ResearchService:
                         aggregated_failed.append(fsrc)
 
                 aggregated_links.extend(sub_report.discovered_links)
+                completed_sub_q.add(search_query)
                 completed_sub_q.add(sq.query)
 
             # Check coverage stopping condition at end of round
@@ -884,7 +924,10 @@ class ResearchService:
         sources_block = "\n\n".join(evidence_parts)
 
         claims_block = ""
-        if report.has_claims:
+        if report.has_verified_claims:
+            cl_lines = [f"- [{vc.verification_status.value.upper()}] {vc.statement}" for vc in report.verified_claims]
+            claims_block = "\n\nSTRUCTURED VERIFIED CLAIMS:\n" + "\n".join(cl_lines)
+        elif report.has_claims:
             claims_summary = report.format_claims_summary()
             claims_block = f"\n\nSTRUCTURED CLAIMS EXTRACTED:\n{claims_summary}"
 
@@ -917,14 +960,14 @@ class ResearchService:
         )
 
         resp = model.generate(prompt=prompt, request_id=req_id)
-        raw_output = resp.content.strip()
+        raw_output = resp.content.strip() if hasattr(resp, "content") else str(resp).strip()
 
         if validate_citations_in_output:
             validation = validate_citations(raw_output, report.sources)
             if validation.has_hallucinated_citations:
                 logger.warning("Detected hallucinated citations in synthesized answer: %s", validation.invalid_citations)
-                raw_output += f"\n\n[Notice: Citation validation flagged unverified citations: {validation.invalid_citations}]"
 
-        # Append structured citations list
-        citations_block = "\n\nSources:\n" + report.format_citations()
-        return raw_output + citations_block
+        citations_block = report.format_citations()
+        if citations_block:
+            return f"{raw_output}\n\nSources:\n{citations_block}"
+        return raw_output

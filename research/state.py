@@ -3,17 +3,24 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from research.models import (
+    ClaimEvidence,
+    ClaimVerificationStatus,
     DiscoveredLink,
+    EvidenceConflict,
     EvidenceItem,
+    ResearchClaim,
+    ResearchCoverage,
     ResearchSource,
     ResearchSubQuestion,
+    SubQuestionCoverage,
+    VerifiedClaim,
     _sanitize_metadata,
 )
 
 
 @dataclass(frozen=True)
 class ResearchCheckpoint:
-    """Serializable snapshot of an in-progress or completed research traversal, including iterative state."""
+    """Serializable snapshot of an in-progress or completed research traversal, preserving all derived intelligence."""
 
     query: str
     visited_urls: tuple[str, ...] = field(default_factory=tuple)
@@ -27,12 +34,16 @@ class ResearchCheckpoint:
     max_hops: int = 2
     max_pages: int = 6
     timestamp: float = field(default_factory=time.time)
-    # M9.9 Iterative state additions
     decomposed_sub_questions: tuple[ResearchSubQuestion, ...] = field(default_factory=tuple)
     completed_sub_questions: tuple[str, ...] = field(default_factory=tuple)
     pending_sub_questions: tuple[str, ...] = field(default_factory=tuple)
     research_rounds: int = 1
     total_queries: int = 0
+    # M9.10 Full State Checkpointing additions
+    claims: tuple[ResearchClaim, ...] = field(default_factory=tuple)
+    contradictions: tuple[EvidenceConflict, ...] = field(default_factory=tuple)
+    verified_claims: tuple[VerifiedClaim, ...] = field(default_factory=tuple)
+    coverage: ResearchCoverage | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -100,7 +111,6 @@ class ResearchCheckpoint:
         if not isinstance(self.timestamp, (int, float)) or self.timestamp <= 0:
             raise ValueError("timestamp must be a positive float.")
 
-        # M9.9 fields validation
         if isinstance(self.decomposed_sub_questions, (list, tuple)):
             for sq in self.decomposed_sub_questions:
                 if not isinstance(sq, ResearchSubQuestion):
@@ -125,6 +135,34 @@ class ResearchCheckpoint:
         if not isinstance(self.total_queries, int) or self.total_queries < 0:
             raise ValueError("total_queries must be a non-negative integer.")
 
+        # M9.10 fields validation
+        if isinstance(self.claims, (list, tuple)):
+            for cl in self.claims:
+                if not isinstance(cl, ResearchClaim):
+                    raise TypeError("All items in claims must be ResearchClaim instances.")
+            object.__setattr__(self, "claims", tuple(self.claims))
+        else:
+            raise TypeError("claims must be a sequence of ResearchClaim instances.")
+
+        if isinstance(self.contradictions, (list, tuple)):
+            for ct in self.contradictions:
+                if not isinstance(ct, EvidenceConflict):
+                    raise TypeError("All items in contradictions must be EvidenceConflict instances.")
+            object.__setattr__(self, "contradictions", tuple(self.contradictions))
+        else:
+            raise TypeError("contradictions must be a sequence of EvidenceConflict instances.")
+
+        if isinstance(self.verified_claims, (list, tuple)):
+            for vc in self.verified_claims:
+                if not isinstance(vc, VerifiedClaim):
+                    raise TypeError("All items in verified_claims must be VerifiedClaim instances.")
+            object.__setattr__(self, "verified_claims", tuple(self.verified_claims))
+        else:
+            raise TypeError("verified_claims must be a sequence of VerifiedClaim instances.")
+
+        if self.coverage is not None and not isinstance(self.coverage, ResearchCoverage):
+            raise TypeError("coverage must be an instance of ResearchCoverage or None.")
+
         if not isinstance(self.traversal_stats, dict):
             raise TypeError("traversal_stats must be a dict.")
         object.__setattr__(self, "traversal_stats", _sanitize_metadata(self.traversal_stats))
@@ -145,9 +183,29 @@ class ResearchCheckpoint:
 
 
 def serialize_research_checkpoint(checkpoint: ResearchCheckpoint) -> dict[str, Any]:
-    """Convert a ResearchCheckpoint into a JSON-serializable dictionary."""
+    """Convert a ResearchCheckpoint into a JSON-serializable dictionary with complete M9 research intelligence."""
     if not isinstance(checkpoint, ResearchCheckpoint):
         raise TypeError("checkpoint must be a ResearchCheckpoint instance.")
+
+    def _serialize_evidence(ev: EvidenceItem) -> dict[str, Any]:
+        return {
+            "source_url": ev.source_url,
+            "source_title": ev.source_title,
+            "source_domain": ev.source_domain,
+            "content": ev.content,
+            "relevance_score": ev.relevance_score,
+            "metadata": ev.metadata,
+        }
+
+    def _serialize_claim_evidence(ce: ClaimEvidence) -> dict[str, Any]:
+        return {
+            "source_url": ce.source_url,
+            "source_title": ce.source_title,
+            "passage": ce.passage,
+            "stance": ce.stance,
+            "confidence": ce.confidence,
+            "metadata": ce.metadata,
+        }
 
     def _serialize_source(src: ResearchSource) -> dict[str, Any]:
         return {
@@ -164,17 +222,7 @@ def serialize_research_checkpoint(checkpoint: ResearchCheckpoint) -> dict[str, A
             "quality_score": src.quality_score,
             "published_at": src.published_at,
             "freshness_score": src.freshness_score,
-            "evidence": [
-                {
-                    "source_url": ev.source_url,
-                    "source_title": ev.source_title,
-                    "source_domain": ev.source_domain,
-                    "content": ev.content,
-                    "relevance_score": ev.relevance_score,
-                    "metadata": ev.metadata,
-                }
-                for ev in src.evidence
-            ],
+            "evidence": [_serialize_evidence(ev) for ev in src.evidence],
             "metadata": src.metadata,
         }
 
@@ -199,6 +247,70 @@ def serialize_research_checkpoint(checkpoint: ResearchCheckpoint) -> dict[str, A
             "metadata": sq.metadata,
         }
 
+    def _serialize_claim(cl: ResearchClaim) -> dict[str, Any]:
+        return {
+            "claim_id": cl.claim_id,
+            "statement": cl.statement,
+            "sub_question_id": cl.sub_question_id,
+            "supporting_sources": [_serialize_claim_evidence(ce) for ce in cl.supporting_sources],
+            "refuting_sources": [_serialize_claim_evidence(ce) for ce in cl.refuting_sources],
+            "consensus_status": cl.consensus_status,
+            "confidence_score": cl.confidence_score,
+            "metadata": cl.metadata,
+        }
+
+    def _serialize_conflict(ct: EvidenceConflict) -> dict[str, Any]:
+        return {
+            "claim": ct.claim,
+            "source_a_url": ct.source_a_url,
+            "source_a_evidence": ct.source_a_evidence,
+            "source_b_url": ct.source_b_url,
+            "source_b_evidence": ct.source_b_evidence,
+            "conflict_type": ct.conflict_type,
+            "metadata": ct.metadata,
+        }
+
+    def _serialize_verified_claim(vc: VerifiedClaim) -> dict[str, Any]:
+        return {
+            "claim_id": vc.claim_id,
+            "statement": vc.statement,
+            "verification_status": vc.verification_status.value,
+            "confidence_score": vc.confidence_score,
+            "supporting_evidence": [_serialize_claim_evidence(ce) for ce in vc.supporting_evidence],
+            "refuting_evidence": [_serialize_claim_evidence(ce) for ce in vc.refuting_evidence],
+            "contradiction_ids": list(vc.contradiction_ids),
+            "reasoning": vc.reasoning,
+            "metadata": vc.metadata,
+        }
+
+    def _serialize_coverage(cov: ResearchCoverage) -> dict[str, Any]:
+        return {
+            "overall_score": cov.overall_score,
+            "coverage_ratio": cov.coverage_ratio,
+            "is_sufficient": cov.is_sufficient,
+            "total_sub_questions": cov.total_sub_questions,
+            "covered_sub_questions": cov.covered_sub_questions,
+            "unresolved_sub_questions": list(cov.unresolved_sub_questions),
+            "source_diversity_score": cov.source_diversity_score,
+            "distinct_domains": list(cov.distinct_domains),
+            "explanation": cov.explanation,
+            "sub_question_coverages": [
+                {
+                    "sub_question_id": sqc.sub_question_id,
+                    "query": sqc.query,
+                    "evidence_count": sqc.evidence_count,
+                    "source_count": sqc.source_count,
+                    "has_conflict": sqc.has_conflict,
+                    "is_resolved": sqc.is_resolved,
+                    "status": sqc.status,
+                    "distinct_domains": list(sqc.distinct_domains),
+                    "metadata": sqc.metadata,
+                }
+                for sqc in cov.sub_question_coverages
+            ],
+            "metadata": cov.metadata,
+        }
+
     return {
         "query": checkpoint.query,
         "visited_urls": list(checkpoint.visited_urls),
@@ -220,12 +332,16 @@ def serialize_research_checkpoint(checkpoint: ResearchCheckpoint) -> dict[str, A
         "pending_sub_questions": list(checkpoint.pending_sub_questions),
         "research_rounds": checkpoint.research_rounds,
         "total_queries": checkpoint.total_queries,
+        "claims": [_serialize_claim(cl) for cl in checkpoint.claims],
+        "contradictions": [_serialize_conflict(ct) for ct in checkpoint.contradictions],
+        "verified_claims": [_serialize_verified_claim(vc) for vc in checkpoint.verified_claims],
+        "coverage": _serialize_coverage(checkpoint.coverage) if checkpoint.coverage is not None else None,
         "metadata": checkpoint.metadata,
     }
 
 
 def deserialize_research_checkpoint(data: dict[str, Any]) -> ResearchCheckpoint:
-    """Reconstruct a typed, validated ResearchCheckpoint from dictionary data."""
+    """Reconstruct a typed, validated ResearchCheckpoint from dictionary data with backward compatibility."""
     if not isinstance(data, dict):
         raise TypeError("data must be a dictionary.")
 
@@ -243,6 +359,18 @@ def deserialize_research_checkpoint(data: dict[str, Any]) -> ResearchCheckpoint:
             content=str(ev_dict.get("content", "")),
             relevance_score=float(ev_dict.get("relevance_score", 0.0)),
             metadata=dict(ev_dict.get("metadata", {})),
+        )
+
+    def _deserialize_claim_evidence(ce_dict: dict[str, Any]) -> ClaimEvidence:
+        if not isinstance(ce_dict, dict):
+            raise TypeError("ClaimEvidence item must be a dictionary.")
+        return ClaimEvidence(
+            source_url=str(ce_dict.get("source_url", "")),
+            source_title=str(ce_dict.get("source_title", "")),
+            passage=str(ce_dict.get("passage", "")),
+            stance=str(ce_dict.get("stance", "supports")),
+            confidence=float(ce_dict.get("confidence", 1.0)),
+            metadata=dict(ce_dict.get("metadata", {})),
         )
 
     def _deserialize_source(s_dict: dict[str, Any]) -> ResearchSource:
@@ -292,6 +420,86 @@ def deserialize_research_checkpoint(data: dict[str, Any]) -> ResearchCheckpoint:
             metadata=dict(sq_dict.get("metadata", {})),
         )
 
+    def _deserialize_claim(cl_dict: dict[str, Any]) -> ResearchClaim:
+        if not isinstance(cl_dict, dict):
+            raise TypeError("ResearchClaim item must be a dictionary.")
+        supp = [_deserialize_claim_evidence(ce) for ce in cl_dict.get("supporting_sources", []) if isinstance(ce, dict)]
+        ref = [_deserialize_claim_evidence(ce) for ce in cl_dict.get("refuting_sources", []) if isinstance(ce, dict)]
+        return ResearchClaim(
+            claim_id=str(cl_dict.get("claim_id", "")),
+            statement=str(cl_dict.get("statement", "")),
+            sub_question_id=str(cl_dict.get("sub_question_id", "")),
+            supporting_sources=tuple(supp),
+            refuting_sources=tuple(ref),
+            consensus_status=str(cl_dict.get("consensus_status", "supported")),
+            confidence_score=float(cl_dict.get("confidence_score", 1.0)),
+            metadata=dict(cl_dict.get("metadata", {})),
+        )
+
+    def _deserialize_conflict(ct_dict: dict[str, Any]) -> EvidenceConflict:
+        if not isinstance(ct_dict, dict):
+            raise TypeError("EvidenceConflict item must be a dictionary.")
+        return EvidenceConflict(
+            claim=str(ct_dict.get("claim", "")),
+            source_a_url=str(ct_dict.get("source_a_url", "")),
+            source_a_evidence=str(ct_dict.get("source_a_evidence", "")),
+            source_b_url=str(ct_dict.get("source_b_url", "")),
+            source_b_evidence=str(ct_dict.get("source_b_evidence", "")),
+            conflict_type=str(ct_dict.get("conflict_type", "divergent_claim")),
+            metadata=dict(ct_dict.get("metadata", {})),
+        )
+
+    def _deserialize_verified_claim(vc_dict: dict[str, Any]) -> VerifiedClaim:
+        if not isinstance(vc_dict, dict):
+            raise TypeError("VerifiedClaim item must be a dictionary.")
+        supp = [_deserialize_claim_evidence(ce) for ce in vc_dict.get("supporting_evidence", []) if isinstance(ce, dict)]
+        ref = [_deserialize_claim_evidence(ce) for ce in vc_dict.get("refuting_evidence", []) if isinstance(ce, dict)]
+        c_ids = [str(cid) for cid in vc_dict.get("contradiction_ids", []) if isinstance(cid, str)]
+        return VerifiedClaim(
+            claim_id=str(vc_dict.get("claim_id", "")),
+            statement=str(vc_dict.get("statement", "")),
+            verification_status=ClaimVerificationStatus(vc_dict.get("verification_status", "unsupported")),
+            confidence_score=float(vc_dict.get("confidence_score", 0.0)),
+            supporting_evidence=tuple(supp),
+            refuting_evidence=tuple(ref),
+            contradiction_ids=tuple(c_ids),
+            reasoning=str(vc_dict.get("reasoning", "")),
+            metadata=dict(vc_dict.get("metadata", {})),
+        )
+
+    def _deserialize_coverage(cov_dict: dict[str, Any]) -> ResearchCoverage:
+        if not isinstance(cov_dict, dict):
+            raise TypeError("ResearchCoverage item must be a dictionary.")
+        sub_cov_list = []
+        for sqc_dict in cov_dict.get("sub_question_coverages", []):
+            if isinstance(sqc_dict, dict):
+                sub_cov_list.append(
+                    SubQuestionCoverage(
+                        sub_question_id=str(sqc_dict.get("sub_question_id", "")),
+                        query=str(sqc_dict.get("query", "")),
+                        evidence_count=int(sqc_dict.get("evidence_count", 0)),
+                        source_count=int(sqc_dict.get("source_count", 0)),
+                        has_conflict=bool(sqc_dict.get("has_conflict", False)),
+                        is_resolved=bool(sqc_dict.get("is_resolved", False)),
+                        status=str(sqc_dict.get("status", "unresolved")),
+                        distinct_domains=tuple(str(d) for d in sqc_dict.get("distinct_domains", [])),
+                        metadata=dict(sqc_dict.get("metadata", {})),
+                    )
+                )
+        return ResearchCoverage(
+            overall_score=float(cov_dict.get("overall_score", 0.0)),
+            coverage_ratio=float(cov_dict.get("coverage_ratio", 0.0)),
+            is_sufficient=bool(cov_dict.get("is_sufficient", False)),
+            total_sub_questions=int(cov_dict.get("total_sub_questions", len(sub_cov_list))),
+            covered_sub_questions=int(cov_dict.get("covered_sub_questions", 0)),
+            unresolved_sub_questions=tuple(str(u) for u in cov_dict.get("unresolved_sub_questions", [])),
+            sub_question_coverages=tuple(sub_cov_list),
+            source_diversity_score=float(cov_dict.get("source_diversity_score", 0.0)),
+            distinct_domains=tuple(str(d) for d in cov_dict.get("distinct_domains", [])),
+            explanation=str(cov_dict.get("explanation", "")),
+            metadata=dict(cov_dict.get("metadata", {})),
+        )
+
     visited_urls = tuple(str(u) for u in data.get("visited_urls", []))
     successful_sources = tuple(_deserialize_source(s) for s in data.get("successful_sources", []) if isinstance(s, dict))
     failed_sources = tuple(_deserialize_source(s) for s in data.get("failed_sources", []) if isinstance(s, dict))
@@ -307,6 +515,11 @@ def deserialize_research_checkpoint(data: dict[str, Any]) -> ResearchCheckpoint:
     sub_questions = tuple(_deserialize_sub_q(sq) for sq in data.get("decomposed_sub_questions", []) if isinstance(sq, dict))
     completed_sub_q = tuple(str(q) for q in data.get("completed_sub_questions", []))
     pending_sub_q = tuple(str(q) for q in data.get("pending_sub_questions", []))
+
+    claims = tuple(_deserialize_claim(cl) for cl in data.get("claims", []) if isinstance(cl, dict))
+    contradictions = tuple(_deserialize_conflict(ct) for ct in data.get("contradictions", []) if isinstance(ct, dict))
+    verified_claims = tuple(_deserialize_verified_claim(vc) for vc in data.get("verified_claims", []) if isinstance(vc, dict))
+    coverage = _deserialize_coverage(data["coverage"]) if isinstance(data.get("coverage"), dict) else None
 
     return ResearchCheckpoint(
         query=query,
@@ -326,5 +539,9 @@ def deserialize_research_checkpoint(data: dict[str, Any]) -> ResearchCheckpoint:
         pending_sub_questions=pending_sub_q,
         research_rounds=int(data.get("research_rounds", 1)),
         total_queries=int(data.get("total_queries", 0)),
+        claims=claims,
+        contradictions=contradictions,
+        verified_claims=verified_claims,
+        coverage=coverage,
         metadata=dict(data.get("metadata", {})),
     )
