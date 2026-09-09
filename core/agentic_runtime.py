@@ -20,6 +20,7 @@ from core.task_planner import ExecutionPlan, PlanStep, TaskPlanner
 from core.task_state import TaskState, TaskStatus
 from core.task_state_store import TaskStateStore
 from core.workflow_executor import WorkflowExecutor, WorkflowResult
+from core.memory_manager import MemoryManager
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
 
@@ -55,6 +56,7 @@ class AgenticRuntime:
         max_replans: int = 0,
         default_timeout: float | None = None,
         default_mode: ExecutionMode = ExecutionMode.STANDARD_WORKFLOW,
+        memory_manager: MemoryManager | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -82,12 +84,16 @@ class AgenticRuntime:
             raise TypeError("tool_executor must be an instance of ToolExecutor or None.")
         if policy is not None and not isinstance(policy, Policy):
             raise TypeError("policy must be an instance of Policy or None.")
+        if memory_manager is not None and not isinstance(memory_manager, MemoryManager):
+            raise TypeError("memory_manager must be an instance of MemoryManager or None.")
         if not isinstance(max_replans, int) or max_replans < 0:
             raise ValueError("max_replans must be a non-negative integer.")
         if isinstance(default_mode, str):
             default_mode = ExecutionMode(default_mode)
         elif not isinstance(default_mode, ExecutionMode):
             raise TypeError("default_mode must be an instance of ExecutionMode.")
+
+        self.memory_manager = memory_manager if memory_manager is not None else MemoryManager()
 
         # Determine effective skill_registry
         if skill_registry is None:
@@ -132,15 +138,22 @@ class AgenticRuntime:
         # Resolve or create TaskPlanner
         if planner is not None:
             self.planner = planner
+            if self.planner.memory_manager is None:
+                self.planner.memory_manager = self.memory_manager
         elif workflow_executor is not None and workflow_executor.planner is not None:
             self.planner = workflow_executor.planner
+            if self.planner.memory_manager is None:
+                self.planner.memory_manager = self.memory_manager
         elif autonomous_executor is not None:
             self.planner = autonomous_executor.planner
+            if self.planner.memory_manager is None:
+                self.planner.memory_manager = self.memory_manager
         else:
             self.planner = TaskPlanner(
                 skill_registry=self.skill_registry,
                 model=self.model,
                 model_router=self.model_router,
+                memory_manager=self.memory_manager,
             )
 
         # Resolve or create WorkflowExecutor (M8)
@@ -158,12 +171,15 @@ class AgenticRuntime:
         # Resolve or create AutonomousAgentExecutor (M10)
         if autonomous_executor is not None:
             self.autonomous_executor = autonomous_executor
+            if self.autonomous_executor.memory_manager is None:
+                self.autonomous_executor.memory_manager = self.memory_manager
         else:
             self.autonomous_executor = AutonomousAgentExecutor(
                 runtime=self.runtime,
                 planner=self.planner,
                 state_store=self.state_store,
                 approval_gateway=self.approval_gateway,
+                memory_manager=self.memory_manager,
             )
 
         # Resolve or create GoalStore & GoalEngine (M11 / M12)
@@ -176,6 +192,8 @@ class AgenticRuntime:
 
         if goal_engine is not None:
             self.goal_engine = goal_engine
+            if self.goal_engine.memory_manager is None:
+                self.goal_engine.memory_manager = self.memory_manager
         else:
             self.goal_engine = GoalEngine(
                 goal_store=self.goal_store,
@@ -183,6 +201,7 @@ class AgenticRuntime:
                 executor=self.autonomous_executor,
                 state_store=self.state_store,
                 approval_gateway=self.approval_gateway,
+                memory_manager=self.memory_manager,
             )
 
     def execute(

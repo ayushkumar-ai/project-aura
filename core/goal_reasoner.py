@@ -48,6 +48,7 @@ class GoalReasoner:
         skill_registry: SkillRegistry | None = None,
         model: ModelInterface | None = None,
         model_router: ModelRouter | None = None,
+        memory_manager: Any | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -59,6 +60,7 @@ class GoalReasoner:
         self.skill_registry = skill_registry
         self.model = model
         self.model_router = model_router
+        self.memory_manager = memory_manager
 
     def evaluate(
         self,
@@ -96,6 +98,16 @@ class GoalReasoner:
                 obs_texts.append(str(val).lower())
 
         combined_obs_text = " ".join(obs_texts)
+
+        # Check semantic memory facts if available
+        if self.memory_manager is not None and hasattr(self.memory_manager, "search_facts"):
+            try:
+                mem_facts = self.memory_manager.search_facts(query=f"{goal.title} {goal.description}", top_k=10)
+                for f in mem_facts:
+                    f_text = f"{f.subject} {f.predicate} {f.object_value}".lower()
+                    combined_obs_text += " " + f_text
+            except Exception as ex:
+                logger.warning("Error querying memory in GoalReasoner: %s", ex)
 
         for crit in goal.success_criteria:
             if crit in satisfied:

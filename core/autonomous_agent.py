@@ -120,6 +120,7 @@ class AutonomousAgentExecutor:
         state_store: TaskStateStore | None = None,
         approval_gateway: ApprovalGateway | None = None,
         config: AgentLoopConfig | None = None,
+        memory_manager: Any | None = None,
     ):
         if not isinstance(runtime, AgentRuntime):
             raise TypeError("runtime must be an instance of AgentRuntime.")
@@ -137,7 +138,12 @@ class AutonomousAgentExecutor:
             raise TypeError("config must be an instance of AgentLoopConfig or None.")
 
         self.runtime = runtime
-        self.planner = planner if planner is not None else TaskPlanner(runtime.skill_registry)
+        self.memory_manager = memory_manager
+        self.planner = (
+            planner
+            if planner is not None
+            else TaskPlanner(runtime.skill_registry, memory_manager=memory_manager)
+        )
         self.state_store = state_store
         self.approval_gateway = approval_gateway
         if self.approval_gateway is not None and self.approval_gateway.skill_registry is None:
@@ -150,6 +156,39 @@ class AutonomousAgentExecutor:
             max_tool_calls=getattr(settings, "aura_max_tool_calls", 50),
             max_replan_depth=getattr(settings, "aura_max_replan_depth", 3),
         )
+
+    def _finish_result(
+        self,
+        result: AutonomousAgentResult,
+        start_time: float,
+        task_desc: str,
+    ) -> AutonomousAgentResult:
+        """Helper to record episodic trace and finalize result."""
+        if (
+            self.memory_manager is not None
+            and hasattr(self.memory_manager, "record_episode")
+            and not result.is_paused
+        ):
+            try:
+                skills_used = tuple(
+                    s.skill_name for s in result.plan.steps if s.status == StepStatus.SUCCEEDED
+                )
+                self.memory_manager.record_episode(
+                    task_id=result.task_id,
+                    plan_id=result.plan.plan_id,
+                    task_goal=task_desc,
+                    success=result.success,
+                    executed_skills=skills_used,
+                    error=result.error,
+                    execution_time_ms=(time.time() - start_time) * 1000.0,
+                    trace_summary={
+                        "completed_steps": len(result.trace.observations),
+                        "replan_count": len(result.trace.replan_history),
+                    },
+                )
+            except Exception as ex:
+                logger.warning("Failed to record episodic memory in AutonomousAgentExecutor: %s", ex)
+        return result
 
     def _resolve_step_input(
         self,
@@ -295,12 +334,16 @@ class AutonomousAgentExecutor:
                     status=StepStatus.FAILED,
                 )
                 self._persist_state(actual_task_id, current_plan, current_trace, TaskStatus.FAILED, err_msg)
-                return AutonomousAgentResult(
-                    success=False,
-                    task_id=actual_task_id,
-                    plan=current_plan,
-                    trace=current_trace,
-                    error=err_msg,
+                return self._finish_result(
+                    AutonomousAgentResult(
+                        success=False,
+                        task_id=actual_task_id,
+                        plan=current_plan,
+                        trace=current_trace,
+                        error=err_msg,
+                    ),
+                    start_time,
+                    task_desc,
                 )
 
             # 2. Check tool calls limit
@@ -316,24 +359,32 @@ class AutonomousAgentExecutor:
                     status=StepStatus.FAILED,
                 )
                 self._persist_state(actual_task_id, current_plan, current_trace, TaskStatus.FAILED, err_msg)
-                return AutonomousAgentResult(
-                    success=False,
-                    task_id=actual_task_id,
-                    plan=current_plan,
-                    trace=current_trace,
-                    error=err_msg,
+                return self._finish_result(
+                    AutonomousAgentResult(
+                        success=False,
+                        task_id=actual_task_id,
+                        plan=current_plan,
+                        trace=current_trace,
+                        error=err_msg,
+                    ),
+                    start_time,
+                    task_desc,
                 )
 
             # 3. Check if all steps succeeded
             if current_plan.is_completed():
                 final_out = self._get_final_output(current_plan, current_trace)
                 self._persist_state(actual_task_id, current_plan, current_trace, TaskStatus.COMPLETED, final_output=final_out)
-                return AutonomousAgentResult(
-                    success=True,
-                    task_id=actual_task_id,
-                    plan=current_plan,
-                    trace=current_trace,
-                    final_output=final_out,
+                return self._finish_result(
+                    AutonomousAgentResult(
+                        success=True,
+                        task_id=actual_task_id,
+                        plan=current_plan,
+                        trace=current_trace,
+                        final_output=final_out,
+                    ),
+                    start_time,
+                    task_desc,
                 )
 
             # 4. Check for ready steps
@@ -351,22 +402,30 @@ class AutonomousAgentExecutor:
                         status=StepStatus.FAILED,
                     )
                     self._persist_state(actual_task_id, current_plan, current_trace, TaskStatus.FAILED, err_msg)
-                    return AutonomousAgentResult(
-                        success=False,
-                        task_id=actual_task_id,
-                        plan=current_plan,
-                        trace=current_trace,
-                        error=err_msg,
+                    return self._finish_result(
+                        AutonomousAgentResult(
+                            success=False,
+                            task_id=actual_task_id,
+                            plan=current_plan,
+                            trace=current_trace,
+                            error=err_msg,
+                        ),
+                        start_time,
+                        task_desc,
                     )
                 else:
                     err_msg = "Execution finished without all steps succeeding."
                     self._persist_state(actual_task_id, current_plan, current_trace, TaskStatus.FAILED, err_msg)
-                    return AutonomousAgentResult(
-                        success=False,
-                        task_id=actual_task_id,
-                        plan=current_plan,
-                        trace=current_trace,
-                        error=err_msg,
+                    return self._finish_result(
+                        AutonomousAgentResult(
+                            success=False,
+                            task_id=actual_task_id,
+                            plan=current_plan,
+                            trace=current_trace,
+                            error=err_msg,
+                        ),
+                        start_time,
+                        task_desc,
                     )
 
             # Pick the next ready step
@@ -388,14 +447,18 @@ class AutonomousAgentExecutor:
                     current_trace = current_trace.add_observation(obs)
                     current_plan = current_plan.with_step_update(step.step_id, status=StepStatus.FAILED, result=obs)
                     self._persist_state(actual_task_id, current_plan, current_trace, TaskStatus.FAILED, decision.reason)
-                    return AutonomousAgentResult(
-                        success=False,
-                        task_id=actual_task_id,
-                        plan=current_plan,
-                        trace=current_trace,
-                        error=decision.reason,
-                        approval_request=decision.approval_request,
-                        metadata={"denied": True},
+                    return self._finish_result(
+                        AutonomousAgentResult(
+                            success=False,
+                            task_id=actual_task_id,
+                            plan=current_plan,
+                            trace=current_trace,
+                            error=decision.reason,
+                            approval_request=decision.approval_request,
+                            metadata={"denied": True},
+                        ),
+                        start_time,
+                        task_desc,
                     )
 
                 elif decision.requires_approval:
@@ -410,15 +473,19 @@ class AutonomousAgentExecutor:
                         )
                         current_plan = current_plan.with_step_update(step.step_id, status=StepStatus.PAUSED, result=obs)
                         self._persist_state(actual_task_id, current_plan, current_trace, TaskStatus.PAUSED, decision.reason)
-                        return AutonomousAgentResult(
-                            success=False,
-                            task_id=actual_task_id,
-                            plan=current_plan,
-                            trace=current_trace,
-                            is_paused=True,
-                            approval_request=decision.approval_request,
-                            error=f"Step '{step.step_id}' requires approval: {decision.reason}",
-                            metadata={"approval_required": True},
+                        return self._finish_result(
+                            AutonomousAgentResult(
+                                success=False,
+                                task_id=actual_task_id,
+                                plan=current_plan,
+                                trace=current_trace,
+                                is_paused=True,
+                                approval_request=decision.approval_request,
+                                error=f"Step '{step.step_id}' requires approval: {decision.reason}",
+                                metadata={"approval_required": True},
+                            ),
+                            start_time,
+                            task_desc,
                         )
                     else:
                         obs = Observation(
@@ -431,12 +498,16 @@ class AutonomousAgentExecutor:
                         current_trace = current_trace.add_observation(obs)
                         current_plan = current_plan.with_step_update(step.step_id, status=StepStatus.FAILED, result=obs)
                         self._persist_state(actual_task_id, current_plan, current_trace, TaskStatus.FAILED, obs.error)
-                        return AutonomousAgentResult(
-                            success=False,
-                            task_id=actual_task_id,
-                            plan=current_plan,
-                            trace=current_trace,
-                            error=obs.error,
+                        return self._finish_result(
+                            AutonomousAgentResult(
+                                success=False,
+                                task_id=actual_task_id,
+                                plan=current_plan,
+                                trace=current_trace,
+                                error=obs.error,
+                            ),
+                            start_time,
+                            task_desc,
                         )
 
             # 6. Resolve Step Input
@@ -471,6 +542,21 @@ class AutonomousAgentExecutor:
                     error=str(e),
                 )
             step_duration_ms = (time.time() - step_start) * 1000.0
+
+            # Record intermediate output to working memory if manager is configured
+            if self.memory_manager is not None and hasattr(self.memory_manager, "write_working_fact"):
+                is_untrusted_val = False
+                if isinstance(agent_res.output, TaintedValue) or is_tainted(agent_res.output):
+                    is_untrusted_val = getattr(agent_res.output, "is_untrusted", True)
+                try:
+                    self.memory_manager.write_working_fact(
+                        task_id=actual_task_id,
+                        key=f"step_output:{step.step_id}",
+                        value=agent_res.output,
+                        is_untrusted=is_untrusted_val,
+                    )
+                except Exception as ex:
+                    logger.warning("Failed to write working memory fact: %s", ex)
 
             # 8. Construct Observation
             is_untrusted_output = False
@@ -516,12 +602,16 @@ class AutonomousAgentExecutor:
                         result=obs,
                     )
                     self._persist_state(actual_task_id, current_plan, current_trace, TaskStatus.FAILED, agent_res.error)
-                    return AutonomousAgentResult(
-                        success=False,
-                        task_id=actual_task_id,
-                        plan=current_plan,
-                        trace=current_trace,
-                        error=agent_res.error or "Step failed non-recoverable check",
+                    return self._finish_result(
+                        AutonomousAgentResult(
+                            success=False,
+                            task_id=actual_task_id,
+                            plan=current_plan,
+                            trace=current_trace,
+                            error=agent_res.error or "Step failed non-recoverable check",
+                        ),
+                        start_time,
+                        task_desc,
                     )
 
                 # Check retry bounds
@@ -559,12 +649,16 @@ class AutonomousAgentExecutor:
                         result=obs,
                     )
                     self._persist_state(actual_task_id, current_plan, current_trace, TaskStatus.FAILED, agent_res.error)
-                    return AutonomousAgentResult(
-                        success=False,
-                        task_id=actual_task_id,
-                        plan=current_plan,
-                        trace=current_trace,
-                        error=f"Step '{step.step_id}' failed: {agent_res.error}",
+                    return self._finish_result(
+                        AutonomousAgentResult(
+                            success=False,
+                            task_id=actual_task_id,
+                            plan=current_plan,
+                            trace=current_trace,
+                            error=f"Step '{step.step_id}' failed: {agent_res.error}",
+                        ),
+                        start_time,
+                        task_desc,
                     )
 
         # Loop limit exceeded
@@ -576,12 +670,16 @@ class AutonomousAgentExecutor:
             status=StepStatus.FAILED,
         )
         self._persist_state(actual_task_id, current_plan, current_trace, TaskStatus.FAILED, err_msg)
-        return AutonomousAgentResult(
-            success=False,
-            task_id=actual_task_id,
-            plan=current_plan,
-            trace=current_trace,
-            error=err_msg,
+        return self._finish_result(
+            AutonomousAgentResult(
+                success=False,
+                task_id=actual_task_id,
+                plan=current_plan,
+                trace=current_trace,
+                error=err_msg,
+            ),
+            start_time,
+            task_desc,
         )
 
     def resume(

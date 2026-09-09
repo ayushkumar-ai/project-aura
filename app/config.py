@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     aura_max_goal_dependencies: int = 10
     aura_max_goal_observations: int = 50
 
+    # M13 Multi-Tier Agent Memory Configuration
+    aura_max_working_memory_entries: int = 50
+    aura_max_semantic_facts: int = 200
+    aura_max_episodic_records: int = 500
+    aura_max_memory_search_results: int = 5
+    aura_max_memory_fact_chars: int = 4000
+    aura_memory_storage_dir: str = ""
+
+
 
     model_config = SettingsConfigDict(
         env_file=".env",

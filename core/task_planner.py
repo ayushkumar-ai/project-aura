@@ -121,6 +121,7 @@ class TaskPlanner:
         skill_registry: SkillRegistry,
         model: ModelInterface | None = None,
         model_router: ModelRouter | None = None,
+        memory_manager: Any | None = None,
     ):
         if not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry.")
@@ -132,6 +133,7 @@ class TaskPlanner:
         self.skill_registry = skill_registry
         self.model = model
         self.model_router = model_router
+        self.memory_manager = memory_manager
 
     def create_plan(
         self,
@@ -161,10 +163,17 @@ class TaskPlanner:
             )
         skills_text = "\n".join(skills_desc) if skills_desc else "No skills registered."
 
+        mem_section = ""
+        if self.memory_manager is not None and hasattr(self.memory_manager, "build_memory_context_prompt"):
+            mem_text = self.memory_manager.build_memory_context_prompt(query=task)
+            if mem_text:
+                mem_section = f"\nRelevant Memory & Context:\n{mem_text}\n"
+
         return (
             "You are a task planner in AURA.\n"
             "Decompose the following task into an execution plan using ONLY the available skills.\n\n"
             f"Available Skills:\n{skills_text}\n\n"
+            f"{mem_section}"
             f"Task to accomplish:\n{task.strip()}\n\n"
             "Output the execution plan as a JSON object with a 'steps' list where each step has:\n"
             "- 'step_id': unique string (e.g. 'step_1')\n"
@@ -200,10 +209,17 @@ class TaskPlanner:
                 outputs_summary.append(f"  * {k}: {str(v)[:200]}")
         outputs_text = "\n".join(outputs_summary) if outputs_summary else "  None"
 
+        mem_section = ""
+        if self.memory_manager is not None and hasattr(self.memory_manager, "build_memory_context_prompt"):
+            mem_text = self.memory_manager.build_memory_context_prompt(query=context.task)
+            if mem_text:
+                mem_section = f"\nRelevant Memory & Context:\n{mem_text}\n"
+
         return (
             "You are an adaptive task planner in AURA.\n"
             "A multi-step workflow failed during execution. Create a replacement execution plan to achieve the task.\n\n"
             f"Available Skills:\n{skills_text}\n\n"
+            f"{mem_section}"
             f"Overall Task Goal:\n{context.task.strip()}\n\n"
             f"Execution Failure Context:\n"
             f"- Completed Steps (will not be re-executed): {completed_desc}\n"

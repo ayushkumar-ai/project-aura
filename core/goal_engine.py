@@ -87,6 +87,7 @@ class GoalEngine:
         state_store: TaskStateStore | None = None,
         approval_gateway: ApprovalGateway | None = None,
         config: GoalEngineConfig | None = None,
+        memory_manager: Any | None = None,
     ):
         if goal_store is not None and not isinstance(goal_store, GoalStore):
             raise TypeError("goal_store must be an instance of GoalStore or None.")
@@ -103,6 +104,7 @@ class GoalEngine:
         if config is not None and not isinstance(config, GoalEngineConfig):
             raise TypeError("config must be an instance of GoalEngineConfig or None.")
 
+        self.memory_manager = memory_manager
         self.goal_store = goal_store if goal_store is not None else InMemoryGoalStore()
         self.state_store = state_store
         self.approval_gateway = approval_gateway
@@ -125,17 +127,23 @@ class GoalEngine:
 
         self.reasoner = reasoner if reasoner is not None else GoalReasoner(
             skill_registry=self.runtime.skill_registry if self.runtime else None,
+            memory_manager=self.memory_manager,
         )
+        if self.reasoner.memory_manager is None and self.memory_manager is not None:
+            self.reasoner.memory_manager = self.memory_manager
 
         self.executor = executor if executor is not None else (
             AutonomousAgentExecutor(
                 runtime=self.runtime,
                 state_store=self.state_store,
                 approval_gateway=self.approval_gateway,
+                memory_manager=self.memory_manager,
             )
             if self.runtime is not None
             else None
         )
+        if self.executor is not None and self.executor.memory_manager is None and self.memory_manager is not None:
+            self.executor.memory_manager = self.memory_manager
 
     def create_goal(
         self,
