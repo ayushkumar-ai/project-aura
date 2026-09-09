@@ -39,6 +39,25 @@ class FetchProvider(ABC):
         raise NotImplementedError
 
 
+class BrowserProvider(ABC):
+    """Abstract interface for browser-backed dynamic web page rendering and retrieval."""
+
+    @property
+    def name(self) -> str:
+        """Return the provider identifier."""
+        return self.__class__.__name__
+
+    @abstractmethod
+    def fetch_page(
+        self,
+        url: str,
+        timeout: float | None = None,
+        wait_for_render: float | None = None,
+    ) -> WebDocument:
+        """Fetch and render a dynamic web page, returning extracted textual content and metadata."""
+        raise NotImplementedError
+
+
 class WebProvider(SearchProvider, FetchProvider, ABC):
     """Combined contract for providers supporting both search and fetch capabilities."""
     pass

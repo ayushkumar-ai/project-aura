@@ -1,7 +1,7 @@
 from research.contradictions import detect_contradictions
 from research.evidence import extract_evidence_from_text, extract_source_evidence
 from research.extractor import HTMLTextExtractor, extract_text_and_title_from_html
-from research.interfaces import FetchProvider, SearchProvider, WebProvider
+from research.interfaces import BrowserProvider, FetchProvider, SearchProvider, WebProvider
 from research.models import (
     EvidenceConflict,
     EvidenceItem,
@@ -10,6 +10,12 @@ from research.models import (
     SearchItem,
     SearchResult,
     WebDocument,
+)
+from research.providers.browser import BrowserFetchProvider, FakeBrowserProvider
+from research.providers.factory import (
+    create_browser_provider,
+    create_fetch_provider,
+    create_search_provider,
 )
 from research.ranking import (
     rank_research_sources,
@@ -25,6 +31,7 @@ from research.url_utils import deduplicate_urls, normalize_url
 __all__ = [
     "SearchProvider",
     "FetchProvider",
+    "BrowserProvider",
     "WebProvider",
     "SearchItem",
     "SearchResult",
@@ -44,6 +51,11 @@ __all__ = [
     "extract_evidence_from_text",
     "extract_source_evidence",
     "detect_contradictions",
+    "BrowserFetchProvider",
+    "FakeBrowserProvider",
+    "create_search_provider",
+    "create_fetch_provider",
+    "create_browser_provider",
     "ResearchService",
     "WebSearchTool",
     "create_research_skill",

@@ -7,7 +7,7 @@ from core.models import AURAResponse
 from interfaces.model import ModelInterface
 from research.contradictions import detect_contradictions
 from research.evidence import extract_source_evidence
-from research.interfaces import FetchProvider, SearchProvider
+from research.interfaces import BrowserProvider, FetchProvider, SearchProvider
 from research.models import (
     EvidenceConflict,
     EvidenceItem,
@@ -34,13 +34,14 @@ def default_text_extractor(raw_text: str, max_chars: int) -> str:
 
 
 class ResearchService:
-    """Coordinates search, fetch, source ranking, evidence extraction, contradiction detection,
-    and structured research synthesis with bounded execution."""
+    """Coordinates search, fetch, dynamic browser rendering, source ranking, evidence extraction,
+    contradiction detection, and structured research synthesis with bounded execution."""
 
     def __init__(
         self,
         search_provider: SearchProvider,
         fetch_provider: FetchProvider | None = None,
+        browser_provider: BrowserProvider | None = None,
         max_search_results: int = 5,
         max_fetch_sources: int = 3,
         max_document_chars: int = 10000,
@@ -53,6 +54,8 @@ class ResearchService:
             raise TypeError("search_provider must be an instance of SearchProvider.")
         if fetch_provider is not None and not isinstance(fetch_provider, FetchProvider):
             raise TypeError("fetch_provider must be an instance of FetchProvider or None.")
+        if browser_provider is not None and not isinstance(browser_provider, BrowserProvider):
+            raise TypeError("browser_provider must be an instance of BrowserProvider or None.")
 
         if not isinstance(max_search_results, int) or max_search_results <= 0:
             raise ValueError("max_search_results must be a positive integer.")
@@ -69,6 +72,7 @@ class ResearchService:
 
         self.search_provider = search_provider
         self.fetch_provider = fetch_provider
+        self.browser_provider = browser_provider
         self.max_search_results = max_search_results
         self.max_fetch_sources = max_fetch_sources
         self.max_document_chars = max_document_chars
@@ -165,15 +169,56 @@ class ResearchService:
             metadata=dict(raw_doc.metadata),
         )
 
+    def fetch_dynamic(
+        self,
+        url: str,
+        timeout: float | None = None,
+        wait_for_render: float | None = None,
+    ) -> WebDocument:
+        """Fetch and render a dynamic web document using the configured BrowserProvider."""
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("URL must be a non-empty string.")
+
+        try:
+            url_clean = normalize_url(url)
+        except Exception:
+            url_clean = url.strip()
+
+        if not (url_clean.startswith("http://") or url_clean.startswith("https://")):
+            raise ValueError(f"Invalid URL scheme in '{url_clean}'. Must start with http:// or https://.")
+
+        if self.browser_provider is None:
+            raise RuntimeError("Browser provider is not configured.")
+
+        effective_timeout = timeout if timeout is not None else self.default_timeout
+
+        raw_doc = self.browser_provider.fetch_page(
+            url=url_clean,
+            timeout=effective_timeout,
+            wait_for_render=wait_for_render,
+        )
+
+        extracted_content = self.extract_text_fn(raw_doc.content, self.max_document_chars)
+
+        return WebDocument(
+            url=url_clean,
+            title=raw_doc.title,
+            content=extracted_content,
+            status_code=raw_doc.status_code,
+            error=raw_doc.error,
+            metadata=dict(raw_doc.metadata),
+        )
+
     def research(
         self,
         query: str,
         max_sources: int | None = None,
         fetch_content: bool = True,
+        use_dynamic: bool = False,
         timeout: float | None = None,
     ) -> ResearchReport:
-        """Perform end-to-end bounded web research with source ranking, evidence extraction,
-        contradiction detection, and fault isolation."""
+        """Perform end-to-end bounded web research with source ranking, dynamic browser support,
+        evidence extraction, contradiction detection, and fault isolation."""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("Query must be a non-empty string.")
 
@@ -215,10 +260,26 @@ class ResearchService:
                 continue
             seen_urls.add(norm_url)
 
-            if fetch_content and self.fetch_provider is not None:
+            if fetch_content and (self.fetch_provider is not None or self.browser_provider is not None):
                 try:
-                    doc = self.fetch(norm_url, timeout=effective_timeout)
-                    if doc.is_success:
+                    # Choose dynamic browser retrieval if requested or if only browser is configured
+                    doc = None
+                    if use_dynamic and self.browser_provider is not None:
+                        doc = self.fetch_dynamic(norm_url, timeout=effective_timeout)
+                    elif self.fetch_provider is not None:
+                        doc = self.fetch(norm_url, timeout=effective_timeout)
+                        # Automatic dynamic fallback if static fetch yielded no content and browser is available
+                        if (not doc.is_success or len(doc.content.strip()) < 30) and self.browser_provider is not None:
+                            try:
+                                dyn_doc = self.fetch_dynamic(norm_url, timeout=effective_timeout)
+                                if dyn_doc.is_success and len(dyn_doc.content.strip()) > len(doc.content.strip()):
+                                    doc = dyn_doc
+                            except Exception:
+                                pass  # Retain original doc
+                    elif self.browser_provider is not None:
+                        doc = self.fetch_dynamic(norm_url, timeout=effective_timeout)
+
+                    if doc and doc.is_success:
                         initial_src = ResearchSource(
                             url=norm_url,
                             title=doc.title or item.title,
@@ -246,7 +307,7 @@ class ResearchService:
                         )
                         successful_sources.append(src)
                     else:
-                        err_msg = doc.error or f"HTTP {doc.status_code}"
+                        err_msg = doc.error if doc else "No fetch provider available."
                         src = ResearchSource(
                             url=norm_url,
                             title=item.title,
@@ -315,11 +376,13 @@ class ResearchService:
             metadata={
                 "search_provider": self.search_provider.name,
                 "fetch_provider": self.fetch_provider.name if self.fetch_provider else None,
+                "browser_provider": self.browser_provider.name if self.browser_provider else None,
                 "total_queried": len(search_res.items),
                 "successful_count": len(ranked_sources),
                 "failed_count": len(failed_sources),
                 "evidence_count": len(aggregated_evidence),
                 "contradictions_count": len(contradictions),
+                "dynamic_requested": use_dynamic,
             },
         )
 

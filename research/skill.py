@@ -79,6 +79,7 @@ def create_research_skill(
         query = ""
         max_sources = None
         fetch_content = True
+        use_dynamic = False
         synthesize = True
 
         if isinstance(input_data, str):
@@ -88,6 +89,10 @@ def create_research_skill(
             max_sources = input_data.get("max_sources") or input_data.get("max_results")
             if "fetch" in input_data:
                 fetch_content = bool(input_data["fetch"])
+            if "dynamic" in input_data:
+                use_dynamic = bool(input_data["dynamic"])
+            elif "use_browser" in input_data:
+                use_dynamic = bool(input_data["use_browser"])
             if "synthesize" in input_data:
                 synthesize = bool(input_data["synthesize"])
         else:
@@ -103,10 +108,16 @@ def create_research_skill(
                 "query": query,
                 "max_sources": max_sources,
                 "fetch": fetch_content,
+                "dynamic": use_dynamic,
             })
             raw_result_str = exec_tool.execute("web_search", tool_input)
         elif service is not None:
-            report = service.research(query=query, max_sources=max_sources, fetch_content=fetch_content)
+            report = service.research(
+                query=query,
+                max_sources=max_sources,
+                fetch_content=fetch_content,
+                use_dynamic=use_dynamic,
+            )
             sources_data = [
                 {
                     "title": s.title,

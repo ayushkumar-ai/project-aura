@@ -23,7 +23,7 @@ class WebSearchTool(ToolInterface):
 
     @property
     def keywords(self) -> tuple[str, ...]:
-        return ("search", "web", "research", "lookup", "find")
+        return ("search", "web", "research", "lookup", "find", "browser")
 
     def execute(self, input_data: str) -> str:
         if not isinstance(input_data, str) or not input_data.strip():
@@ -32,6 +32,7 @@ class WebSearchTool(ToolInterface):
         query = input_data.strip()
         max_sources = None
         fetch_content = True
+        use_dynamic = False
 
         # Check if input is structured JSON
         if query.startswith("{") and query.endswith("}"):
@@ -44,6 +45,10 @@ class WebSearchTool(ToolInterface):
                         max_sources = int(max_sources)
                     if "fetch" in parsed:
                         fetch_content = bool(parsed["fetch"])
+                    if "dynamic" in parsed:
+                        use_dynamic = bool(parsed["dynamic"])
+                    elif "use_browser" in parsed:
+                        use_dynamic = bool(parsed["use_browser"])
             except Exception:
                 pass  # Fall back to treating as raw query string
 
@@ -51,6 +56,7 @@ class WebSearchTool(ToolInterface):
             query=query,
             max_sources=max_sources,
             fetch_content=fetch_content,
+            use_dynamic=use_dynamic,
         )
 
         sources_data = []
