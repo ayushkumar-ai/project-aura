@@ -14,6 +14,7 @@ class OpenAIProvider(ModelInterface):
         model_name: str,
         api_key: str,
         client: OpenAI | None = None,
+        timeout: float | None = None,
     ):
         if not model_name.strip():
             raise ValueError("OpenAI model name cannot be empty.")
@@ -22,7 +23,13 @@ class OpenAIProvider(ModelInterface):
             raise ValueError("OpenAI API key cannot be empty.")
 
         self.model_name = model_name.strip()
-        self.client = client or OpenAI(api_key=api_key)
+        self.timeout = timeout
+        if client is not None:
+            self.client = client
+        elif timeout is not None:
+            self.client = OpenAI(api_key=api_key, timeout=timeout)
+        else:
+            self.client = OpenAI(api_key=api_key)
 
     def generate(
         self,
@@ -36,6 +43,8 @@ class OpenAIProvider(ModelInterface):
                 model=self.model_name,
                 input=prompt,
             )
+        except TimeoutError:
+            raise
         except Exception as exc:
             raise RuntimeError(
                 "OpenAI model generation failed."

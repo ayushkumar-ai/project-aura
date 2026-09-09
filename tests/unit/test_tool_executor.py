@@ -169,6 +169,7 @@ def test_unauthorized_tool_is_rejected_before_execution():
 
     assert executed is False
 
+
 def test_tool_execution_timeout_is_handled_safely():
     registry = ToolRegistry()
 
@@ -211,3 +212,23 @@ def test_tool_execution_timeout_does_not_block_caller():
     assert elapsed < 0.3, (
         f"Caller was blocked for {elapsed:.3f}s, expected < 0.3s"
     )
+
+
+def test_tool_executor_uses_configured_default_timeout():
+    registry = ToolRegistry()
+
+    class SlowTool:
+        def execute(self, tool_input):
+            time.sleep(0.2)
+            return "finished"
+
+    registry.register("calculator", SlowTool())
+
+    executor = ToolExecutor(
+        registry=registry,
+        policy=Policy(),
+        timeout=0.05,
+    )
+
+    with pytest.raises(TimeoutError):
+        executor.execute("calculator", "test input")

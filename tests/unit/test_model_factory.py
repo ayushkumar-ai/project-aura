@@ -72,3 +72,29 @@ def test_model_factory_rejects_openai_without_model_name():
             model_name="",
             api_key="test-key",
         )
+
+
+def test_create_model_provider_accepts_timeout(monkeypatch):
+    class FakeOpenAIProvider:
+        pass
+
+    def fake_init(self, model_name, api_key, client=None, timeout=None):
+        self.model_name = model_name
+        self.api_key = api_key
+        self.timeout = timeout
+
+    monkeypatch.setattr(
+        OpenAIProvider,
+        "__init__",
+        fake_init,
+    )
+
+    provider = create_model_provider(
+        "openai",
+        model_name="test-model",
+        api_key="test-key",
+        timeout=10.0,
+    )
+
+    assert isinstance(provider, OpenAIProvider)
+    assert provider.timeout == 10.0

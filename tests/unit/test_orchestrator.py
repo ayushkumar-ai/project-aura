@@ -1,4 +1,5 @@
 import logging
+import time
 import pytest
 
 from core.models import AURARequest, AURAResponse
@@ -1672,3 +1673,245 @@ def test_orchestrator_does_not_execute_memory_operations_when_request_is_denied(
 
     assert response.content == "Request denied by policy."
     assert response.metadata == {"policy": "deny"}
+
+
+def test_orchestrator_tool_completes_within_timeout():
+    class FastTool:
+        def execute(self, tool_input: str) -> str:
+            return f"fast: {tool_input}"
+
+        def prepare_input(self, request: str) -> str:
+            return request
+
+    registry = ToolRegistry()
+    registry.register("calculator", FastTool())
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+        tool_selector=selector,
+        tool_timeout=1.0,
+    )
+
+    request = AURARequest(
+        user_input="calculate 1 + 1",
+        metadata={"tool": "calculator", "tool_input": "1 + 1"},
+    )
+    response = orchestrator.run(request)
+
+    assert response.request_id == request.request_id
+    assert response.content == "fast: 1 + 1"
+    assert response.metadata == {
+        "tool": "calculator",
+        "policy": "allow",
+    }
+
+
+def test_orchestrator_handles_tool_execution_timeout():
+    class SlowTool:
+        def execute(self, tool_input: str) -> str:
+            time.sleep(0.2)
+            return "too late"
+
+        def prepare_input(self, request: str) -> str:
+            return request
+
+    registry = ToolRegistry()
+    registry.register("calculator", SlowTool())
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+        tool_selector=selector,
+        tool_timeout=0.02,
+    )
+
+    request = AURARequest(
+        user_input="calculate slow",
+        metadata={"tool": "calculator", "tool_input": "slow input"},
+    )
+    response = orchestrator.run(request)
+
+    assert response.request_id == request.request_id
+    assert response.content == "Tool 'calculator' timed out."
+    assert response.metadata == {
+        "tool": "calculator",
+        "policy": "allow",
+        "error": "tool_timeout",
+    }
+
+
+def test_orchestrator_logs_tool_execution_timeout(caplog):
+    class SlowTool:
+        def execute(self, tool_input: str) -> str:
+            time.sleep(0.2)
+            return "too late"
+
+        def prepare_input(self, request: str) -> str:
+            return request
+
+    registry = ToolRegistry()
+    registry.register("calculator", SlowTool())
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        tool_registry=registry,
+        tool_selector=selector,
+        tool_timeout=0.02,
+    )
+
+    request = AURARequest(
+        user_input="calculate slow",
+        metadata={"tool": "calculator", "tool_input": "slow input"},
+    )
+    with caplog.at_level(logging.WARNING, logger="aura.orchestrator"):
+        response = orchestrator.run(request)
+
+    assert response.content == "Tool 'calculator' timed out."
+    assert (
+        f"Tool 'calculator' execution timed out for request {request.request_id}"
+        in caplog.text
+    )
+
+
+def test_orchestrator_unauthorized_tool_denied_before_timeout():
+    executed = False
+
+    class UnauthorizedSlowTool:
+        def execute(self, tool_input: str) -> str:
+            nonlocal executed
+            executed = True
+            time.sleep(0.2)
+            return "should not run"
+
+        def prepare_input(self, request: str) -> str:
+            return request
+
+    registry = ToolRegistry()
+    registry.register("unauthorized_tool", UnauthorizedSlowTool())
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(authorized_tools={"echo"}),
+        tool_registry=registry,
+        tool_selector=selector,
+        tool_timeout=0.02,
+    )
+
+    request = AURARequest(
+        user_input="use unauthorized",
+        metadata={"tool": "unauthorized_tool", "tool_input": "input"},
+    )
+    response = orchestrator.run(request)
+
+    assert executed is False
+    assert response.content == "Tool 'unauthorized_tool' is not authorized."
+    assert response.metadata == {
+        "tool": "unauthorized_tool",
+        "policy": "deny",
+        "error": "tool_unauthorized",
+    }
+
+
+def test_orchestrator_model_completes_within_timeout():
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        model_timeout=1.0,
+    )
+
+    request = AURARequest(user_input="Hello AURA")
+    response = orchestrator.run(request)
+
+    assert response.request_id == request.request_id
+    assert response.content == "Fake response to: Hello AURA"
+    assert response.metadata == {
+        "provider": "fake",
+        "policy": "allow",
+    }
+
+
+def test_orchestrator_handles_model_generation_timeout():
+    class SlowModel(FakeModelProvider):
+        def generate(self, prompt: str, request_id=None):
+            time.sleep(0.2)
+            return super().generate(prompt, request_id)
+
+    orchestrator = Orchestrator(
+        model=SlowModel(),
+        policy=Policy(),
+        model_timeout=0.02,
+    )
+
+    request = AURARequest(user_input="Hello AURA")
+    response = orchestrator.run(request)
+
+    assert response.request_id == request.request_id
+    assert response.content == "Model generation timed out."
+    assert response.metadata == {
+        "policy": "allow",
+        "error": "model_timeout",
+    }
+
+
+def test_orchestrator_logs_model_generation_timeout(caplog):
+    class SlowModel(FakeModelProvider):
+        def generate(self, prompt: str, request_id=None):
+            time.sleep(0.2)
+            return super().generate(prompt, request_id)
+
+    orchestrator = Orchestrator(
+        model=SlowModel(),
+        policy=Policy(),
+        model_timeout=0.02,
+    )
+
+    request = AURARequest(user_input="Hello AURA")
+    with caplog.at_level(logging.WARNING, logger="aura.orchestrator"):
+        response = orchestrator.run(request)
+
+    assert response.content == "Model generation timed out."
+    assert (
+        f"Model generation timed out for request {request.request_id}"
+        in caplog.text
+    )
+
+
+def test_orchestrator_handles_model_synthesis_timeout():
+    class SlowModel(FakeModelProvider):
+        def generate(self, prompt: str, request_id=None):
+            time.sleep(0.2)
+            return super().generate(prompt, request_id)
+
+    registry = ToolRegistry()
+    registry.register("echo", EchoTool())
+    selector = ToolSelector(registry)
+
+    orchestrator = Orchestrator(
+        model=SlowModel(),
+        policy=Policy(),
+        tool_registry=registry,
+        tool_selector=selector,
+        synthesize_tool_results=True,
+        model_timeout=0.02,
+    )
+
+    request = AURARequest(
+        user_input="Repeat this",
+        metadata={"tool": "echo", "tool_input": "Hello world"},
+    )
+    response = orchestrator.run(request)
+
+    assert response.request_id == request.request_id
+    assert response.content == "Model generation timed out."
+    assert response.metadata == {
+        "policy": "allow",
+        "error": "model_timeout",
+    }

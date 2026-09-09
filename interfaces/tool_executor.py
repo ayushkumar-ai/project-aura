@@ -11,9 +11,12 @@ class ToolExecutor:
         self,
         registry: ToolRegistry,
         policy: Policy | None = None,
+        timeout: float | None = None,
     ):
         self.registry = registry
         self.policy = policy
+        self.timeout = timeout
+
     def execute(
         self,
         tool_name: str,
@@ -36,13 +39,15 @@ class ToolExecutor:
                     f"Tool '{tool_name}' is not authorized."
                 )
 
-        if timeout is None:
+        effective_timeout = timeout if timeout is not None else self.timeout
+
+        if effective_timeout is None:
             return tool.execute(tool_input)
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
             future = executor.submit(tool.execute, tool_input)
-            return future.result(timeout=timeout)
+            return future.result(timeout=effective_timeout)
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
     def list_tools(self) -> list[str]:

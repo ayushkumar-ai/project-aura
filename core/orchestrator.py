@@ -1,4 +1,6 @@
+import concurrent.futures
 import logging
+from uuid import UUID
 
 from core.context import AURAContext
 from core.models import AURARequest, AURAResponse
@@ -30,6 +32,8 @@ class Orchestrator:
         tool_selector: ToolSelector | None = None,
         knowledge: KnowledgeInterface | None = None,
         synthesize_tool_results: bool = False,
+        tool_timeout: float | None = None,
+        model_timeout: float | None = None,
     ):
         self.model = model
         self.policy = policy
@@ -40,17 +44,21 @@ class Orchestrator:
         self.tool_selector = tool_selector
         self.knowledge = knowledge
         self.synthesize_tool_results = synthesize_tool_results
+        self.tool_timeout = tool_timeout
+        self.model_timeout = model_timeout
 
         if self.tool_executor is None and self.tool_selector is not None:
             self.tool_executor = ToolExecutor(
                 self.tool_selector.registry,
                 policy=self.policy,
+                timeout=self.tool_timeout,
             )
 
         if self.tool_executor is None and self.tool_registry is not None:
             self.tool_executor = ToolExecutor(
                 self.tool_registry,
                 policy=self.policy,
+                timeout=self.tool_timeout,
             )
 
     def _build_context(self, request: AURARequest) -> AURAContext:
@@ -124,10 +132,46 @@ class Orchestrator:
                 request=request.user_input,
             )
 
+        if self.tool_timeout is not None:
+            try:
+                return self.tool_executor.execute(
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    timeout=self.tool_timeout,
+                )
+            except TypeError:
+                return self.tool_executor.execute(
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                )
+
         return self.tool_executor.execute(
             tool_name=tool_name,
             tool_input=tool_input,
         )
+
+    def _generate_model_response(
+        self,
+        prompt: str,
+        request_id: UUID,
+    ) -> AURAResponse:
+        """Generate model response with optional timeout boundary."""
+        if self.model_timeout is None:
+            return self.model.generate(
+                prompt,
+                request_id=request_id,
+            )
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            future = executor.submit(
+                self.model.generate,
+                prompt,
+                request_id=request_id,
+            )
+            return future.result(timeout=self.model_timeout)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _retrieve_knowledge(
         self,
@@ -333,9 +377,22 @@ class Orchestrator:
                             )
 
                             try:
-                                response = self.model.generate(
-                                    prompt,
+                                response = self._generate_model_response(
+                                    prompt=prompt,
                                     request_id=context.request_id,
+                                )
+                            except TimeoutError:
+                                logger.warning(
+                                    "Model synthesis timed out for request %s",
+                                    context.request_id,
+                                )
+                                return AURAResponse(
+                                    request_id=context.request_id,
+                                    content="Model generation timed out.",
+                                    metadata={
+                                        "policy": decision.value,
+                                        "error": "model_timeout",
+                                    },
                                 )
                             except Exception:
                                 logger.warning(
@@ -423,6 +480,22 @@ class Orchestrator:
                             },
                         )
 
+                    except TimeoutError:
+                        logger.warning(
+                            "Tool '%s' execution timed out for request %s",
+                            tool_name,
+                            context.request_id,
+                        )
+                        return AURAResponse(
+                            request_id=context.request_id,
+                            content=f"Tool '{tool_name}' timed out.",
+                            metadata={
+                                "tool": tool_name,
+                                "policy": decision.value,
+                                "error": "tool_timeout",
+                            },
+                        )
+
                     except Exception:
                         logger.warning(
                             "Tool '%s' execution failed for request %s",
@@ -465,9 +538,22 @@ class Orchestrator:
         )
 
         try:
-            response = self.model.generate(
-                prompt,
+            response = self._generate_model_response(
+                prompt=prompt,
                 request_id=context.request_id,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Model generation timed out for request %s",
+                context.request_id,
+            )
+            return AURAResponse(
+                request_id=context.request_id,
+                content="Model generation timed out.",
+                metadata={
+                    "policy": decision.value,
+                    "error": "model_timeout",
+                },
             )
         except Exception:
             logger.warning(

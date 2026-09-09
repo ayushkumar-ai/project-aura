@@ -7,6 +7,7 @@ def create_model_provider(
     provider: str,
     model_name: str = "",
     api_key: str = "",
+    timeout: float | None = None,
 ) -> ModelInterface:
     """Create an AURA model provider from configuration."""
 
@@ -22,6 +23,13 @@ def create_model_provider(
 
         if not api_key.strip():
             raise ValueError("OpenAI API key cannot be empty.")
+
+        if timeout is not None:
+            return OpenAIProvider(
+                model_name=model_name,
+                api_key=api_key,
+                timeout=timeout,
+            )
 
         return OpenAIProvider(
             model_name=model_name,

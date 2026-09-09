@@ -160,3 +160,36 @@ def test_openai_provider_requires_api_key_without_client():
             model_name="test-model",
             api_key="",
         )
+
+
+def test_openai_provider_accepts_timeout():
+    client = FakeOpenAIClient()
+    provider = OpenAIProvider(
+        model_name="test-model",
+        api_key="test-key",
+        client=client,
+        timeout=5.0,
+    )
+
+    assert provider.timeout == 5.0
+
+
+def test_openai_provider_propagates_timeout_error():
+    class TimeoutResponses:
+        def create(self, **kwargs):
+            raise TimeoutError("Request timed out")
+
+    class TimeoutClient:
+        responses = TimeoutResponses()
+
+    provider = OpenAIProvider(
+        model_name="test-model",
+        api_key="test-key",
+        client=TimeoutClient(),
+    )
+
+    with pytest.raises(TimeoutError):
+        provider.generate(
+            prompt="Hello AURA",
+            request_id=uuid4(),
+        )
