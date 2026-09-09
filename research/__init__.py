@@ -7,8 +7,12 @@ from research.evidence import extract_evidence_from_text, extract_source_evidenc
 from research.extractor import HTMLTextExtractor, extract_links_from_html, extract_text_and_title_from_html
 from research.interfaces import BrowserProvider, FetchProvider, SearchProvider, WebProvider
 from research.models import (
+    AnswerCitation,
+    AnswerSection,
+    AssembledAnswer,
     CitationValidationResult,
     ClaimEvidence,
+    ClaimVerificationStatus,
     DiscoveredLink,
     EvidenceConflict,
     EvidenceItem,
@@ -19,6 +23,7 @@ from research.models import (
     ResearchSubQuestion,
     SearchItem,
     SearchResult,
+    VerifiedClaim,
     WebDocument,
 )
 from research.planner import ResearchPlanner
@@ -39,6 +44,8 @@ from research.service import ResearchService
 from research.skill import create_research_skill
 from research.tool import WebSearchTool
 from research.url_utils import deduplicate_urls, normalize_url
+from research.verification import ClaimVerifier, verify_claims
+from research.assembly import AnswerAssembler, assemble_answer
 
 __all__ = [
     "SearchProvider",
@@ -55,6 +62,11 @@ __all__ = [
     "ResearchSubQuestion",
     "ClaimEvidence",
     "ResearchClaim",
+    "ClaimVerificationStatus",
+    "VerifiedClaim",
+    "AnswerCitation",
+    "AnswerSection",
+    "AssembledAnswer",
     "CitationValidationResult",
     "ResearchConfidence",
     "ResearchReport",
@@ -84,6 +96,10 @@ __all__ = [
     "extract_citations",
     "validate_citations",
     "calculate_research_confidence",
+    "ClaimVerifier",
+    "verify_claims",
+    "AnswerAssembler",
+    "assemble_answer",
     "ResearchService",
     "WebSearchTool",
     "create_research_skill",

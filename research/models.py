@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 from urllib.parse import urlparse
 
@@ -258,8 +259,6 @@ class DiscoveredLink:
             raise TypeError("source_title must be a string.")
         object.__setattr__(self, "source_title", self.source_title.strip())
 
-        if not isinstance(self.source_domain, str):
-            raise TypeError("source_domain must be a string.")
         domain = self.source_domain.strip() if self.source_domain else _extract_domain(t_clean)
         object.__setattr__(self, "source_domain", domain)
 
@@ -379,6 +378,16 @@ class ResearchSubQuestion:
         object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
 
 
+class ClaimVerificationStatus(str, Enum):
+    """Authoritative deterministic verification status of a factual claim."""
+
+    SUPPORTED = "supported"
+    PARTIALLY_SUPPORTED = "partially_supported"
+    CONTRADICTED = "contradicted"
+    UNSUPPORTED = "unsupported"
+    UNCERTAIN = "uncertain"
+
+
 @dataclass(frozen=True)
 class ClaimEvidence:
     """Associates an evidence passage with a specific claim, source, and stance."""
@@ -425,7 +434,7 @@ class ResearchClaim:
     sub_question_id: str = ""
     supporting_sources: tuple[ClaimEvidence, ...] = field(default_factory=tuple)
     refuting_sources: tuple[ClaimEvidence, ...] = field(default_factory=tuple)
-    consensus_status: str = "supported"  # "supported" | "disputed" | "unverified"
+    consensus_status: str = "supported"  # "supported" | "partially_supported" | "contradicted" | "unsupported" | "uncertain" | "disputed" | "unverified"
     confidence_score: float = 1.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -458,8 +467,17 @@ class ResearchClaim:
         else:
             raise TypeError("refuting_sources must be a list or tuple of ClaimEvidence instances.")
 
-        if not isinstance(self.consensus_status, str) or self.consensus_status not in ("supported", "disputed", "unverified"):
-            raise ValueError("consensus_status must be one of: 'supported', 'disputed', 'unverified'.")
+        valid_statuses = (
+            "supported",
+            "partially_supported",
+            "contradicted",
+            "unsupported",
+            "uncertain",
+            "disputed",
+            "unverified",
+        )
+        if not isinstance(self.consensus_status, str) or self.consensus_status not in valid_statuses:
+            raise ValueError(f"consensus_status must be one of: {valid_statuses}.")
         object.__setattr__(self, "consensus_status", self.consensus_status.strip())
 
         if not isinstance(self.confidence_score, (int, float)) or not (0.0 <= self.confidence_score <= 1.0):
@@ -475,6 +493,264 @@ class ResearchClaim:
         """Return total distinct sources referencing this claim."""
         seen = {ev.source_url for ev in self.supporting_sources} | {ev.source_url for ev in self.refuting_sources}
         return len(seen)
+
+
+@dataclass(frozen=True)
+class VerifiedClaim:
+    """Represents a research claim verified against source evidence with an authoritative status and confidence."""
+
+    claim_id: str
+    statement: str
+    verification_status: ClaimVerificationStatus = ClaimVerificationStatus.UNSUPPORTED
+    confidence_score: float = 0.0
+    supporting_evidence: tuple[ClaimEvidence, ...] = field(default_factory=tuple)
+    refuting_evidence: tuple[ClaimEvidence, ...] = field(default_factory=tuple)
+    contradiction_ids: tuple[str, ...] = field(default_factory=tuple)
+    reasoning: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.claim_id, str) or not self.claim_id.strip():
+            raise ValueError("claim_id must be a non-empty string.")
+        object.__setattr__(self, "claim_id", self.claim_id.strip())
+
+        if not isinstance(self.statement, str) or not self.statement.strip():
+            raise ValueError("statement must be a non-empty string.")
+        object.__setattr__(self, "statement", self.statement.strip())
+
+        if isinstance(self.verification_status, str):
+            object.__setattr__(self, "verification_status", ClaimVerificationStatus(self.verification_status))
+        elif not isinstance(self.verification_status, ClaimVerificationStatus):
+            raise TypeError("verification_status must be an instance of ClaimVerificationStatus.")
+
+        if not isinstance(self.confidence_score, (int, float)) or not (0.0 <= self.confidence_score <= 1.0):
+            raise ValueError("confidence_score must be a float between 0.0 and 1.0.")
+        object.__setattr__(self, "confidence_score", float(self.confidence_score))
+
+        if isinstance(self.supporting_evidence, (list, tuple)):
+            for ev in self.supporting_evidence:
+                if not isinstance(ev, ClaimEvidence):
+                    raise TypeError("All items in supporting_evidence must be ClaimEvidence instances.")
+            object.__setattr__(self, "supporting_evidence", tuple(self.supporting_evidence))
+        else:
+            raise TypeError("supporting_evidence must be a sequence of ClaimEvidence instances.")
+
+        if isinstance(self.refuting_evidence, (list, tuple)):
+            for ev in self.refuting_evidence:
+                if not isinstance(ev, ClaimEvidence):
+                    raise TypeError("All items in refuting_evidence must be ClaimEvidence instances.")
+            object.__setattr__(self, "refuting_evidence", tuple(self.refuting_evidence))
+        else:
+            raise TypeError("refuting_evidence must be a sequence of ClaimEvidence instances.")
+
+        if isinstance(self.contradiction_ids, (list, tuple)):
+            for cid in self.contradiction_ids:
+                if not isinstance(cid, str):
+                    raise TypeError("All items in contradiction_ids must be strings.")
+            object.__setattr__(self, "contradiction_ids", tuple(self.contradiction_ids))
+        else:
+            raise TypeError("contradiction_ids must be a sequence of strings.")
+
+        if not isinstance(self.reasoning, str):
+            raise TypeError("reasoning must be a string.")
+        object.__setattr__(self, "reasoning", self.reasoning.strip())
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+        object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
+
+    @property
+    def is_supported(self) -> bool:
+        """Check if claim is verified as supported."""
+        return self.verification_status == ClaimVerificationStatus.SUPPORTED
+
+    @property
+    def is_partially_supported(self) -> bool:
+        """Check if claim is partially supported by single source or limited evidence."""
+        return self.verification_status == ClaimVerificationStatus.PARTIALLY_SUPPORTED
+
+    @property
+    def is_contradicted(self) -> bool:
+        """Check if claim is flagged as contradicted by opposing evidence."""
+        return self.verification_status == ClaimVerificationStatus.CONTRADICTED
+
+    @property
+    def is_unsupported(self) -> bool:
+        """Check if claim lacks grounding evidence."""
+        return self.verification_status == ClaimVerificationStatus.UNSUPPORTED
+
+    @property
+    def is_uncertain(self) -> bool:
+        """Check if claim evidence is conflicting or ambiguous."""
+        return self.verification_status == ClaimVerificationStatus.UNCERTAIN
+
+    @property
+    def evidence_count(self) -> int:
+        """Total supporting and refuting evidence items."""
+        return len(self.supporting_evidence) + len(self.refuting_evidence)
+
+
+@dataclass(frozen=True)
+class AnswerCitation:
+    """Represents a verified citation linked to a specific ResearchSource."""
+
+    citation_index: int
+    source_url: str
+    source_title: str
+    evidence_passage: str = ""
+    domain: str = ""
+    hop: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.citation_index, int) or self.citation_index <= 0:
+            raise ValueError("citation_index must be a positive integer.")
+
+        if not isinstance(self.source_url, str) or not self.source_url.strip():
+            raise ValueError("source_url must be a non-empty string.")
+        object.__setattr__(self, "source_url", self.source_url.strip())
+
+        if not isinstance(self.source_title, str):
+            raise TypeError("source_title must be a string.")
+        object.__setattr__(self, "source_title", self.source_title.strip())
+
+        if not isinstance(self.evidence_passage, str):
+            raise TypeError("evidence_passage must be a string.")
+        object.__setattr__(self, "evidence_passage", self.evidence_passage.strip())
+
+        domain = self.domain.strip() if self.domain else _extract_domain(self.source_url)
+        object.__setattr__(self, "domain", domain)
+
+        if not isinstance(self.hop, int) or self.hop < 0:
+            raise ValueError("hop must be a non-negative integer.")
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+        object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
+
+
+@dataclass(frozen=True)
+class AnswerSection:
+    """Represents a structured subsection in an assembled research answer."""
+
+    title: str
+    content: str
+    citations: tuple[int, ...] = field(default_factory=tuple)
+    claim_ids: tuple[str, ...] = field(default_factory=tuple)
+    section_type: str = "findings"  # "findings" | "conflict" | "limitations" | "sources"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.title, str) or not self.title.strip():
+            raise ValueError("title must be a non-empty string.")
+        object.__setattr__(self, "title", self.title.strip())
+
+        if not isinstance(self.content, str):
+            raise TypeError("content must be a string.")
+        object.__setattr__(self, "content", self.content.strip())
+
+        if isinstance(self.citations, (list, tuple)):
+            for c in self.citations:
+                if not isinstance(c, int) or c <= 0:
+                    raise ValueError("All items in citations must be positive integers.")
+            object.__setattr__(self, "citations", tuple(self.citations))
+        else:
+            raise TypeError("citations must be a sequence of positive integers.")
+
+        if isinstance(self.claim_ids, (list, tuple)):
+            for cid in self.claim_ids:
+                if not isinstance(cid, str):
+                    raise TypeError("All items in claim_ids must be strings.")
+            object.__setattr__(self, "claim_ids", tuple(self.claim_ids))
+        else:
+            raise TypeError("claim_ids must be a sequence of strings.")
+
+        if self.section_type not in ("findings", "conflict", "limitations", "sources"):
+            raise ValueError("section_type must be one of: 'findings', 'conflict', 'limitations', 'sources'.")
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+        object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
+
+
+@dataclass(frozen=True)
+class AssembledAnswer:
+    """Represents a complete, citation-annotated, evidence-verified research answer."""
+
+    query: str
+    summary: str
+    sections: tuple[AnswerSection, ...] = field(default_factory=tuple)
+    verified_claims: tuple[VerifiedClaim, ...] = field(default_factory=tuple)
+    citations: tuple[AnswerCitation, ...] = field(default_factory=tuple)
+    unsupported_claims_flagged: tuple[str, ...] = field(default_factory=tuple)
+    conflicts_flagged: tuple[str, ...] = field(default_factory=tuple)
+    formatted_answer: str = ""
+    is_grounded: bool = True
+    confidence_score: float = 1.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.query, str) or not self.query.strip():
+            raise ValueError("query must be a non-empty string.")
+        object.__setattr__(self, "query", self.query.strip())
+
+        if not isinstance(self.summary, str):
+            raise TypeError("summary must be a string.")
+        object.__setattr__(self, "summary", self.summary.strip())
+
+        if isinstance(self.sections, (list, tuple)):
+            for sec in self.sections:
+                if not isinstance(sec, AnswerSection):
+                    raise TypeError("All items in sections must be AnswerSection instances.")
+            object.__setattr__(self, "sections", tuple(self.sections))
+        else:
+            raise TypeError("sections must be a sequence of AnswerSection instances.")
+
+        if isinstance(self.verified_claims, (list, tuple)):
+            for vc in self.verified_claims:
+                if not isinstance(vc, VerifiedClaim):
+                    raise TypeError("All items in verified_claims must be VerifiedClaim instances.")
+            object.__setattr__(self, "verified_claims", tuple(self.verified_claims))
+        else:
+            raise TypeError("verified_claims must be a sequence of VerifiedClaim instances.")
+
+        if isinstance(self.citations, (list, tuple)):
+            for c in self.citations:
+                if not isinstance(c, AnswerCitation):
+                    raise TypeError("All items in citations must be AnswerCitation instances.")
+            object.__setattr__(self, "citations", tuple(self.citations))
+        else:
+            raise TypeError("citations must be a sequence of AnswerCitation instances.")
+
+        if isinstance(self.unsupported_claims_flagged, (list, tuple)):
+            for u in self.unsupported_claims_flagged:
+                if not isinstance(u, str):
+                    raise TypeError("All items in unsupported_claims_flagged must be strings.")
+            object.__setattr__(self, "unsupported_claims_flagged", tuple(self.unsupported_claims_flagged))
+        else:
+            raise TypeError("unsupported_claims_flagged must be a sequence of strings.")
+
+        if isinstance(self.conflicts_flagged, (list, tuple)):
+            for c in self.conflicts_flagged:
+                if not isinstance(c, str):
+                    raise TypeError("All items in conflicts_flagged must be strings.")
+            object.__setattr__(self, "conflicts_flagged", tuple(self.conflicts_flagged))
+        else:
+            raise TypeError("conflicts_flagged must be a sequence of strings.")
+
+        if not isinstance(self.formatted_answer, str):
+            raise TypeError("formatted_answer must be a string.")
+
+        if not isinstance(self.is_grounded, bool):
+            raise TypeError("is_grounded must be a boolean.")
+
+        if not isinstance(self.confidence_score, (int, float)) or not (0.0 <= self.confidence_score <= 1.0):
+            raise ValueError("confidence_score must be a float between 0.0 and 1.0.")
+        object.__setattr__(self, "confidence_score", float(self.confidence_score))
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dict.")
+        object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
 
 
 @dataclass(frozen=True)
@@ -563,7 +839,7 @@ class ResearchConfidence:
 
 @dataclass(frozen=True)
 class ResearchReport:
-    """Aggregated outcome of a research operation with full source, evidence, claim, and traversal attribution."""
+    """Aggregated outcome of a research operation with full source, evidence, claim, verification, and answer attribution."""
 
     query: str
     sources: tuple[ResearchSource, ...] = field(default_factory=tuple)
@@ -573,11 +849,14 @@ class ResearchReport:
     contradictions: tuple[EvidenceConflict, ...] = field(default_factory=tuple)
     discovered_links: tuple[DiscoveredLink, ...] = field(default_factory=tuple)
     traversal_stats: dict[str, Any] = field(default_factory=dict)
-    # M9.6 additions (default empty / None for backward compatibility)
+    # M9.6 additions
     sub_questions: tuple[ResearchSubQuestion, ...] = field(default_factory=tuple)
     claims: tuple[ResearchClaim, ...] = field(default_factory=tuple)
     confidence: ResearchConfidence | None = None
     citation_validation: CitationValidationResult | None = None
+    # M9.7 additions
+    verified_claims: tuple[VerifiedClaim, ...] = field(default_factory=tuple)
+    assembled_answer: AssembledAnswer | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -654,6 +933,17 @@ class ResearchReport:
         if self.citation_validation is not None and not isinstance(self.citation_validation, CitationValidationResult):
             raise TypeError("citation_validation must be an instance of CitationValidationResult or None.")
 
+        if isinstance(self.verified_claims, (list, tuple)):
+            for vc in self.verified_claims:
+                if not isinstance(vc, VerifiedClaim):
+                    raise TypeError("All items in verified_claims must be VerifiedClaim instances.")
+            object.__setattr__(self, "verified_claims", tuple(self.verified_claims))
+        else:
+            raise TypeError("verified_claims must be a sequence of VerifiedClaim instances.")
+
+        if self.assembled_answer is not None and not isinstance(self.assembled_answer, AssembledAnswer):
+            raise TypeError("assembled_answer must be an instance of AssembledAnswer or None.")
+
         if not isinstance(self.metadata, dict):
             raise TypeError("metadata must be a dict.")
         object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
@@ -672,6 +962,11 @@ class ResearchReport:
     def has_claims(self) -> bool:
         """Check if any structured research claims were extracted."""
         return len(self.claims) > 0
+
+    @property
+    def has_verified_claims(self) -> bool:
+        """Check if any verified claims are available."""
+        return len(self.verified_claims) > 0
 
     def format_citations(self) -> str:
         """Format source citations for prompt injection or report rendering."""
@@ -698,4 +993,14 @@ class ResearchReport:
         for idx, cl in enumerate(self.claims, 1):
             status_tag = f"[{cl.consensus_status.upper()}]"
             lines.append(f"{idx}. {status_tag} {cl.statement} (Sources: {cl.total_sources_count})")
+        return "\n".join(lines)
+
+    def format_verified_claims_summary(self) -> str:
+        """Format verified factual claims with authoritative status and confidence."""
+        if not self.verified_claims:
+            return "No verified claims available."
+        lines = []
+        for idx, vc in enumerate(self.verified_claims, 1):
+            status_tag = f"[{vc.verification_status.value.upper()}]"
+            lines.append(f"{idx}. {status_tag} (Conf: {vc.confidence_score:.2f}) {vc.statement}")
         return "\n".join(lines)

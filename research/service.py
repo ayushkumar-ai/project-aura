@@ -8,13 +8,17 @@ from interfaces.model import ModelInterface
 from research.citations import validate_citations
 from research.claims import aggregate_claims_with_contradictions, extract_claims_from_evidence
 from research.confidence import calculate_research_confidence
+from research.verification import verify_claims
+from research.assembly import assemble_answer
 from research.contradictions import detect_contradictions
 from research.crawler import BoundedWebCrawler
 from research.evidence import extract_source_evidence
 from research.interfaces import BrowserProvider, FetchProvider, SearchProvider
 from research.models import (
+    AssembledAnswer,
     CitationValidationResult,
     ClaimEvidence,
+    ClaimVerificationStatus,
     DiscoveredLink,
     EvidenceConflict,
     EvidenceItem,
@@ -25,6 +29,7 @@ from research.models import (
     ResearchSubQuestion,
     SearchItem,
     SearchResult,
+    VerifiedClaim,
     WebDocument,
 )
 from research.planner import ResearchPlanner
@@ -325,6 +330,21 @@ class ResearchService:
             claims = extract_claims_from_evidence(aggregated_evidence)
             updated_claims = aggregate_claims_with_contradictions(claims, contradictions)
 
+            verified_claims = verify_claims(
+                claims=updated_claims,
+                evidence=aggregated_evidence,
+                contradictions=contradictions,
+                sources=ranked_sources,
+            )
+            assembled_answer = assemble_answer(
+                query=query,
+                verified_claims=verified_claims,
+                sources=ranked_sources,
+                contradictions=contradictions,
+                evidence=aggregated_evidence,
+                model=model,
+            )
+
             confidence = calculate_research_confidence(
                 sources=ranked_sources,
                 sub_questions=(),
@@ -343,6 +363,8 @@ class ResearchService:
                 traversal_stats=stats,
                 claims=updated_claims,
                 confidence=confidence,
+                verified_claims=verified_claims,
+                assembled_answer=assembled_answer,
                 metadata={
                     "search_provider": self.search_provider.name,
                     "fetch_provider": self.fetch_provider.name if self.fetch_provider else None,
@@ -475,6 +497,21 @@ class ResearchService:
         claims = extract_claims_from_evidence(aggregated_evidence)
         updated_claims = aggregate_claims_with_contradictions(claims, contradictions)
 
+        verified_claims = verify_claims(
+            claims=updated_claims,
+            evidence=aggregated_evidence,
+            contradictions=contradictions,
+            sources=ranked_sources,
+        )
+        assembled_answer = assemble_answer(
+            query=query,
+            verified_claims=verified_claims,
+            sources=ranked_sources,
+            contradictions=contradictions,
+            evidence=aggregated_evidence,
+            model=model,
+        )
+
         confidence = calculate_research_confidence(
             sources=ranked_sources,
             sub_questions=(),
@@ -493,6 +530,8 @@ class ResearchService:
             traversal_stats={},
             claims=updated_claims,
             confidence=confidence,
+            verified_claims=verified_claims,
+            assembled_answer=assembled_answer,
             metadata={
                 "search_provider": self.search_provider.name,
                 "fetch_provider": self.fetch_provider.name if self.fetch_provider else None,
@@ -577,7 +616,23 @@ class ResearchService:
         claims = extract_claims_from_evidence(all_evidence)
         updated_claims = aggregate_claims_with_contradictions(claims, contradictions)
 
-        # 6. Confidence & Coverage Calculation
+        # 6. Verification and Answer Assembly
+        verified_claims = verify_claims(
+            claims=updated_claims,
+            evidence=all_evidence,
+            contradictions=contradictions,
+            sources=ranked_sources,
+        )
+        assembled_answer = assemble_answer(
+            query=query,
+            verified_claims=verified_claims,
+            sources=ranked_sources,
+            contradictions=contradictions,
+            evidence=all_evidence,
+            model=model,
+        )
+
+        # 7. Confidence & Coverage Calculation
         confidence = calculate_research_confidence(
             sources=ranked_sources,
             sub_questions=sub_questions,
@@ -597,6 +652,8 @@ class ResearchService:
             sub_questions=sub_questions,
             claims=updated_claims,
             confidence=confidence,
+            verified_claims=verified_claims,
+            assembled_answer=assembled_answer,
             metadata={
                 "deep_research": True,
                 "sub_questions_count": len(sub_questions),
