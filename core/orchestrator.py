@@ -1,5 +1,6 @@
 import concurrent.futures
 import logging
+from typing import Any
 from uuid import UUID
 
 from core.context import AURAContext
@@ -34,6 +35,7 @@ class Orchestrator:
         synthesize_tool_results: bool = False,
         tool_timeout: float | None = None,
         model_timeout: float | None = None,
+        agentic_runtime: Any | None = None,
     ):
         self.model = model
         self.policy = policy
@@ -46,6 +48,7 @@ class Orchestrator:
         self.synthesize_tool_results = synthesize_tool_results
         self.tool_timeout = tool_timeout
         self.model_timeout = model_timeout
+        self.agentic_runtime = agentic_runtime
 
         if self.tool_executor is None and self.tool_selector is not None:
             self.tool_executor = ToolExecutor(
@@ -276,6 +279,29 @@ class Orchestrator:
             )
 
         logger.info("Request %s allowed by policy", request.request_id)
+
+        is_agentic = (
+            request.metadata.get("agentic") is True
+            or str(request.metadata.get("agentic")).lower() == "true"
+            or request.metadata.get("mode") == "agentic"
+            or request.metadata.get("workflow") is True
+            or str(request.metadata.get("workflow")).lower() == "true"
+        )
+        if is_agentic:
+            if self.agentic_runtime is None:
+                logger.warning(
+                    "Agentic execution requested for %s but agentic_runtime is not configured",
+                    request.request_id,
+                )
+                return AURAResponse(
+                    request_id=request.request_id,
+                    content="Agentic runtime is not configured.",
+                    metadata={
+                        "policy": decision.value,
+                        "error": "agentic_runtime_not_configured",
+                    },
+                )
+            return self.agentic_runtime.run_request(request)
 
         try:
             context = self._build_context(request)
