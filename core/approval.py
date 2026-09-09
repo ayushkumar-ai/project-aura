@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import time
 from collections.abc import Sequence
@@ -12,6 +13,20 @@ from core.skill_registry import SkillRegistry
 from core.task_planner import ExecutionPlan, PlanStep
 
 logger = logging.getLogger("aura.approval")
+
+
+def _canonical_value(val: Any) -> Any:
+    """Convert values into deterministic, JSON-serializable primitives."""
+    if isinstance(val, (str, int, float, bool)) or val is None:
+        return val
+    elif isinstance(val, (list, tuple, set, frozenset)):
+        return [_canonical_value(x) for x in val]
+    elif isinstance(val, dict):
+        return {str(k): _canonical_value(v) for k, v in sorted(val.items())}
+    elif callable(val):
+        return f"callable:{getattr(val, '__qualname__', str(val))}"
+    else:
+        return repr(val)
 
 
 class ApprovalStatus(str, Enum):
@@ -153,16 +168,38 @@ class ApprovalGateway:
 
     @staticmethod
     def compute_plan_fingerprint(plan: ExecutionPlan) -> str:
-        """Compute a deterministic fingerprint of an ExecutionPlan structure."""
+        """Compute a deterministic SHA-256 fingerprint covering all approval-relevant plan content."""
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("plan must be an instance of ExecutionPlan.")
 
-        hasher = hashlib.sha256()
-        hasher.update(plan.plan_id.encode("utf-8"))
+        steps_data = []
         for step in plan.steps:
-            step_repr = f"{step.step_id}:{step.skill_name}:{','.join(sorted(step.dependencies))}"
-            hasher.update(step_repr.encode("utf-8"))
-        return hasher.hexdigest()
+            step_dict = {
+                "step_id": step.step_id,
+                "skill_name": step.skill_name,
+                "input_data": _canonical_value(step.input_data),
+                "dependencies": sorted(step.dependencies),
+                "task_requirements": (
+                    {
+                        "caps": sorted(list(step.task_requirements.required_capabilities)),
+                        "pref_model": step.task_requirements.preferred_model,
+                        "pref_provider": step.task_requirements.preferred_provider,
+                    }
+                    if step.task_requirements is not None
+                    else None
+                ),
+                "metadata": _canonical_value(step.metadata),
+            }
+            steps_data.append(step_dict)
+
+        plan_data = {
+            "plan_id": plan.plan_id,
+            "plan_metadata": _canonical_value(plan.metadata),
+            "steps": steps_data,
+        }
+
+        canonical_str = json.dumps(plan_data, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
 
     def _get_declared_tools(self, step: PlanStep) -> tuple[str, ...]:
         """Resolve declared tools from the step and skill registry."""
@@ -210,14 +247,7 @@ class ApprovalGateway:
                         reason=f"Tool '{tool_name}' required by step '{step.step_id}' is denied by Policy.",
                     )
 
-        # 2. Check if auto_approve is globally enabled
-        if self.auto_approve:
-            return ApprovalDecision(
-                decision=ApprovalDecisionType.ALLOWED,
-                reason="Auto-approved by gateway configuration.",
-            )
-
-        # 3. Classify Sensitivity / Risk
+        # 2. Classify Sensitivity / Risk (Sensitivity check MUST take precedence over auto-approve)
         reasons: list[str] = []
         is_sensitive = False
 
@@ -234,94 +264,94 @@ class ApprovalGateway:
             is_sensitive = True
             reasons.append(f"Step '{step.step_id}' metadata explicitly requires approval.")
 
-        # 4. If not sensitive, safe action is auto-approved
-        if not is_sensitive:
+        # 3. If action is sensitive, it REQUIRES_APPROVAL unless a valid trusted approval exists
+        if is_sensitive:
+            fingerprint = self.compute_plan_fingerprint(plan)
+            index_key = (task_id_norm, plan.plan_id, step.step_id)
+
+            if index_key in self._step_index:
+                existing_id = self._step_index[index_key]
+                existing_req = self._requests[existing_id]
+
+                # Replay / Stale Protection: verify fingerprint matches
+                if existing_req.plan_fingerprint != fingerprint:
+                    logger.warning(
+                        "Plan fingerprint changed for step '%s' in task '%s'. Stale approval invalid.",
+                        step.step_id,
+                        task_id_norm,
+                    )
+                    # Create fresh approval request for modified plan
+                    new_req = ApprovalRequest(
+                        approval_id=str(uuid4()),
+                        task_id=task_id_norm,
+                        plan_id=plan.plan_id,
+                        step_id=step.step_id,
+                        skill_name=step.skill_name,
+                        reason="; ".join(reasons) or "Plan modified, re-approval required.",
+                        declared_tools=declared_tools,
+                        status=ApprovalStatus.PENDING,
+                        plan_fingerprint=fingerprint,
+                    )
+                    self._requests[new_req.approval_id] = new_req
+                    self._step_index[index_key] = new_req.approval_id
+                    return ApprovalDecision(
+                        decision=ApprovalDecisionType.REQUIRES_APPROVAL,
+                        reason=new_req.reason,
+                        approval_request=new_req,
+                    )
+
+                if existing_req.status == ApprovalStatus.APPROVED:
+                    return ApprovalDecision(
+                        decision=ApprovalDecisionType.ALLOWED,
+                        reason=f"Action approved under approval ID '{existing_req.approval_id}'.",
+                        approval_request=existing_req,
+                    )
+                elif existing_req.status == ApprovalStatus.REJECTED:
+                    rejection_reason = existing_req.metadata.get("rejection_reason", "Explicitly rejected.")
+                    return ApprovalDecision(
+                        decision=ApprovalDecisionType.DENIED,
+                        reason=f"Approval rejected for step '{step.step_id}': {rejection_reason}",
+                        approval_request=existing_req,
+                    )
+                elif existing_req.status == ApprovalStatus.PENDING:
+                    return ApprovalDecision(
+                        decision=ApprovalDecisionType.REQUIRES_APPROVAL,
+                        reason=existing_req.reason,
+                        approval_request=existing_req,
+                    )
+                else:
+                    return ApprovalDecision(
+                        decision=ApprovalDecisionType.DENIED,
+                        reason=f"Approval request is {existing_req.status.value}.",
+                        approval_request=existing_req,
+                    )
+
+            # No existing approval request: create new pending request
+            reason_text = "; ".join(reasons) if reasons else "Action requires explicit approval."
+            req = ApprovalRequest(
+                approval_id=str(uuid4()),
+                task_id=task_id_norm,
+                plan_id=plan.plan_id,
+                step_id=step.step_id,
+                skill_name=step.skill_name,
+                reason=reason_text,
+                declared_tools=declared_tools,
+                status=ApprovalStatus.PENDING,
+                plan_fingerprint=fingerprint,
+            )
+            self._requests[req.approval_id] = req
+            self._step_index[index_key] = req.approval_id
+
             return ApprovalDecision(
-                decision=ApprovalDecisionType.ALLOWED,
-                reason="Action is safe and auto-approved.",
+                decision=ApprovalDecisionType.REQUIRES_APPROVAL,
+                reason=reason_text,
+                approval_request=req,
             )
 
-        # 5. Action requires approval: Check existing request lifecycle & plan fingerprint
-        fingerprint = self.compute_plan_fingerprint(plan)
-        index_key = (task_id_norm, plan.plan_id, step.step_id)
-
-        if index_key in self._step_index:
-            existing_id = self._step_index[index_key]
-            existing_req = self._requests[existing_id]
-
-            # Replay / Stale Protection: verify fingerprint matches
-            if existing_req.plan_fingerprint != fingerprint:
-                logger.warning(
-                    "Plan fingerprint changed for step '%s' in task '%s'. Stale approval invalid.",
-                    step.step_id,
-                    task_id_norm,
-                )
-                # Create fresh approval request for modified plan
-                new_req = ApprovalRequest(
-                    approval_id=str(uuid4()),
-                    task_id=task_id_norm,
-                    plan_id=plan.plan_id,
-                    step_id=step.step_id,
-                    skill_name=step.skill_name,
-                    reason="; ".join(reasons) or "Plan modified, re-approval required.",
-                    declared_tools=declared_tools,
-                    status=ApprovalStatus.PENDING,
-                    plan_fingerprint=fingerprint,
-                )
-                self._requests[new_req.approval_id] = new_req
-                self._step_index[index_key] = new_req.approval_id
-                return ApprovalDecision(
-                    decision=ApprovalDecisionType.REQUIRES_APPROVAL,
-                    reason=new_req.reason,
-                    approval_request=new_req,
-                )
-
-            if existing_req.status == ApprovalStatus.APPROVED:
-                return ApprovalDecision(
-                    decision=ApprovalDecisionType.ALLOWED,
-                    reason=f"Action approved under approval ID '{existing_req.approval_id}'.",
-                    approval_request=existing_req,
-                )
-            elif existing_req.status == ApprovalStatus.REJECTED:
-                rejection_reason = existing_req.metadata.get("rejection_reason", "Explicitly rejected.")
-                return ApprovalDecision(
-                    decision=ApprovalDecisionType.DENIED,
-                    reason=f"Approval rejected for step '{step.step_id}': {rejection_reason}",
-                    approval_request=existing_req,
-                )
-            elif existing_req.status == ApprovalStatus.PENDING:
-                return ApprovalDecision(
-                    decision=ApprovalDecisionType.REQUIRES_APPROVAL,
-                    reason=existing_req.reason,
-                    approval_request=existing_req,
-                )
-            else:
-                return ApprovalDecision(
-                    decision=ApprovalDecisionType.DENIED,
-                    reason=f"Approval request is {existing_req.status.value}.",
-                    approval_request=existing_req,
-                )
-
-        # 6. No existing approval request: create new pending request
-        reason_text = "; ".join(reasons) if reasons else "Action requires explicit approval."
-        req = ApprovalRequest(
-            approval_id=str(uuid4()),
-            task_id=task_id_norm,
-            plan_id=plan.plan_id,
-            step_id=step.step_id,
-            skill_name=step.skill_name,
-            reason=reason_text,
-            declared_tools=declared_tools,
-            status=ApprovalStatus.PENDING,
-            plan_fingerprint=fingerprint,
-        )
-        self._requests[req.approval_id] = req
-        self._step_index[index_key] = req.approval_id
-
+        # 4. If NOT sensitive, safe action is auto-approved / allowed
         return ApprovalDecision(
-            decision=ApprovalDecisionType.REQUIRES_APPROVAL,
-            reason=reason_text,
-            approval_request=req,
+            decision=ApprovalDecisionType.ALLOWED,
+            reason="Action is safe and auto-approved.",
         )
 
     def evaluate_plan(self, plan: ExecutionPlan, task_id: str) -> ApprovalDecision:

@@ -393,3 +393,193 @@ def test_approval_gateway_list_and_get_requests():
     pending_reqs = gateway.list_requests(status=ApprovalStatus.PENDING)
     assert len(pending_reqs) == 1
 
+
+
+def test_auto_approve_does_not_bypass_sensitive_skill():
+    skill_reg = SkillRegistry()
+    skill_reg.register(Skill(name="sensitive_deploy"))
+
+    # auto_approve is True, but skill is sensitive
+    gateway = ApprovalGateway(
+        skill_registry=skill_reg,
+        sensitive_skills={"sensitive_deploy"},
+        auto_approve=True,
+    )
+
+    plan = ExecutionPlan(
+        steps=(PlanStep(step_id="s1", skill_name="sensitive_deploy"),),
+        plan_id="plan_auto_sens",
+    )
+
+    decision = gateway.evaluate_step(plan.steps[0], plan, task_id="task_auto_sens")
+    # Invariant: auto_approve MUST NOT bypass sensitive skill
+    assert decision.requires_approval is True
+    assert decision.is_allowed is False
+    assert decision.decision == ApprovalDecisionType.REQUIRES_APPROVAL
+
+
+def test_auto_approve_does_not_bypass_sensitive_tool():
+    policy = Policy(authorized_tools={"bash"})
+    skill_reg = SkillRegistry()
+    skill_reg.register(Skill(name="shell_skill", tools=("bash",)))
+
+    # auto_approve is True, but tool is sensitive
+    gateway = ApprovalGateway(
+        policy=policy,
+        skill_registry=skill_reg,
+        sensitive_tools={"bash"},
+        auto_approve=True,
+    )
+
+    plan = ExecutionPlan(
+        steps=(PlanStep(step_id="s1", skill_name="shell_skill"),),
+        plan_id="plan_auto_tool",
+    )
+
+    decision = gateway.evaluate_step(plan.steps[0], plan, task_id="task_auto_tool")
+    # Invariant: auto_approve MUST NOT bypass sensitive tool
+    assert decision.requires_approval is True
+    assert decision.is_allowed is False
+
+
+def test_auto_approve_does_not_bypass_explicit_requires_approval():
+    skill_reg = SkillRegistry()
+    skill_reg.register(Skill(name="safe_skill"))
+
+    gateway = ApprovalGateway(
+        skill_registry=skill_reg,
+        auto_approve=True,
+    )
+
+    plan = ExecutionPlan(
+        steps=(PlanStep(step_id="s1", skill_name="safe_skill", metadata={"requires_approval": True}),),
+        plan_id="plan_auto_explicit",
+    )
+
+    decision = gateway.evaluate_step(plan.steps[0], plan, task_id="task_auto_explicit")
+    # Invariant: auto_approve MUST NOT bypass explicit step metadata requires_approval
+    assert decision.requires_approval is True
+    assert decision.is_allowed is False
+
+
+def test_changing_plan_input_data_invalidates_prior_approval():
+    skill_reg = SkillRegistry()
+    skill_reg.register(Skill(name="db_query"))
+
+    gateway = ApprovalGateway(
+        skill_registry=skill_reg,
+        sensitive_skills={"db_query"},
+    )
+
+    # 1. Plan with safe input
+    plan_v1 = ExecutionPlan(
+        steps=(PlanStep(step_id="s1", skill_name="db_query", input_data={"query": "SELECT * FROM users"}),),
+        plan_id="plan_input_tamper",
+    )
+
+    d1 = gateway.evaluate_step(plan_v1.steps[0], plan_v1, task_id="task_tamper")
+    app_id = d1.approval_request.approval_id
+    gateway.approve(app_id)
+
+    # Verify approved for plan_v1
+    assert gateway.evaluate_step(plan_v1.steps[0], plan_v1, task_id="task_tamper").is_allowed is True
+
+    # 2. Mutate input_data under same plan_id
+    plan_v2 = ExecutionPlan(
+        steps=(PlanStep(step_id="s1", skill_name="db_query", input_data={"query": "DROP TABLE users"}),),
+        plan_id="plan_input_tamper",
+    )
+
+    # Invariant: Mutating input_data MUST invalidate the prior approval
+    d2 = gateway.evaluate_step(plan_v2.steps[0], plan_v2, task_id="task_tamper")
+    assert d2.requires_approval is True
+    assert d2.is_allowed is False
+    assert d2.approval_request.approval_id != app_id
+
+
+def test_changing_task_requirements_or_metadata_invalidates_prior_approval():
+    from core.capability_registry import ModelCapability
+    from core.model_router import TaskRequirements
+
+    skill_reg = SkillRegistry()
+    skill_reg.register(Skill(name="gen_skill"))
+
+    gateway = ApprovalGateway(
+        skill_registry=skill_reg,
+        sensitive_skills={"gen_skill"},
+    )
+
+    req1 = TaskRequirements(required_capabilities={ModelCapability.REASONING}, preferred_model="model_a")
+    plan_v1 = ExecutionPlan(
+        steps=(PlanStep(step_id="s1", skill_name="gen_skill", task_requirements=req1),),
+        plan_id="plan_req_tamper",
+    )
+
+    d1 = gateway.evaluate_step(plan_v1.steps[0], plan_v1, task_id="task_req_tamper")
+    gateway.approve(d1.approval_request.approval_id)
+
+    # Mutate task_requirements
+    req2 = TaskRequirements(required_capabilities={ModelCapability.REASONING}, preferred_model="model_b")
+    plan_v2 = ExecutionPlan(
+        steps=(PlanStep(step_id="s1", skill_name="gen_skill", task_requirements=req2),),
+        plan_id="plan_req_tamper",
+    )
+
+    d2 = gateway.evaluate_step(plan_v2.steps[0], plan_v2, task_id="task_req_tamper")
+    assert d2.requires_approval is True
+    assert d2.is_allowed is False
+
+
+def test_approval_for_task_a_does_not_authorize_task_b():
+    skill_reg = SkillRegistry()
+    skill_reg.register(Skill(name="sensitive_skill"))
+
+    gateway = ApprovalGateway(
+        skill_registry=skill_reg,
+        sensitive_skills={"sensitive_skill"},
+    )
+
+    plan = ExecutionPlan(
+        steps=(PlanStep(step_id="s1", skill_name="sensitive_skill"),),
+        plan_id="plan_cross_task",
+    )
+
+    # Approve for task_A
+    d1 = gateway.evaluate_step(plan.steps[0], plan, task_id="task_A")
+    gateway.approve(d1.approval_request.approval_id)
+
+    assert gateway.evaluate_step(plan.steps[0], plan, task_id="task_A").is_allowed is True
+
+    # Invariant: Approval for task_A must NOT authorize task_B
+    d2 = gateway.evaluate_step(plan.steps[0], plan, task_id="task_B")
+    assert d2.requires_approval is True
+    assert d2.is_allowed is False
+
+
+def test_approval_for_step_a_does_not_authorize_step_b():
+    skill_reg = SkillRegistry()
+    skill_reg.register(Skill(name="sensitive_skill"))
+
+    gateway = ApprovalGateway(
+        skill_registry=skill_reg,
+        sensitive_skills={"sensitive_skill"},
+    )
+
+    plan = ExecutionPlan(
+        steps=(
+            PlanStep(step_id="step_A", skill_name="sensitive_skill"),
+            PlanStep(step_id="step_B", skill_name="sensitive_skill", dependencies=("step_A",)),
+        ),
+        plan_id="plan_cross_step",
+    )
+
+    # Approve step_A
+    dA = gateway.evaluate_step(plan.steps[0], plan, task_id="task_multi")
+    gateway.approve(dA.approval_request.approval_id)
+
+    assert gateway.evaluate_step(plan.steps[0], plan, task_id="task_multi").is_allowed is True
+
+    # Invariant: Approval for step_A must NOT authorize step_B
+    dB = gateway.evaluate_step(plan.steps[1], plan, task_id="task_multi")
+    assert dB.requires_approval is True
+    assert dB.is_allowed is False
