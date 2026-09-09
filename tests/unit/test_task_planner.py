@@ -366,3 +366,222 @@ def test_planner_alias_module_imports():
     assert Plan is ExecutionPlan
     assert Step is PlanStep
     assert Planner is TaskPlanner
+
+
+# ==========================================================
+# PLANNER HARDENING REGRESSION TESTS (M8.9)
+# ==========================================================
+
+
+def test_model_plan_rejects_empty_or_whitespace_response(skill_registry):
+    # Empty string
+    p1 = TaskPlanner(skill_registry, model=ProgrammableModelProvider(""))
+    with pytest.raises(ValueError, match="empty or whitespace-only response"):
+        p1.plan("Task")
+
+    # Whitespace only
+    p2 = TaskPlanner(skill_registry, model=ProgrammableModelProvider("   \n\t  "))
+    with pytest.raises(ValueError, match="empty or whitespace-only response"):
+        p2.plan("Task")
+
+
+def test_model_plan_rejects_json_scalars(skill_registry):
+    # String scalar
+    p1 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('"just a string"'))
+    with pytest.raises(ValueError, match="must be an object with 'steps' or a list of steps"):
+        p1.plan("Task")
+
+    # Number scalar
+    p2 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('12345'))
+    with pytest.raises(ValueError, match="must be an object with 'steps' or a list of steps"):
+        p2.plan("Task")
+
+    # Boolean scalar
+    p3 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('true'))
+    with pytest.raises(ValueError, match="must be an object with 'steps' or a list of steps"):
+        p3.plan("Task")
+
+    # Null scalar
+    p4 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('null'))
+    with pytest.raises(ValueError, match="must be an object with 'steps' or a list of steps"):
+        p4.plan("Task")
+
+
+def test_model_plan_rejects_null_or_wrong_steps_type(skill_registry):
+    # Null steps
+    p1 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": null}'))
+    with pytest.raises(ValueError, match="'steps' key cannot be null"):
+        p1.plan("Task")
+
+    # Dict instead of list
+    p2 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": {"step_1": "fetch_data"}}'))
+    with pytest.raises(ValueError, match="'steps' must be a list"):
+        p2.plan("Task")
+
+    # Int instead of list
+    p3 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": 42}'))
+    with pytest.raises(ValueError, match="'steps' must be a list"):
+        p3.plan("Task")
+
+    # Empty steps list
+    p4 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": []}'))
+    with pytest.raises(ValueError, match="empty list of steps"):
+        p4.plan("Task")
+
+
+def test_model_plan_rejects_malformed_step_objects(skill_registry):
+    # Step is a string
+    p1 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": ["not_a_dict"]}'))
+    with pytest.raises(ValueError, match="must be a JSON object/dictionary"):
+        p1.plan("Task")
+
+    # Step is an integer
+    p2 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": [123]}'))
+    with pytest.raises(ValueError, match="must be a JSON object/dictionary"):
+        p2.plan("Task")
+
+    # Step is null
+    p3 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": [null]}'))
+    with pytest.raises(ValueError, match="must be a JSON object/dictionary"):
+        p3.plan("Task")
+
+
+def test_model_plan_rejects_missing_or_invalid_step_fields(skill_registry):
+    # Missing step_id
+    p1 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": [{"skill_name": "fetch_data"}]}'))
+    with pytest.raises(ValueError, match="must have a valid non-empty string 'step_id'"):
+        p1.plan("Task")
+
+    # Whitespace step_id
+    p2 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": [{"step_id": "   ", "skill_name": "fetch_data"}]}'))
+    with pytest.raises(ValueError, match="must have a valid non-empty string 'step_id'"):
+        p2.plan("Task")
+
+    # Missing skill_name
+    p3 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": [{"step_id": "s1"}]}'))
+    with pytest.raises(ValueError, match="must have a valid non-empty string 'skill_name'"):
+        p3.plan("Task")
+
+    # Whitespace skill_name
+    p4 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": [{"step_id": "s1", "skill_name": "   "}]}'))
+    with pytest.raises(ValueError, match="must have a valid non-empty string 'skill_name'"):
+        p4.plan("Task")
+
+
+def test_model_plan_rejects_malformed_dependency_elements(skill_registry):
+    # Non-list dependencies (e.g. string)
+    p1 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": [{"step_id": "s1", "skill_name": "fetch_data", "dependencies": "s0"}]}'))
+    with pytest.raises(ValueError, match="must be a list or tuple"):
+        p1.plan("Task")
+
+    # Dependency containing non-string/empty element
+    p2 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": [{"step_id": "s1", "skill_name": "fetch_data", "dependencies": [123]}]}'))
+    with pytest.raises(ValueError, match="Dependency in step 's1' must be a non-empty string"):
+        p2.plan("Task")
+
+    # Dependency containing empty string
+    p3 = TaskPlanner(skill_registry, model=ProgrammableModelProvider('{"steps": [{"step_id": "s1", "skill_name": "fetch_data", "dependencies": ["   "]}]}'))
+    with pytest.raises(ValueError, match="Dependency in step 's1' must be a non-empty string"):
+        p3.plan("Task")
+
+
+def test_model_plan_rejects_self_dependency(skill_registry):
+    canned = {
+        "steps": [
+            {"step_id": "s1", "skill_name": "fetch_data", "dependencies": ["s1"]}
+        ]
+    }
+    planner = TaskPlanner(skill_registry, model=ProgrammableModelProvider(json.dumps(canned)))
+    with pytest.raises(ValueError, match="cannot depend on itself"):
+        planner.plan("Task")
+
+
+def test_model_plan_rejects_duplicate_step_ids(skill_registry):
+    canned = {
+        "steps": [
+            {"step_id": "s1", "skill_name": "fetch_data"},
+            {"step_id": "s1", "skill_name": "process_data"},
+        ]
+    }
+    planner = TaskPlanner(skill_registry, model=ProgrammableModelProvider(json.dumps(canned)))
+    with pytest.raises(ValueError, match="Duplicate step ID detected"):
+        planner.plan("Task")
+
+
+def test_model_plan_parses_and_validates_task_requirements(skill_registry):
+    # Valid task_requirements
+    canned_valid = {
+        "steps": [
+            {
+                "step_id": "s1",
+                "skill_name": "fetch_data",
+                "task_requirements": {
+                    "required_capabilities": ["reasoning"],
+                    "preferred_model": "gpt-4",
+                    "preferred_provider": "openai"
+                }
+            }
+        ]
+    }
+    p1 = TaskPlanner(skill_registry, model=ProgrammableModelProvider(json.dumps(canned_valid)))
+    plan = p1.plan("Task")
+    reqs = plan.steps[0].task_requirements
+    assert reqs is not None
+    assert ModelCapability.REASONING in reqs.required_capabilities
+    assert reqs.preferred_model == "gpt-4"
+    assert reqs.preferred_provider == "openai"
+
+    # Invalid task_requirements: not a dict
+    canned_invalid_req = {
+        "steps": [{"step_id": "s1", "skill_name": "fetch_data", "task_requirements": "not_a_dict"}]
+    }
+    p2 = TaskPlanner(skill_registry, model=ProgrammableModelProvider(json.dumps(canned_invalid_req)))
+    with pytest.raises(ValueError, match="task_requirements for step 's1' must be a dictionary"):
+        p2.plan("Task")
+
+    # Invalid required_capabilities: empty string item
+    canned_invalid_cap = {
+        "steps": [
+            {
+                "step_id": "s1",
+                "skill_name": "fetch_data",
+                "task_requirements": {"required_capabilities": [""]}
+            }
+        ]
+    }
+    p3 = TaskPlanner(skill_registry, model=ProgrammableModelProvider(json.dumps(canned_invalid_cap)))
+    with pytest.raises(ValueError, match="Capability for step 's1' must be a non-empty string"):
+        p3.plan("Task")
+
+
+def test_model_plan_with_surrounding_commentary_and_fenced_json(skill_registry):
+    raw_response = """
+    Certainly! Below is the requested execution plan to fetch and process data:
+
+    ```json
+    {
+        "steps": [
+            {
+                "step_id": "step_1",
+                "skill_name": "fetch_data",
+                "input_data": {"url": "https://data.example.com"}
+            },
+            {
+                "step_id": "step_2",
+                "skill_name": "process_data",
+                "dependencies": ["step_1"]
+            }
+        ]
+    }
+    ```
+
+    Please let me know if you would like any modifications to this plan.
+    """
+    planner = TaskPlanner(skill_registry, model=ProgrammableModelProvider(raw_response))
+    plan = planner.plan("Fetch and process data")
+
+    assert len(plan.steps) == 2
+    assert plan.steps[0].step_id == "step_1"
+    assert plan.steps[1].step_id == "step_2"
+    assert plan.steps[1].dependencies == ("step_1",)
+    assert plan.steps[0].input_data == {"url": "https://data.example.com"}

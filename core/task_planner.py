@@ -138,32 +138,49 @@ class TaskPlanner:
             "Respond ONLY with valid JSON."
         )
 
-    def _parse_model_plan(self, raw_content: str) -> list[PlanStep]:
-        """Parse model output text into PlanStep objects."""
+    def _extract_json_content(self, raw_content: str) -> str:
+        """Extract JSON substring, cleanly stripping markdown code fences if present."""
         content = raw_content.strip()
 
-        # Strip markdown code fences if present
-        if content.startswith("```"):
-            lines = content.splitlines()
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            content = "\n".join(lines).strip()
+        if "```" in content:
+            start_idx = content.find("```")
+            end_idx = content.rfind("```")
+            if start_idx != -1 and end_idx != -1 and start_idx != end_idx:
+                block = content[start_idx : end_idx + 3]
+                lines = block.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip().startswith("```"):
+                    lines = lines[:-1]
+                fenced = "\n".join(lines).strip()
+                if fenced:
+                    content = fenced
+
+        return content
+
+    def _parse_model_plan(self, raw_content: str | None) -> list[PlanStep]:
+        """Parse untrusted model output text into validated PlanStep objects."""
+        if raw_content is None or not isinstance(raw_content, str) or not raw_content.strip():
+            raise ValueError("Model returned an empty or whitespace-only response.")
+
+        content = self._extract_json_content(raw_content)
 
         try:
             data = json.loads(content)
         except Exception as e:
             raise ValueError(f"Failed to parse model plan output as JSON: {e}")
 
+        if not isinstance(data, (dict, list)):
+            raise ValueError("Model output JSON must be an object with 'steps' or a list of steps.")
+
         if isinstance(data, dict):
+            if "steps" not in data:
+                raise ValueError("Model output JSON missing 'steps' key.")
             raw_steps = data.get("steps")
             if raw_steps is None:
-                raise ValueError("Model output JSON missing 'steps' key.")
-        elif isinstance(data, list):
-            raw_steps = data
+                raise ValueError("Model output 'steps' key cannot be null.")
         else:
-            raise ValueError("Model output must be a JSON object with 'steps' or a JSON list of steps.")
+            raw_steps = data
 
         if not isinstance(raw_steps, list):
             raise ValueError("'steps' must be a list in model output.")
@@ -172,31 +189,94 @@ class TaskPlanner:
             raise ValueError("Model generated an empty list of steps.")
 
         plan_steps = []
-        for raw_step in raw_steps:
+        for idx, raw_step in enumerate(raw_steps):
             if not isinstance(raw_step, dict):
-                raise ValueError("Each step in model output must be a JSON object/dictionary.")
+                raise ValueError(f"Step at index {idx} in model output must be a JSON object/dictionary.")
 
             step_id = raw_step.get("step_id")
             skill_name = raw_step.get("skill_name")
 
-            if not step_id or not isinstance(step_id, str):
-                raise ValueError("Each step must have a valid non-empty 'step_id'.")
-            if not skill_name or not isinstance(skill_name, str):
-                raise ValueError("Each step must have a valid non-empty 'skill_name'.")
+            if not step_id or not isinstance(step_id, str) or not step_id.strip():
+                raise ValueError(f"Step at index {idx} must have a valid non-empty string 'step_id'.")
+            step_id = step_id.strip()
 
+            if not skill_name or not isinstance(skill_name, str) or not skill_name.strip():
+                raise ValueError(f"Step '{step_id}' must have a valid non-empty string 'skill_name'.")
+            skill_name = skill_name.strip()
+
+            # Dependencies validation
+            raw_deps = raw_step.get("dependencies", [])
+            if raw_deps is None:
+                raw_deps = []
+            if not isinstance(raw_deps, (list, tuple)):
+                raise ValueError(f"Dependencies for step '{step_id}' must be a list or tuple of strings.")
+
+            deps = []
+            for d in raw_deps:
+                if not isinstance(d, str) or not d.strip():
+                    raise ValueError(f"Dependency in step '{step_id}' must be a non-empty string.")
+                deps.append(d.strip())
+
+            # Input data validation: model output cannot be executable callable
             input_data = raw_step.get("input_data", {})
-            dependencies = raw_step.get("dependencies", [])
-            metadata = raw_step.get("metadata", {})
+            if callable(input_data):
+                raise ValueError(f"Model-generated input_data for step '{step_id}' cannot be callable.")
 
-            if not isinstance(dependencies, (list, tuple)):
-                raise ValueError(f"Dependencies for step '{step_id}' must be a list.")
-            if not isinstance(metadata, dict):
+            # Task requirements validation
+            raw_reqs = raw_step.get("task_requirements")
+            task_requirements: TaskRequirements | None = None
+            if raw_reqs is not None:
+                if not isinstance(raw_reqs, dict):
+                    raise ValueError(f"task_requirements for step '{step_id}' must be a dictionary.")
+
+                raw_caps = raw_reqs.get("required_capabilities", [])
+                if not isinstance(raw_caps, (list, tuple, set, frozenset)):
+                    raise ValueError(f"required_capabilities for step '{step_id}' must be a list of strings.")
+
+                caps = set()
+                for c in raw_caps:
+                    if not isinstance(c, str) or not c.strip():
+                        raise ValueError(f"Capability for step '{step_id}' must be a non-empty string.")
+                    c_str = c.strip().lower()
+                    try:
+                        caps.add(ModelCapability(c_str))
+                    except ValueError:
+                        caps.add(c_str)
+
+                pref_model = raw_reqs.get("preferred_model")
+                if pref_model is not None and (not isinstance(pref_model, str) or not pref_model.strip()):
+                    raise ValueError(f"preferred_model for step '{step_id}' must be a non-empty string or None.")
+
+                pref_provider = raw_reqs.get("preferred_provider")
+                if pref_provider is not None and (not isinstance(pref_provider, str) or not pref_provider.strip()):
+                    raise ValueError(f"preferred_provider for step '{step_id}' must be a non-empty string or None.")
+
+                task_requirements = TaskRequirements(
+                    required_capabilities=caps,
+                    preferred_model=pref_model.strip() if isinstance(pref_model, str) else None,
+                    preferred_provider=pref_provider.strip() if isinstance(pref_provider, str) else None,
+                )
+
+            # Metadata validation & untrusted model sanitization
+            raw_meta = raw_step.get("metadata", {})
+            if raw_meta is None:
+                raw_meta = {}
+            if not isinstance(raw_meta, dict):
                 raise ValueError(f"Metadata for step '{step_id}' must be a dictionary.")
 
             # Model Plan Safety: Strip any untrusted model-supplied approval/permission claims
             clean_metadata = {
-                k: v for k, v in metadata.items()
-                if k.lower() not in ("approved", "approval_status", "is_approved", "auto_approve", "permission")
+                str(k): v
+                for k, v in raw_meta.items()
+                if str(k).lower()
+                not in (
+                    "approved",
+                    "approval_status",
+                    "is_approved",
+                    "auto_approve",
+                    "permission",
+                    "authorized",
+                )
             }
 
             plan_steps.append(
@@ -204,7 +284,8 @@ class TaskPlanner:
                     step_id=step_id,
                     skill_name=skill_name,
                     input_data=input_data,
-                    dependencies=tuple(dependencies),
+                    dependencies=tuple(deps),
+                    task_requirements=task_requirements,
                     metadata=clean_metadata,
                 )
             )
@@ -237,6 +318,9 @@ class TaskPlanner:
         prompt = self._build_planning_prompt(task)
         request_id = uuid4()
         response = active_model.generate(prompt=prompt, request_id=request_id)
+
+        if response is None or not hasattr(response, "content"):
+            raise ValueError("Model response is invalid or missing.")
 
         plan_steps = self._parse_model_plan(response.content)
 
