@@ -18,6 +18,8 @@ class TaskStateStore(ABC):
         plan_id: str,
         plan: ExecutionPlan | AgentPlan | None = None,
         metadata: dict[str, Any] | None = None,
+        goal_id: str | None = None,
+        parent_goal_id: str | None = None,
     ) -> TaskState:
         """Create and persist a new TaskState."""
         raise NotImplementedError
@@ -55,6 +57,8 @@ class InMemoryTaskStateStore(TaskStateStore):
         plan_id: str,
         plan: ExecutionPlan | AgentPlan | None = None,
         metadata: dict[str, Any] | None = None,
+        goal_id: str | None = None,
+        parent_goal_id: str | None = None,
     ) -> TaskState:
         """Create and store a new TaskState."""
         if not isinstance(task_id, str) or not task_id.strip():
@@ -81,6 +85,8 @@ class InMemoryTaskStateStore(TaskStateStore):
             step_states=step_states,
             plan=plan,
             metadata=metadata if metadata is not None else {},
+            goal_id=goal_id,
+            parent_goal_id=parent_goal_id,
         )
         self._store[norm_id] = copy.deepcopy(state)
         return copy.deepcopy(state)

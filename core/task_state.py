@@ -73,6 +73,8 @@ class TaskState:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     metadata: dict[str, Any] = field(default_factory=dict)
+    goal_id: str | None = None
+    parent_goal_id: str | None = None
 
     def __post_init__(self):
         if not isinstance(self.task_id, str) or not self.task_id.strip():
@@ -96,6 +98,16 @@ class TaskState:
 
         if not isinstance(self.metadata, dict):
             raise TypeError("metadata must be a dict.")
+
+        if self.goal_id is not None:
+            if not isinstance(self.goal_id, str) or not self.goal_id.strip():
+                raise ValueError("goal_id must be a non-empty string or None.")
+            self.goal_id = self.goal_id.strip()
+
+        if self.parent_goal_id is not None:
+            if not isinstance(self.parent_goal_id, str) or not self.parent_goal_id.strip():
+                raise ValueError("parent_goal_id must be a non-empty string or None.")
+            self.parent_goal_id = self.parent_goal_id.strip()
 
     def get_step_state(self, step_id: str) -> StepState:
         """Retrieve the state of a step by ID."""

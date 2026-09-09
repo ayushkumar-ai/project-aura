@@ -196,7 +196,12 @@ class GoalReasoner:
             step_id=f"step_goal_{matched_skill.name}",
             skill_name=matched_skill.name,
             objective=f"Address criterion: {criterion}",
-            input_data={"criterion": criterion, "goal_id": goal.goal_id, "title": goal.title},
+            input_data={
+                "criterion": criterion,
+                "goal_id": goal.goal_id,
+                "parent_goal_id": goal.parent_goal_id,
+                "title": goal.title,
+            },
             task_requirements=task_requirements,
         )
 
@@ -207,6 +212,7 @@ class GoalReasoner:
             status=StepStatus.PENDING,
             metadata={
                 "goal_id": goal.goal_id,
+                "parent_goal_id": goal.parent_goal_id,
                 "criterion": criterion,
             },
         )

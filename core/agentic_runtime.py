@@ -1,10 +1,17 @@
 import logging
+from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
+from core.agent_plan import AgentPlan
 from core.agent_runtime import AgentRuntime
 from core.approval import ApprovalGateway
+from core.autonomous_agent import AutonomousAgentExecutor, AutonomousAgentResult
 from core.capability_registry import ModelCapability
+from core.goal import Goal, GoalStatus
+from core.goal_engine import GoalEngine
+from core.goal_reasoner import GoalEvaluationResult
+from core.goal_store import GoalStore, InMemoryGoalStore
 from core.model_router import ModelRouter, TaskRequirements
 from core.models import AURARequest, AURAResponse
 from core.policy import Policy
@@ -19,8 +26,16 @@ from interfaces.tool_executor import ToolExecutor
 logger = logging.getLogger("aura.agentic_runtime")
 
 
+class ExecutionMode(str, Enum):
+    """Execution modes supported by the unified AgenticRuntime."""
+
+    STANDARD_WORKFLOW = "standard_workflow"
+    AUTONOMOUS_AGENT = "autonomous_agent"
+    GOAL_DRIVEN = "goal_driven"
+
+
 class AgenticRuntime:
-    """End-to-end agentic coordinator integrating TaskPlanner, WorkflowExecutor, and AgentRuntime."""
+    """End-to-end agentic coordinator unifying WorkflowExecutor, AutonomousAgentExecutor, and GoalEngine."""
 
     def __init__(
         self,
@@ -32,10 +47,14 @@ class AgenticRuntime:
         runtime: AgentRuntime | None = None,
         planner: TaskPlanner | None = None,
         workflow_executor: WorkflowExecutor | None = None,
+        autonomous_executor: AutonomousAgentExecutor | None = None,
+        goal_store: GoalStore | None = None,
+        goal_engine: GoalEngine | None = None,
         state_store: TaskStateStore | None = None,
         approval_gateway: ApprovalGateway | None = None,
         max_replans: int = 0,
         default_timeout: float | None = None,
+        default_mode: ExecutionMode = ExecutionMode.STANDARD_WORKFLOW,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -45,6 +64,12 @@ class AgenticRuntime:
             raise TypeError("runtime must be an instance of AgentRuntime or None.")
         if workflow_executor is not None and not isinstance(workflow_executor, WorkflowExecutor):
             raise TypeError("workflow_executor must be an instance of WorkflowExecutor or None.")
+        if autonomous_executor is not None and not isinstance(autonomous_executor, AutonomousAgentExecutor):
+            raise TypeError("autonomous_executor must be an instance of AutonomousAgentExecutor or None.")
+        if goal_store is not None and not isinstance(goal_store, GoalStore):
+            raise TypeError("goal_store must be an instance of GoalStore or None.")
+        if goal_engine is not None and not isinstance(goal_engine, GoalEngine):
+            raise TypeError("goal_engine must be an instance of GoalEngine or None.")
         if state_store is not None and not isinstance(state_store, TaskStateStore):
             raise TypeError("state_store must be an instance of TaskStateStore or None.")
         if approval_gateway is not None and not isinstance(approval_gateway, ApprovalGateway):
@@ -59,6 +84,10 @@ class AgenticRuntime:
             raise TypeError("policy must be an instance of Policy or None.")
         if not isinstance(max_replans, int) or max_replans < 0:
             raise ValueError("max_replans must be a non-negative integer.")
+        if isinstance(default_mode, str):
+            default_mode = ExecutionMode(default_mode)
+        elif not isinstance(default_mode, ExecutionMode):
+            raise TypeError("default_mode must be an instance of ExecutionMode.")
 
         # Determine effective skill_registry
         if skill_registry is None:
@@ -68,6 +97,8 @@ class AgenticRuntime:
                 skill_registry = planner.skill_registry
             elif workflow_executor is not None:
                 skill_registry = workflow_executor.runtime.skill_registry
+            elif autonomous_executor is not None:
+                skill_registry = autonomous_executor.runtime.skill_registry
             else:
                 skill_registry = SkillRegistry()
 
@@ -80,12 +111,15 @@ class AgenticRuntime:
         self.approval_gateway = approval_gateway
         self.max_replans = max_replans
         self.default_timeout = default_timeout
+        self.default_mode = default_mode
 
         # Resolve or create AgentRuntime
         if runtime is not None:
             self.runtime = runtime
         elif workflow_executor is not None:
             self.runtime = workflow_executor.runtime
+        elif autonomous_executor is not None:
+            self.runtime = autonomous_executor.runtime
         else:
             self.runtime = AgentRuntime(
                 skill_registry=self.skill_registry,
@@ -100,6 +134,8 @@ class AgenticRuntime:
             self.planner = planner
         elif workflow_executor is not None and workflow_executor.planner is not None:
             self.planner = workflow_executor.planner
+        elif autonomous_executor is not None:
+            self.planner = autonomous_executor.planner
         else:
             self.planner = TaskPlanner(
                 skill_registry=self.skill_registry,
@@ -107,7 +143,7 @@ class AgenticRuntime:
                 model_router=self.model_router,
             )
 
-        # Resolve or create WorkflowExecutor
+        # Resolve or create WorkflowExecutor (M8)
         if workflow_executor is not None:
             self.workflow_executor = workflow_executor
         else:
@@ -119,6 +155,172 @@ class AgenticRuntime:
                 max_replans=self.max_replans,
             )
 
+        # Resolve or create AutonomousAgentExecutor (M10)
+        if autonomous_executor is not None:
+            self.autonomous_executor = autonomous_executor
+        else:
+            self.autonomous_executor = AutonomousAgentExecutor(
+                runtime=self.runtime,
+                planner=self.planner,
+                state_store=self.state_store,
+                approval_gateway=self.approval_gateway,
+            )
+
+        # Resolve or create GoalStore & GoalEngine (M11 / M12)
+        if goal_store is not None:
+            self.goal_store = goal_store
+        elif goal_engine is not None:
+            self.goal_store = goal_engine.goal_store
+        else:
+            self.goal_store = InMemoryGoalStore()
+
+        if goal_engine is not None:
+            self.goal_engine = goal_engine
+        else:
+            self.goal_engine = GoalEngine(
+                goal_store=self.goal_store,
+                runtime=self.runtime,
+                executor=self.autonomous_executor,
+                state_store=self.state_store,
+                approval_gateway=self.approval_gateway,
+            )
+
+    def execute(
+        self,
+        task: str | ExecutionPlan | AgentPlan | Goal | AURARequest,
+        mode: ExecutionMode | str | None = None,
+        task_id: str | None = None,
+        task_requirements: TaskRequirements | None = None,
+        timeout: float | None = None,
+        metadata: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+        trigger_id: str | None = None,
+        parent_goal_id: str | None = None,
+        depends_on_goal_ids: list[str] | tuple[str, ...] = (),
+    ) -> WorkflowResult | AutonomousAgentResult | GoalEvaluationResult:
+        """Execute a task in the specified ExecutionMode (STANDARD_WORKFLOW, AUTONOMOUS_AGENT, GOAL_DRIVEN)."""
+        effective_mode = self.default_mode
+        if mode is not None:
+            effective_mode = ExecutionMode(mode) if isinstance(mode, str) else mode
+        elif isinstance(task, AgentPlan):
+            effective_mode = ExecutionMode.AUTONOMOUS_AGENT
+        elif isinstance(task, Goal):
+            effective_mode = ExecutionMode.GOAL_DRIVEN
+        elif isinstance(task, ExecutionPlan):
+            effective_mode = ExecutionMode.STANDARD_WORKFLOW
+
+        if effective_mode == ExecutionMode.STANDARD_WORKFLOW:
+            return self.execute_task(
+                task=task,
+                task_id=task_id,
+                task_requirements=task_requirements,
+                timeout=timeout,
+                metadata=metadata,
+            )
+        elif effective_mode == ExecutionMode.AUTONOMOUS_AGENT:
+            return self.execute_autonomous(
+                task=task,
+                task_id=task_id,
+                task_requirements=task_requirements,
+                metadata=metadata,
+            )
+        elif effective_mode == ExecutionMode.GOAL_DRIVEN:
+            return self.execute_goal(
+                goal=task,
+                trigger_id=trigger_id,
+                context=context,
+                metadata=metadata,
+                parent_goal_id=parent_goal_id,
+                depends_on_goal_ids=depends_on_goal_ids,
+            )
+        else:
+            raise ValueError(f"Unsupported execution mode: {effective_mode}")
+
+    def execute_autonomous(
+        self,
+        task: str | AgentPlan | AURARequest,
+        task_id: str | None = None,
+        task_requirements: TaskRequirements | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> AutonomousAgentResult:
+        """Execute an autonomous task or plan through AutonomousAgentExecutor."""
+        actual_task_id = task_id
+        meta = dict(metadata) if metadata is not None else {}
+
+        if isinstance(task, AURARequest):
+            actual_task_id = actual_task_id or str(task.request_id)
+            task_desc = task.user_input
+            meta.update(task.metadata)
+            return self.autonomous_executor.run(
+                task=task_desc,
+                task_id=actual_task_id,
+                task_requirements=task_requirements,
+                metadata=meta,
+            )
+        elif isinstance(task, str):
+            if not task.strip():
+                raise ValueError("Task description cannot be empty.")
+            return self.autonomous_executor.run(
+                task=task.strip(),
+                task_id=actual_task_id,
+                task_requirements=task_requirements,
+                metadata=meta,
+            )
+        elif isinstance(task, AgentPlan):
+            return self.autonomous_executor.execute_plan(
+                plan=task,
+                task_id=actual_task_id,
+            )
+        else:
+            raise TypeError("task must be a string, AgentPlan, or AURARequest for autonomous execution.")
+
+    def execute_goal(
+        self,
+        goal: str | Goal | AURARequest,
+        trigger_id: str | None = None,
+        context: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        parent_goal_id: str | None = None,
+        depends_on_goal_ids: list[str] | tuple[str, ...] = (),
+    ) -> GoalEvaluationResult:
+        """Execute or evaluate a goal through GoalEngine."""
+        if isinstance(goal, AURARequest):
+            g = self.goal_engine.create_goal(
+                title=goal.user_input,
+                metadata=dict(goal.metadata),
+                parent_goal_id=parent_goal_id,
+                depends_on_goal_ids=depends_on_goal_ids,
+            )
+            return self.goal_engine.evaluate_goal(
+                goal_id=g.goal_id,
+                trigger_id=trigger_id,
+                context=context,
+            )
+        elif isinstance(goal, str):
+            if not goal.strip():
+                raise ValueError("Goal title cannot be empty.")
+            g = self.goal_engine.create_goal(
+                title=goal.strip(),
+                metadata=dict(metadata or {}),
+                parent_goal_id=parent_goal_id,
+                depends_on_goal_ids=depends_on_goal_ids,
+            )
+            return self.goal_engine.evaluate_goal(
+                goal_id=g.goal_id,
+                trigger_id=trigger_id,
+                context=context,
+            )
+        elif isinstance(goal, Goal):
+            if not self.goal_store.exists(goal.goal_id):
+                self.goal_store.create(goal)
+            return self.goal_engine.evaluate_goal(
+                goal_id=goal.goal_id,
+                trigger_id=trigger_id,
+                context=context,
+            )
+        else:
+            raise TypeError("goal must be a string, Goal, or AURARequest for goal-driven execution.")
+
     def execute_task(
         self,
         task: str | ExecutionPlan | AURARequest,
@@ -127,7 +329,7 @@ class AgenticRuntime:
         timeout: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> WorkflowResult:
-        """Execute a task through the end-to-end agentic runtime pipeline."""
+        """Execute a task through the standard workflow executor pipeline."""
         effective_timeout = timeout if timeout is not None else self.default_timeout
         actual_task_id = task_id
         meta = dict(metadata) if metadata is not None else {}
@@ -227,15 +429,17 @@ class AgenticRuntime:
 
     def run(
         self,
-        task: str | ExecutionPlan | AURARequest,
+        task: str | ExecutionPlan | AgentPlan | Goal | AURARequest,
         task_id: str | None = None,
         task_requirements: TaskRequirements | None = None,
         timeout: float | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> WorkflowResult:
-        """Alias for execute_task."""
-        return self.execute_task(
+        mode: ExecutionMode | str | None = None,
+    ) -> WorkflowResult | AutonomousAgentResult | GoalEvaluationResult:
+        """Unified entry point to execute tasks across all modes."""
+        return self.execute(
             task=task,
+            mode=mode,
             task_id=task_id,
             task_requirements=task_requirements,
             timeout=timeout,

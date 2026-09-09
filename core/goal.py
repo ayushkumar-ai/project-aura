@@ -37,6 +37,8 @@ def _sanitize_metadata(meta: dict[str, Any]) -> dict[str, Any]:
             ]
         elif isinstance(v, (str, int, float, bool)) or v is None:
             cleaned[k_str] = v
+        elif isinstance(v, TaintedValue):
+            cleaned[k_str] = v
         else:
             cleaned[k_str] = repr(v)
     return cleaned
@@ -334,6 +336,11 @@ class Goal:
     updated_at: float = field(default_factory=time.time)
     expires_at: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    parent_goal_id: str | None = None
+    subgoal_ids: tuple[str, ...] = field(default_factory=tuple)
+    depends_on_goal_ids: tuple[str, ...] = field(default_factory=tuple)
+    depth: int = 0
+    executed_task_ids: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self):
         if not isinstance(self.goal_id, str) or not self.goal_id.strip():
@@ -397,6 +404,52 @@ class Goal:
 
         object.__setattr__(self, "metadata", _sanitize_metadata(self.metadata))
 
+        # Hierarchical validation (M12)
+        if self.parent_goal_id is not None:
+            if not isinstance(self.parent_goal_id, str) or not self.parent_goal_id.strip():
+                raise ValueError("parent_goal_id must be a non-empty string or None.")
+            clean_parent = self.parent_goal_id.strip()
+            if clean_parent == self.goal_id:
+                raise ValueError(f"Goal '{self.goal_id}' cannot be its own parent.")
+            object.__setattr__(self, "parent_goal_id", clean_parent)
+
+        if isinstance(self.subgoal_ids, (list, tuple, set)):
+            sub_list = [str(s).strip() for s in self.subgoal_ids if str(s).strip()]
+            if self.goal_id in sub_list:
+                raise ValueError(f"Goal '{self.goal_id}' cannot include itself as a subgoal.")
+            if self.parent_goal_id and self.parent_goal_id in sub_list:
+                raise ValueError(f"Goal '{self.goal_id}' cannot include parent '{self.parent_goal_id}' as a subgoal.")
+            if len(sub_list) != len(set(sub_list)):
+                raise ValueError("subgoal_ids contains duplicate entries.")
+            if len(sub_list) > 5:
+                raise ValueError(f"Sub-goal count ({len(sub_list)}) exceeds maximum allowed (5).")
+            object.__setattr__(self, "subgoal_ids", tuple(sub_list))
+        else:
+            raise TypeError("subgoal_ids must be a sequence of strings.")
+
+        if isinstance(self.depends_on_goal_ids, (list, tuple, set)):
+            dep_list = [str(d).strip() for d in self.depends_on_goal_ids if str(d).strip()]
+            if self.goal_id in dep_list:
+                raise ValueError(f"Goal '{self.goal_id}' cannot depend on itself.")
+            if len(dep_list) != len(set(dep_list)):
+                raise ValueError("depends_on_goal_ids contains duplicate entries.")
+            if len(dep_list) > 10:
+                raise ValueError(f"Dependency count ({len(dep_list)}) exceeds maximum allowed (10).")
+            object.__setattr__(self, "depends_on_goal_ids", tuple(dep_list))
+        else:
+            raise TypeError("depends_on_goal_ids must be a sequence of strings.")
+
+        if not isinstance(self.depth, int) or self.depth < 0:
+            raise ValueError("depth must be a non-negative integer.")
+        if self.depth > 3:
+            raise ValueError(f"Goal hierarchy depth ({self.depth}) exceeds maximum allowed (3).")
+
+        if isinstance(self.executed_task_ids, (list, tuple, set)):
+            tasks = [str(t).strip() for t in self.executed_task_ids if str(t).strip()]
+            object.__setattr__(self, "executed_task_ids", tuple(tasks))
+        else:
+            raise TypeError("executed_task_ids must be a sequence of strings.")
+
     def is_expired(self, current_time: float | None = None) -> bool:
         """Check if the goal has passed its expiration time."""
         if self.expires_at is None:
@@ -423,6 +476,11 @@ class Goal:
             updated_at=now,
             expires_at=self.expires_at,
             metadata=dict(self.metadata),
+            parent_goal_id=self.parent_goal_id,
+            subgoal_ids=self.subgoal_ids,
+            depends_on_goal_ids=self.depends_on_goal_ids,
+            depth=self.depth,
+            executed_task_ids=self.executed_task_ids,
         )
 
     def with_progress(
@@ -435,9 +493,10 @@ class Goal:
     ) -> "Goal":
         """Return a new immutable Goal with updated progress and metrics."""
         now = updated_at if updated_at is not None else time.time()
-        new_status = status if status is not None else self.status
-        if progress.is_complete() and not new_status.is_terminal():
-            new_status = GoalStatus.COMPLETED
+        if status is not None:
+            new_status = status
+        else:
+            new_status = GoalStatus.COMPLETED if progress.is_complete() and not self.status.is_terminal() else self.status
 
         new_eval = evaluation_count if evaluation_count is not None else self.evaluation_count
         new_act = action_count if action_count is not None else self.action_count
@@ -458,6 +517,11 @@ class Goal:
             updated_at=now,
             expires_at=self.expires_at,
             metadata=dict(self.metadata),
+            parent_goal_id=self.parent_goal_id,
+            subgoal_ids=self.subgoal_ids,
+            depends_on_goal_ids=self.depends_on_goal_ids,
+            depth=self.depth,
+            executed_task_ids=self.executed_task_ids,
         )
 
     def with_updated_trigger(self, trigger_id: str, fired_at: float | None = None) -> "Goal":
@@ -483,7 +547,226 @@ class Goal:
             updated_at=now,
             expires_at=self.expires_at,
             metadata=dict(self.metadata),
+            parent_goal_id=self.parent_goal_id,
+            subgoal_ids=self.subgoal_ids,
+            depends_on_goal_ids=self.depends_on_goal_ids,
+            depth=self.depth,
+            executed_task_ids=self.executed_task_ids,
         )
+
+    def with_subgoal(self, subgoal_id: str) -> "Goal":
+        """Return a new Goal with the specified subgoal ID appended."""
+        clean_id = str(subgoal_id).strip()
+        if not clean_id:
+            raise ValueError("subgoal_id must be a non-empty string.")
+        if clean_id in self.subgoal_ids:
+            return self
+        new_subgoals = self.subgoal_ids + (clean_id,)
+        return Goal(
+            goal_id=self.goal_id,
+            title=self.title,
+            description=self.description,
+            success_criteria=self.success_criteria,
+            constraints=self.constraints,
+            priority=self.priority,
+            status=self.status,
+            triggers=self.triggers,
+            progress=self.progress,
+            evaluation_count=self.evaluation_count,
+            action_count=self.action_count,
+            created_at=self.created_at,
+            updated_at=time.time(),
+            expires_at=self.expires_at,
+            metadata=dict(self.metadata),
+            parent_goal_id=self.parent_goal_id,
+            subgoal_ids=new_subgoals,
+            depends_on_goal_ids=self.depends_on_goal_ids,
+            depth=self.depth,
+            executed_task_ids=self.executed_task_ids,
+        )
+
+    def with_dependency(self, dependency_goal_id: str) -> "Goal":
+        """Return a new Goal with the specified dependency goal ID appended."""
+        clean_id = str(dependency_goal_id).strip()
+        if not clean_id:
+            raise ValueError("dependency_goal_id must be a non-empty string.")
+        if clean_id in self.depends_on_goal_ids:
+            return self
+        new_deps = self.depends_on_goal_ids + (clean_id,)
+        return Goal(
+            goal_id=self.goal_id,
+            title=self.title,
+            description=self.description,
+            success_criteria=self.success_criteria,
+            constraints=self.constraints,
+            priority=self.priority,
+            status=self.status,
+            triggers=self.triggers,
+            progress=self.progress,
+            evaluation_count=self.evaluation_count,
+            action_count=self.action_count,
+            created_at=self.created_at,
+            updated_at=time.time(),
+            expires_at=self.expires_at,
+            metadata=dict(self.metadata),
+            parent_goal_id=self.parent_goal_id,
+            subgoal_ids=self.subgoal_ids,
+            depends_on_goal_ids=new_deps,
+            depth=self.depth,
+            executed_task_ids=self.executed_task_ids,
+        )
+
+    def with_executed_task(self, task_id: str) -> "Goal":
+        """Return a new Goal with the specified task ID recorded in lineage."""
+        clean_id = str(task_id).strip()
+        if not clean_id:
+            raise ValueError("task_id must be a non-empty string.")
+        if clean_id in self.executed_task_ids:
+            return self
+        new_tasks = self.executed_task_ids + (clean_id,)
+        return Goal(
+            goal_id=self.goal_id,
+            title=self.title,
+            description=self.description,
+            success_criteria=self.success_criteria,
+            constraints=self.constraints,
+            priority=self.priority,
+            status=self.status,
+            triggers=self.triggers,
+            progress=self.progress,
+            evaluation_count=self.evaluation_count,
+            action_count=self.action_count,
+            created_at=self.created_at,
+            updated_at=time.time(),
+            expires_at=self.expires_at,
+            metadata=dict(self.metadata),
+            parent_goal_id=self.parent_goal_id,
+            subgoal_ids=self.subgoal_ids,
+            depends_on_goal_ids=self.depends_on_goal_ids,
+            depth=self.depth,
+            executed_task_ids=new_tasks,
+        )
+
+
+def detect_dependency_cycles(goals: dict[str, Goal] | list[Goal] | tuple[Goal, ...]) -> list[list[str]]:
+    """Detect cycles in goal dependencies using depth-first search graph coloring."""
+    goal_map: dict[str, Goal] = (
+        goals if isinstance(goals, dict) else {g.goal_id: g for g in goals}
+    )
+
+    # 0 = unvisited, 1 = visiting (in stack), 2 = visited
+    state: dict[str, int] = {gid: 0 for gid in goal_map}
+    cycles: list[list[str]] = []
+
+    def dfs(node_id: str, path: list[str]) -> None:
+        state[node_id] = 1
+        path.append(node_id)
+
+        node = goal_map.get(node_id)
+        if node is not None:
+            for dep_id in node.depends_on_goal_ids:
+                if dep_id not in goal_map:
+                    continue
+                dep_state = state.get(dep_id, 0)
+                if dep_state == 1:
+                    # Cycle detected! Extract cycle path
+                    cycle_start = path.index(dep_id)
+                    cycle_subpath = path[cycle_start:] + [dep_id]
+                    cycles.append(cycle_subpath)
+                elif dep_state == 0:
+                    dfs(dep_id, path)
+
+        path.pop()
+        state[node_id] = 2
+
+    for gid in list(goal_map.keys()):
+        if state[gid] == 0:
+            dfs(gid, [])
+
+    return cycles
+
+
+def validate_goal_hierarchy(
+    goals: dict[str, Goal] | list[Goal] | tuple[Goal, ...],
+    max_depth: int = 3,
+    max_subgoals_per_parent: int = 5,
+) -> None:
+    """Validate hierarchy consistency, depth constraints, and cycle absence across goals."""
+    goal_map: dict[str, Goal] = (
+        goals if isinstance(goals, dict) else {g.goal_id: g for g in goals}
+    )
+
+    # 1. Check dependency cycles
+    cycles = detect_dependency_cycles(goal_map)
+    if cycles:
+        cycle_strs = [" -> ".join(c) for c in cycles]
+        raise ValueError(f"Goal dependency cycles detected: {', '.join(cycle_strs)}")
+
+    # 2. Check parent-child hierarchy consistency and depth
+    for g in goal_map.values():
+        if g.depth > max_depth:
+            raise ValueError(f"Goal '{g.goal_id}' depth ({g.depth}) exceeds maximum ({max_depth}).")
+
+        if len(g.subgoal_ids) > max_subgoals_per_parent:
+            raise ValueError(
+                f"Goal '{g.goal_id}' subgoal count ({len(g.subgoal_ids)}) exceeds maximum ({max_subgoals_per_parent})."
+            )
+
+        if g.parent_goal_id:
+            parent = goal_map.get(g.parent_goal_id)
+            if parent is not None:
+                if g.depth != parent.depth + 1:
+                    raise ValueError(
+                        f"Child goal '{g.goal_id}' depth ({g.depth}) must be parent depth ({parent.depth}) + 1."
+                    )
+                # Check for parent loop: trace ancestor chain
+                visited_ancestors = {g.goal_id}
+                curr = parent
+                while curr is not None:
+                    if curr.goal_id in visited_ancestors:
+                        raise ValueError(f"Parent-child cycle detected involving goal '{g.goal_id}'.")
+                    visited_ancestors.add(curr.goal_id)
+                    curr = goal_map.get(curr.parent_goal_id) if curr.parent_goal_id else None
+
+
+def get_topological_evaluation_order(
+    goals: list[Goal] | tuple[Goal, ...] | dict[str, Goal]
+) -> list[Goal]:
+    """Compute a deterministic topological sort order where dependencies and subgoals precede dependent goals."""
+    goal_map: dict[str, Goal] = (
+        goals if isinstance(goals, dict) else {g.goal_id: g for g in goals}
+    )
+
+    cycles = detect_dependency_cycles(goal_map)
+    if cycles:
+        cycle_strs = [" -> ".join(c) for c in cycles]
+        raise ValueError(f"Cannot topologically sort goals with dependency cycles: {', '.join(cycle_strs)}")
+
+    visited: set[str] = set()
+    result: list[Goal] = []
+
+    def visit(gid: str) -> None:
+        if gid in visited:
+            return
+        visited.add(gid)
+
+        g = goal_map.get(gid)
+        if g is not None:
+            # First visit subgoals so subgoals evaluate before parents
+            for sub_id in g.subgoal_ids:
+                if sub_id in goal_map:
+                    visit(sub_id)
+            # Next visit prerequisites so dependencies evaluate before dependents
+            for dep_id in g.depends_on_goal_ids:
+                if dep_id in goal_map:
+                    visit(dep_id)
+            result.append(g)
+
+    # Sort keys for deterministic traversal
+    for gid in sorted(goal_map.keys()):
+        visit(gid)
+
+    return result
 
 
 def serialize_goal_trigger(trigger: GoalTrigger) -> dict[str, Any]:
@@ -596,6 +879,11 @@ def serialize_goal(goal: Goal) -> dict[str, Any]:
         "updated_at": goal.updated_at,
         "expires_at": goal.expires_at,
         "metadata": _canonical_value(goal.metadata),
+        "parent_goal_id": goal.parent_goal_id,
+        "subgoal_ids": list(goal.subgoal_ids),
+        "depends_on_goal_ids": list(goal.depends_on_goal_ids),
+        "depth": goal.depth,
+        "executed_task_ids": list(goal.executed_task_ids),
     }
 
 
@@ -632,5 +920,10 @@ def deserialize_goal(data: dict[str, Any]) -> Goal:
         created_at=float(data.get("created_at", time.time())),
         updated_at=float(data.get("updated_at", time.time())),
         expires_at=data.get("expires_at"),
-        metadata=dict(data.get("metadata", {})),
+        metadata=_restore_value(dict(data.get("metadata", {}))),
+        parent_goal_id=data.get("parent_goal_id"),
+        subgoal_ids=tuple(data.get("subgoal_ids", ())),
+        depends_on_goal_ids=tuple(data.get("depends_on_goal_ids", ())),
+        depth=int(data.get("depth", 0)),
+        executed_task_ids=tuple(data.get("executed_task_ids", ())),
     )

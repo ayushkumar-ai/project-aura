@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     aura_goal_cooldown_seconds: float = 5.0
     aura_goal_timeout_seconds: float = 3600.0
 
+    # M12 Hierarchical Goals & Orchestration Configuration
+    aura_max_subgoal_depth: int = 3
+    aura_max_subgoals_per_parent: int = 5
+    aura_max_goal_dependencies: int = 10
+    aura_max_goal_observations: int = 50
+
 
     model_config = SettingsConfigDict(
         env_file=".env",

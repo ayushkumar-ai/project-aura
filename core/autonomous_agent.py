@@ -255,16 +255,24 @@ class AutonomousAgentExecutor:
         # State persistence initialization
         task_state: TaskState | None = None
         if self.state_store is not None:
+            g_id = current_plan.metadata.get("goal_id") if isinstance(current_plan.metadata, dict) else None
+            p_g_id = current_plan.metadata.get("parent_goal_id") if isinstance(current_plan.metadata, dict) else None
             if self.state_store.exists(actual_task_id):
                 task_state = self.state_store.get(actual_task_id)
                 task_state.status = TaskStatus.RUNNING
                 task_state.plan = current_plan
+                if g_id and not task_state.goal_id:
+                    task_state.goal_id = str(g_id).strip()
+                if p_g_id and not task_state.parent_goal_id:
+                    task_state.parent_goal_id = str(p_g_id).strip()
                 self.state_store.save(task_state)
             else:
                 task_state = self.state_store.create(
                     task_id=actual_task_id,
                     plan_id=current_plan.plan_id,
                     plan=current_plan,
+                    goal_id=str(g_id).strip() if g_id else None,
+                    parent_goal_id=str(p_g_id).strip() if p_g_id else None,
                 )
                 task_state.status = TaskStatus.RUNNING
                 self.state_store.save(task_state)
@@ -746,6 +754,8 @@ class AutonomousAgentExecutor:
         if self.state_store is None:
             return
 
+        g_id = plan.metadata.get("goal_id") if isinstance(plan.metadata, dict) else None
+        p_g_id = plan.metadata.get("parent_goal_id") if isinstance(plan.metadata, dict) else None
         state = TaskState(
             task_id=task_id,
             plan_id=plan.plan_id,
@@ -753,6 +763,8 @@ class AutonomousAgentExecutor:
             plan=plan,
             error=error,
             final_output=final_output,
+            goal_id=str(g_id).strip() if g_id else None,
+            parent_goal_id=str(p_g_id).strip() if p_g_id else None,
             metadata={
                 "agent_plan_json": serialize_agent_plan(plan),
                 "execution_trace_json": serialize_execution_trace(trace),

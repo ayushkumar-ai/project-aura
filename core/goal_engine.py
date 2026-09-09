@@ -22,6 +22,9 @@ from core.goal import (
     GoalStatus,
     GoalTrigger,
     TriggerType,
+    detect_dependency_cycles,
+    get_topological_evaluation_order,
+    validate_goal_hierarchy,
 )
 from core.goal_reasoner import GoalEvaluationResult, GoalReasoner
 from core.goal_store import GoalStore, InMemoryGoalStore
@@ -43,6 +46,10 @@ class GoalEngineConfig:
     evaluation_cooldown_seconds: float = 5.0
     goal_timeout_seconds: float = 3600.0
     auto_pause_on_approval: bool = True
+    max_subgoal_depth: int = 3
+    max_subgoals_per_parent: int = 5
+    max_goal_dependencies: int = 10
+    max_observations_per_goal: int = 50
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -58,10 +65,18 @@ class GoalEngineConfig:
             raise ValueError("goal_timeout_seconds must be a positive number.")
         if not isinstance(self.auto_pause_on_approval, bool):
             raise TypeError("auto_pause_on_approval must be a boolean.")
+        if not isinstance(self.max_subgoal_depth, int) or self.max_subgoal_depth < 0:
+            raise ValueError("max_subgoal_depth must be a non-negative integer.")
+        if not isinstance(self.max_subgoals_per_parent, int) or self.max_subgoals_per_parent <= 0:
+            raise ValueError("max_subgoals_per_parent must be a positive integer.")
+        if not isinstance(self.max_goal_dependencies, int) or self.max_goal_dependencies <= 0:
+            raise ValueError("max_goal_dependencies must be a positive integer.")
+        if not isinstance(self.max_observations_per_goal, int) or self.max_observations_per_goal <= 0:
+            raise ValueError("max_observations_per_goal must be a positive integer.")
 
 
 class GoalEngine:
-    """Proactive Goal Engine managing goal lifecycles, triggers, evaluation, and safe action execution."""
+    """Proactive Goal Engine managing goal lifecycles, hierarchical subgoals, triggers, and safe actions."""
 
     def __init__(
         self,
@@ -98,6 +113,10 @@ class GoalEngine:
             max_actions_per_goal=getattr(settings, "aura_max_actions_per_goal", 20),
             evaluation_cooldown_seconds=getattr(settings, "aura_goal_cooldown_seconds", 5.0),
             goal_timeout_seconds=getattr(settings, "aura_goal_timeout_seconds", 3600.0),
+            max_subgoal_depth=getattr(settings, "aura_max_subgoal_depth", 3),
+            max_subgoals_per_parent=getattr(settings, "aura_max_subgoals_per_parent", 5),
+            max_goal_dependencies=getattr(settings, "aura_max_goal_dependencies", 10),
+            max_observations_per_goal=getattr(settings, "aura_max_goal_observations", 50),
         )
 
         self.runtime = runtime
@@ -118,9 +137,6 @@ class GoalEngine:
             else None
         )
 
-        # In-memory goal observations cache: goal_id -> list[GoalObservation]
-        self._observations: dict[str, list[GoalObservation]] = {}
-
     def create_goal(
         self,
         title: str,
@@ -132,14 +148,49 @@ class GoalEngine:
         expires_at: float | None = None,
         auto_activate: bool = True,
         metadata: dict[str, Any] | None = None,
+        parent_goal_id: str | None = None,
+        subgoal_ids: list[str] | tuple[str, ...] = (),
+        depends_on_goal_ids: list[str] | tuple[str, ...] = (),
+        depth: int = 0,
     ) -> Goal:
-        """Create and store a new Goal entity."""
+        """Create and store a new Goal entity with hierarchical sub-goal and dependency support."""
         active_goals = self.goal_store.list_goals(status=GoalStatus.ACTIVE)
         if len(active_goals) >= self.config.max_active_goals:
             raise ValueError(
                 f"Active goals limit reached ({self.config.max_active_goals}). "
                 "Complete, pause, or cancel existing goals before creating new ones."
             )
+
+        effective_depth = depth
+        clean_parent_id = parent_goal_id.strip() if parent_goal_id else None
+
+        # Validate parent goal if specified
+        if clean_parent_id:
+            if not self.goal_store.exists(clean_parent_id):
+                raise KeyError(f"Parent goal '{clean_parent_id}' not found.")
+            parent_goal = self.goal_store.get(clean_parent_id)
+            if parent_goal.status.is_terminal():
+                raise ValueError(f"Cannot add sub-goal to terminal parent goal '{clean_parent_id}'.")
+            effective_depth = parent_goal.depth + 1
+            if effective_depth > self.config.max_subgoal_depth:
+                raise ValueError(
+                    f"Sub-goal depth ({effective_depth}) exceeds configured maximum ({self.config.max_subgoal_depth})."
+                )
+            if len(parent_goal.subgoal_ids) >= self.config.max_subgoals_per_parent:
+                raise ValueError(
+                    f"Parent goal '{clean_parent_id}' reached max sub-goals limit ({self.config.max_subgoals_per_parent})."
+                )
+
+        # Validate dependencies
+        clean_deps = [str(d).strip() for d in depends_on_goal_ids if str(d).strip()]
+        if len(clean_deps) > self.config.max_goal_dependencies:
+            raise ValueError(
+                f"Goal dependency count ({len(clean_deps)}) exceeds configured maximum ({self.config.max_goal_dependencies})."
+            )
+
+        for dep_id in clean_deps:
+            if not self.goal_store.exists(dep_id):
+                raise KeyError(f"Dependency goal '{dep_id}' not found.")
 
         status = GoalStatus.ACTIVE if auto_activate else GoalStatus.CREATED
         goal = Goal(
@@ -153,11 +204,58 @@ class GoalEngine:
             progress=GoalProgress(remaining_criteria=tuple(success_criteria)),
             expires_at=expires_at,
             metadata=dict(metadata or {}),
+            parent_goal_id=clean_parent_id,
+            subgoal_ids=tuple(str(s).strip() for s in subgoal_ids if str(s).strip()),
+            depends_on_goal_ids=tuple(clean_deps),
+            depth=effective_depth,
         )
 
+        # Check for dependency cycle
+        all_stored = {g.goal_id: g for g in self.goal_store.list_goals()}
+        all_stored[goal.goal_id] = goal
+        cycles = detect_dependency_cycles(all_stored)
+        if cycles:
+            cycle_strs = [" -> ".join(c) for c in cycles]
+            raise ValueError(f"Dependency cycle detected when creating goal '{title}': {', '.join(cycle_strs)}")
+
         stored_goal = self.goal_store.create(goal)
-        self._observations[stored_goal.goal_id] = []
+
+        # Update parent goal's subgoal_ids
+        if clean_parent_id:
+            parent_goal = self.goal_store.get(clean_parent_id)
+            updated_parent = parent_goal.with_subgoal(stored_goal.goal_id)
+            self.goal_store.update(updated_parent)
+
         return stored_goal
+
+    def create_subgoal(
+        self,
+        parent_goal_id: str,
+        title: str,
+        description: str = "",
+        success_criteria: list[str] | tuple[str, ...] = (),
+        constraints: list[str] | tuple[str, ...] = (),
+        priority: GoalPriority = GoalPriority.MEDIUM,
+        triggers: list[GoalTrigger] | tuple[GoalTrigger, ...] = (),
+        expires_at: float | None = None,
+        auto_activate: bool = True,
+        metadata: dict[str, Any] | None = None,
+        depends_on_goal_ids: list[str] | tuple[str, ...] = (),
+    ) -> Goal:
+        """Convenience method to create a hierarchical sub-goal linked to a parent."""
+        return self.create_goal(
+            title=title,
+            description=description,
+            success_criteria=success_criteria,
+            constraints=constraints,
+            priority=priority,
+            triggers=triggers,
+            expires_at=expires_at,
+            auto_activate=auto_activate,
+            metadata=metadata,
+            parent_goal_id=parent_goal_id,
+            depends_on_goal_ids=depends_on_goal_ids,
+        )
 
     def get_goal(self, goal_id: str) -> Goal:
         """Retrieve a Goal by ID."""
@@ -167,9 +265,14 @@ class GoalEngine:
         self,
         status: GoalStatus | None = None,
         priority: GoalPriority | None = None,
+        parent_goal_id: str | None = None,
     ) -> list[Goal]:
         """List all goals matching filters."""
-        return self.goal_store.list_goals(status=status, priority=priority)
+        return self.goal_store.list_goals(
+            status=status,
+            priority=priority,
+            parent_goal_id=parent_goal_id,
+        )
 
     def pause_goal(self, goal_id: str) -> Goal:
         """Pause an active goal."""
@@ -222,6 +325,11 @@ class GoalEngine:
             updated_at=time.time(),
             expires_at=goal.expires_at,
             metadata=meta,
+            parent_goal_id=goal.parent_goal_id,
+            subgoal_ids=goal.subgoal_ids,
+            depends_on_goal_ids=goal.depends_on_goal_ids,
+            depth=goal.depth,
+            executed_task_ids=goal.executed_task_ids,
         )
         self.goal_store.update(updated)
         return updated
@@ -234,7 +342,7 @@ class GoalEngine:
         is_untrusted: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> GoalObservation:
-        """Ingest a contextual observation for a goal."""
+        """Ingest and persist a contextual observation for a goal."""
         goal = self.get_goal(goal_id)
         if goal.status.is_terminal():
             raise ValueError(f"Cannot add observation to terminal goal '{goal_id}'.")
@@ -247,16 +355,15 @@ class GoalEngine:
             metadata=dict(metadata or {}),
         )
 
-        if goal_id not in self._observations:
-            self._observations[goal_id] = []
-        self._observations[goal_id].append(obs)
-        return obs
+        return self.goal_store.add_observation(goal_id, obs)
 
     def get_observations(self, goal_id: str) -> list[GoalObservation]:
-        """Retrieve all observations associated with a goal."""
-        if not self.goal_store.exists(goal_id):
-            raise KeyError(f"Goal '{goal_id}' not found.")
-        return list(self._observations.get(goal_id, []))
+        """Retrieve all observations associated with a goal from persistent store."""
+        return self.goal_store.get_observations(goal_id)
+
+    def clear_observations(self, goal_id: str) -> None:
+        """Clear all observations for a goal in persistent store."""
+        self.goal_store.clear_observations(goal_id)
 
     def evaluate_goal(
         self,
@@ -264,7 +371,7 @@ class GoalEngine:
         trigger_id: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> GoalEvaluationResult:
-        """Evaluate a goal's progress and execute proactive actions if needed."""
+        """Evaluate a goal's progress, dependencies, sub-goals, and execute actions if needed."""
         goal = self.get_goal(goal_id)
 
         # 1. Terminal / Inactive / Expiry checks
@@ -305,7 +412,43 @@ class GoalEngine:
                 rationale=f"Max evaluations limit reached ({self.config.max_evaluations_per_goal}).",
             )
 
-        # 3. Trigger check (if specific trigger passed)
+        # 3. Check Prerequisite Goal Dependencies (M12)
+        if goal.depends_on_goal_ids:
+            for dep_id in goal.depends_on_goal_ids:
+                if not self.goal_store.exists(dep_id):
+                    logger.warning("Goal '%s' depends on missing goal '%s'.", goal_id, dep_id)
+                    blocked_goal = goal.with_status(GoalStatus.BLOCKED)
+                    self.goal_store.update(blocked_goal)
+                    return GoalEvaluationResult(
+                        is_completed=False,
+                        action_needed=False,
+                        new_progress=goal.progress,
+                        rationale=f"Dependency goal '{dep_id}' does not exist.",
+                    )
+
+                dep_goal = self.goal_store.get(dep_id)
+                if dep_goal.status in (GoalStatus.FAILED, GoalStatus.CANCELLED, GoalStatus.EXPIRED):
+                    logger.warning("Goal '%s' blocked by failed dependency '%s' (%s).", goal_id, dep_id, dep_goal.status)
+                    blocked_goal = goal.with_status(GoalStatus.BLOCKED)
+                    self.goal_store.update(blocked_goal)
+                    return GoalEvaluationResult(
+                        is_completed=False,
+                        action_needed=False,
+                        new_progress=goal.progress,
+                        rationale=f"Prerequisite goal '{dep_id}' failed or was cancelled (status: {dep_goal.status}).",
+                    )
+
+                if dep_goal.status != GoalStatus.COMPLETED:
+                    # Prerequisite not yet complete - cannot take action
+                    logger.info("Goal '%s' waiting for prerequisite '%s' (status: %s).", goal_id, dep_id, dep_goal.status)
+                    return GoalEvaluationResult(
+                        is_completed=False,
+                        action_needed=False,
+                        new_progress=goal.progress,
+                        rationale=f"Waiting for prerequisite goal '{dep_id}' to complete (current status: {dep_goal.status}).",
+                    )
+
+        # 4. Trigger check (if specific trigger passed)
         matched_trigger = None
         if trigger_id:
             for t in goal.triggers:
@@ -320,18 +463,60 @@ class GoalEngine:
                     rationale=f"Trigger '{trigger_id}' is on cooldown or condition not met.",
                 )
 
-        # 4. Transition to EVALUATING
+        # 5. Transition to EVALUATING
         eval_goal = goal.with_status(GoalStatus.EVALUATING)
         if matched_trigger:
             eval_goal = eval_goal.with_updated_trigger(matched_trigger.trigger_id)
         self.goal_store.update(eval_goal)
 
-        # 5. Invoke GoalReasoner
+        # 6. Invoke GoalReasoner with persistent observations
         obs_list = self.get_observations(goal_id)
         eval_res = self.reasoner.evaluate(eval_goal, observations=obs_list)
 
-        # 6. Process evaluation outcome
+        # 7. Check Sub-Goal Completion Constraint (M12)
+        # Parent goals cannot complete until all sub-goals are completed
+        subgoals_pending = False
+        subgoal_failure_msg = None
+        if eval_goal.subgoal_ids:
+            for sub_id in eval_goal.subgoal_ids:
+                if self.goal_store.exists(sub_id):
+                    sub_goal = self.goal_store.get(sub_id)
+                    if sub_goal.status in (GoalStatus.FAILED, GoalStatus.CANCELLED):
+                        subgoal_failure_msg = f"Sub-goal '{sub_id}' failed with status '{sub_goal.status}'."
+                    elif sub_goal.status != GoalStatus.COMPLETED:
+                        subgoals_pending = True
+
+        if subgoal_failure_msg:
+            blocked_goal = eval_goal.with_progress(
+                progress=eval_res.new_progress,
+                status=GoalStatus.BLOCKED,
+                evaluation_count=eval_goal.evaluation_count + 1,
+            )
+            self.goal_store.update(blocked_goal)
+            return GoalEvaluationResult(
+                is_completed=False,
+                action_needed=False,
+                new_progress=eval_res.new_progress,
+                rationale=subgoal_failure_msg,
+            )
+
+        # 8. Process evaluation outcome
         if eval_res.is_completed:
+            if subgoals_pending:
+                # Direct criteria are met, but subgoals are still in progress
+                waiting_goal = eval_goal.with_progress(
+                    progress=eval_res.new_progress,
+                    status=GoalStatus.ACTIVE,
+                    evaluation_count=eval_goal.evaluation_count + 1,
+                )
+                self.goal_store.update(waiting_goal)
+                return GoalEvaluationResult(
+                    is_completed=False,
+                    action_needed=False,
+                    new_progress=eval_res.new_progress,
+                    rationale="Direct criteria satisfied; awaiting completion of child sub-goals.",
+                )
+
             completed_goal = eval_goal.with_progress(
                 progress=eval_res.new_progress,
                 status=GoalStatus.COMPLETED,
@@ -340,7 +525,7 @@ class GoalEngine:
             self.goal_store.update(completed_goal)
             return eval_res
 
-        # 7. If action needed, execute proposed plan via AutonomousAgentExecutor
+        # 9. If action needed, execute proposed plan via AutonomousAgentExecutor with lineage tracking
         if eval_res.action_needed and eval_res.proposed_plan is not None:
             if eval_goal.action_count >= self.config.max_actions_per_goal:
                 logger.warning("Goal '%s' exceeded max_actions_per_goal limit.", goal_id)
@@ -372,16 +557,37 @@ class GoalEngine:
             self.goal_store.update(executing_goal)
 
             task_id = f"goal_{goal_id}_act_{executing_goal.action_count + 1}"
-            agent_res = self.executor.execute_plan(
-                plan=eval_res.proposed_plan,
-                task_id=task_id,
-                task_description=eval_res.proposed_plan.task_goal,
+
+            # Attach goal lineage metadata to plan
+            plan_meta = dict(eval_res.proposed_plan.metadata)
+            plan_meta["goal_id"] = goal_id
+            if goal.parent_goal_id:
+                plan_meta["parent_goal_id"] = goal.parent_goal_id
+
+            plan_with_lineage = AgentPlan(
+                plan_id=eval_res.proposed_plan.plan_id,
+                task_goal=eval_res.proposed_plan.task_goal,
+                steps=eval_res.proposed_plan.steps,
+                status=eval_res.proposed_plan.status,
+                created_at=eval_res.proposed_plan.created_at,
+                updated_at=eval_res.proposed_plan.updated_at,
+                metadata=plan_meta,
             )
 
-            # Record action outcome as observation
+            # Record task ID in Goal lineage (M12)
+            executing_goal = executing_goal.with_executed_task(task_id)
+            self.goal_store.update(executing_goal)
+
+            agent_res = self.executor.execute_plan(
+                plan=plan_with_lineage,
+                task_id=task_id,
+                task_description=plan_with_lineage.task_goal,
+            )
+
+            # Record action outcome as persistent observation
             out_val = agent_res.final_output if agent_res.success else agent_res.error
             is_untrusted_out = is_tainted(out_val) or any(o.is_untrusted for o in agent_res.trace.observations)
-            crit_name = eval_res.proposed_plan.metadata.get("criterion", "") if eval_res.proposed_plan else ""
+            crit_name = plan_meta.get("criterion", "")
             self.add_observation(
                 goal_id=goal_id,
                 source=f"action:{crit_name}:{task_id}" if crit_name else f"action:{task_id}",
@@ -416,7 +622,7 @@ class GoalEngine:
 
             final_status = (
                 GoalStatus.COMPLETED
-                if post_eval.is_completed
+                if post_eval.is_completed and not subgoals_pending
                 else GoalStatus.PROGRESS_UPDATED
             )
 
@@ -437,3 +643,22 @@ class GoalEngine:
         )
         self.goal_store.update(active_goal)
         return eval_res
+
+    def evaluate_all_active_goals(self) -> list[GoalEvaluationResult]:
+        """Evaluate all active goals in topological dependency order."""
+        active_goals = self.list_goals(status=GoalStatus.ACTIVE)
+        if not active_goals:
+            return []
+
+        # Order topologically: subgoals before parents, dependencies before dependents
+        ordered = get_topological_evaluation_order(active_goals)
+        results: list[GoalEvaluationResult] = []
+        for g in ordered:
+            # Re-fetch state in case earlier evaluations altered this goal
+            if self.goal_store.exists(g.goal_id):
+                curr = self.goal_store.get(g.goal_id)
+                if curr.status == GoalStatus.ACTIVE:
+                    res = self.evaluate_goal(curr.goal_id)
+                    results.append(res)
+
+        return results
