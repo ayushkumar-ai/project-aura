@@ -10,6 +10,7 @@ from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
 from research.citations import validate_citations
 from research.service import ResearchService
+from core.provenance import TaintedValue, wrap_tainted
 
 logger = logging.getLogger("aura.research.skill")
 
@@ -252,8 +253,15 @@ def create_research_skill(
                 hop_str = f" [Hop {hop}]" if hop > 0 else ""
                 citations.append(f"[{idx}] {s.get('title')}{hop_str} - {s.get('url')}")
             citations_block = "\n".join(citations)
+            full_text = f"{synthesis_text}\n\nSources:\n{citations_block}"
 
-            return f"{synthesis_text}\n\nSources:\n{citations_block}"
+            return wrap_tainted(
+                value=full_text,
+                is_untrusted=True,
+                source_type="external_web",
+                source_urls=[s.get("url", "") for s in sources if s.get("url")],
+                metadata={"query": query, "total_sources": len(sources)},
+            )
 
         # 3. Fallback: structured textual overview without model synthesis
         if not sources:
@@ -268,7 +276,14 @@ def create_research_skill(
             hop_str = f" [Hop {hop}]" if hop > 0 else ""
             lines.append(f"[{idx}] {title}{hop_str} ({url})\n    {snippet}")
 
-        return "\n\n".join(lines)
+        fallback_text = "\n\n".join(lines)
+        return wrap_tainted(
+            value=fallback_text,
+            is_untrusted=True,
+            source_type="external_web",
+            source_urls=[s.get("url", "") for s in sources if s.get("url")],
+            metadata={"query": query, "total_sources": len(sources)},
+        )
 
     return Skill(
         name=skill_name,

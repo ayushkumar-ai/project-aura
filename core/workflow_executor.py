@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 from core.agent_runtime import AgentRequest, AgentResult, AgentRuntime
 from core.approval import ApprovalDecisionType, ApprovalGateway, ApprovalRequest
+from core.provenance import TaintedValue, is_tainted, unwrap_tainted, wrap_tainted, render_for_prompt
 from core.task_planner import ExecutionPlan, PlanStep, ReplanContext, TaskPlanner
 from core.task_state import StepState, StepStatus, TaskState, TaskStatus
 from core.task_state_store import TaskStateStore
@@ -94,29 +95,44 @@ class WorkflowExecutor:
         step: PlanStep,
         step_results: dict[str, AgentResult],
     ) -> Any:
-        """Resolve the input data for a step, allowing outputs from prior steps to be consumed."""
+        """Resolve the input data for a step, preserving provenance and taint envelopes across dependencies."""
         input_data = step.input_data
 
         if callable(input_data):
             return input_data(step_results)
 
-        if isinstance(input_data, dict):
-            if "$from_step" in input_data:
-                source_id = input_data["$from_step"]
+        def _resolve_nested(val: Any) -> Any:
+            if isinstance(val, dict):
+                if "$from_step" in val and len(val) == 1:
+                    source_id = str(val["$from_step"]).strip()
+                    if source_id in step_results:
+                        return step_results[source_id].output
+                return {k: _resolve_nested(v) for k, v in val.items()}
+            elif isinstance(val, list):
+                return [_resolve_nested(item) for item in val]
+            elif isinstance(val, tuple):
+                return tuple(_resolve_nested(item) for item in val)
+            return val
+
+        resolved = _resolve_nested(input_data)
+
+        if isinstance(resolved, dict):
+            if "$from_step" in resolved and len(resolved) == 1:
+                source_id = str(resolved["$from_step"]).strip()
                 if source_id in step_results:
                     return step_results[source_id].output
-            if not input_data and step.dependencies:
+            if not resolved and step.dependencies:
                 last_dep = step.dependencies[-1]
                 if last_dep in step_results:
                     return step_results[last_dep].output
-            return input_data
+            return resolved
 
-        if (input_data is None or input_data == "") and step.dependencies:
+        if (resolved is None or resolved == "") and step.dependencies:
             last_dep = step.dependencies[-1]
             if last_dep in step_results:
                 return step_results[last_dep].output
 
-        return input_data
+        return resolved
 
     def execute(
         self,
@@ -335,6 +351,51 @@ class WorkflowExecutor:
 
             # Execute via AgentRuntime
             agent_res = self.runtime.execute(agent_req, timeout=timeout)
+
+            # Preserve & tag provenance for research / untrusted skill outputs
+            if agent_res.success and agent_res.output is not None:
+                is_untrusted_skill = (
+                    step.skill_name in ("research_web", "web_search", "fetch_url")
+                    or step.metadata.get("untrusted_source") is True
+                    or (self.runtime.skill_registry.has(step.skill_name) and self.runtime.skill_registry.get(step.skill_name).metadata.get("capability") == "web_research")
+                )
+                effective_output = agent_res.output
+                if is_untrusted_skill and not isinstance(effective_output, TaintedValue):
+                    source_urls = []
+                    if isinstance(effective_output, dict):
+                        for src in effective_output.get("sources", []):
+                            if isinstance(src, dict) and "url" in src:
+                                source_urls.append(src["url"])
+                    elif isinstance(effective_output, str):
+                        found_urls = re.findall(r"https?://[^\s\)\>\]]+", effective_output)
+                        source_urls.extend(found_urls[:10])
+
+                    effective_output = wrap_tainted(
+                        value=effective_output,
+                        is_untrusted=True,
+                        source_type="external_web",
+                        originating_step_id=step.step_id,
+                        source_urls=source_urls,
+                        metadata={"skill_name": step.skill_name},
+                    )
+                elif isinstance(effective_output, TaintedValue) and effective_output.originating_step_id is None:
+                    effective_output = wrap_tainted(
+                        value=effective_output,
+                        originating_step_id=step.step_id,
+                    )
+
+                if effective_output is not agent_res.output:
+                    agent_res = AgentResult(
+                        success=agent_res.success,
+                        skill_name=agent_res.skill_name,
+                        output=effective_output,
+                        selected_model_id=agent_res.selected_model_id,
+                        selected_provider_id=agent_res.selected_provider_id,
+                        error=agent_res.error,
+                        request_id=agent_res.request_id,
+                        metadata=dict(agent_res.metadata),
+                    )
+
             step_results[step.step_id] = agent_res
 
             if not agent_res.success:

@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from core.model_router import ModelRouter, TaskRequirements
 from core.policy import Policy
+from core.provenance import TaintedValue, is_tainted, render_for_prompt, unwrap_tainted
 from core.skill_registry import Skill, SkillRegistry
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
@@ -89,6 +90,29 @@ class AgentRuntime:
         schema = skill.input_schema
         if not schema:
             return None
+
+        target_data = input_data.raw_value if isinstance(input_data, TaintedValue) else input_data
+
+        expected_type = schema.get("type")
+        if expected_type == "object":
+            if not isinstance(target_data, dict):
+                return "Input data must be a dictionary for object schema."
+
+            required_fields = schema.get("required", [])
+            if isinstance(required_fields, (list, tuple, set)):
+                for req_field in required_fields:
+                    if req_field not in target_data:
+                        return f"Missing required input field: '{req_field}'."
+
+        elif expected_type == "string":
+            if not isinstance(target_data, str):
+                return "Input data must be a string for string schema."
+
+        elif expected_type == "array":
+            if not isinstance(target_data, (list, tuple)):
+                return "Input data must be a list/tuple for array schema."
+
+        return None
 
         expected_type = schema.get("type")
         if expected_type == "object":
@@ -251,6 +275,9 @@ class AgentRuntime:
             "provider_id": selected_provider_id,
             "tool_executor": self.tool_executor,
             "policy": self.policy,
+            "is_tainted": is_tainted(request.input_data),
+            "render_for_prompt": render_for_prompt,
+            "unwrap_tainted": unwrap_tainted,
         }
 
         try:

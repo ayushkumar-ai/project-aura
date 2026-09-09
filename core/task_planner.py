@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from core.capability_registry import ModelCapability
 from core.model_router import ModelRouter, TaskRequirements
 from core.skill_registry import SkillRegistry
+from core.provenance import TaintedValue, is_tainted, render_for_prompt
 from interfaces.model import ModelInterface
 
 logger = logging.getLogger("aura.task_planner")
@@ -185,7 +186,11 @@ class TaskPlanner:
 
         outputs_summary = []
         for k, v in sorted(context.step_outputs.items()):
-            outputs_summary.append(f"  * {k}: {str(v)[:200]}")
+            if isinstance(v, TaintedValue) or is_tainted(v):
+                rendered_v = render_for_prompt(v, wrap_untrusted=True)
+                outputs_summary.append(f"  * {k}: {rendered_v[:400]}")
+            else:
+                outputs_summary.append(f"  * {k}: {str(v)[:200]}")
         outputs_text = "\n".join(outputs_summary) if outputs_summary else "  None"
 
         return (
