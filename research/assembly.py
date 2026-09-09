@@ -15,6 +15,7 @@ from research.models import (
     ClaimVerificationStatus,
     EvidenceConflict,
     EvidenceItem,
+    ResearchCoverage,
     ResearchSource,
     VerifiedClaim,
 )
@@ -55,7 +56,7 @@ def build_answer_citations(
 
 
 class AnswerAssembler:
-    """Assembles verified research findings into structured, citation-grounded answers."""
+    """Assembles verified research findings into structured, citation-grounded answers with coverage integration."""
 
     def __init__(
         self,
@@ -101,10 +102,11 @@ class AnswerAssembler:
         sources: Sequence[ResearchSource],
         contradictions: Sequence[EvidenceConflict] = (),
         evidence: Sequence[EvidenceItem] = (),
+        coverage: ResearchCoverage | None = None,
         model: ModelInterface | None = None,
         request_id: UUID | None = None,
     ) -> AssembledAnswer:
-        """Convert verified claims, sources, and evidence into an authoritative AssembledAnswer."""
+        """Convert verified claims, sources, coverage, and evidence into an authoritative AssembledAnswer."""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("Query must be a non-empty string.")
 
@@ -193,14 +195,22 @@ class AnswerAssembler:
                 )
             )
 
-        # 4. Build Section 3: Limitations / Unsupported (if any)
+        # 4. Build Section 3: Limitations / Unsupported / Coverage Gaps (if any)
         unsupported_flagged: list[str] = []
+        unsupported_lines: list[str] = []
+
         if unsupported_claims:
-            unsupported_lines = []
             for ucl in unsupported_claims:
                 unsupported_flagged.append(ucl.statement)
                 unsupported_lines.append(f"- Unverified: {ucl.statement} (Reason: {ucl.reasoning})")
 
+        if coverage and (not coverage.is_sufficient or coverage.unresolved_sub_questions):
+            for uq in coverage.unresolved_sub_questions:
+                if uq not in unsupported_flagged:
+                    unsupported_flagged.append(uq)
+                    unsupported_lines.append(f"- Unresolved Sub-Topic: {uq} (Insufficient source coverage)")
+
+        if unsupported_lines:
             sections.append(
                 AnswerSection(
                     title="Data Limitations & Uncorroborated Inquiries",
@@ -236,7 +246,6 @@ class AnswerAssembler:
             formatted_answer = formatted_answer[:self.max_answer_chars] + "... [truncated]"
 
         # 7. Confidence & Grounding Evaluation
-        # Check if all citations in answer strictly exist in sources
         extracted_cites = extract_citations(formatted_answer)
         num_sources = len(sources)
         invalid_cites = [c for c in extracted_cites if c < 1 or c > num_sources]
@@ -248,8 +257,15 @@ class AnswerAssembler:
         else:
             avg_claim_conf = 0.5 if sources else 0.0
 
+        if coverage is not None:
+            cov_weight = 0.3 * coverage.coverage_ratio
+            claim_weight = 0.7 * avg_claim_conf
+            combined_conf = cov_weight + claim_weight
+        else:
+            combined_conf = avg_claim_conf
+
         penalty = 0.2 if conflicts_flagged else 0.0
-        final_conf = max(0.0, min(1.0, round(avg_claim_conf - penalty, 4)))
+        final_conf = max(0.0, min(1.0, round(combined_conf - penalty, 4)))
 
         # Summary line
         summary_text = (
@@ -275,6 +291,8 @@ class AnswerAssembler:
                 "unsupported_count": len(unsupported_claims),
                 "total_citations": len(citations),
                 "invalid_citations_detected": invalid_cites,
+                "coverage_score": coverage.overall_score if coverage else None,
+                "coverage_ratio": coverage.coverage_ratio if coverage else None,
             },
         )
 
@@ -285,6 +303,7 @@ def assemble_answer(
     sources: Sequence[ResearchSource],
     contradictions: Sequence[EvidenceConflict] = (),
     evidence: Sequence[EvidenceItem] = (),
+    coverage: ResearchCoverage | None = None,
     model: ModelInterface | None = None,
     max_answer_chars: int = 8000,
 ) -> AssembledAnswer:
@@ -296,5 +315,6 @@ def assemble_answer(
         sources=sources,
         contradictions=contradictions,
         evidence=evidence,
+        coverage=coverage,
         model=model,
     )

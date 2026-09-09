@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     aura_browser_timeout: float = 15.0
     aura_browser_render_wait: float = 1.0
 
+    # M9.9 Decomposition, Iterative Research & Coverage Configuration
+    aura_max_sub_questions: int = 3
+    aura_max_research_rounds: int = 2
+    aura_max_queries_total: int = 6
+    aura_research_min_coverage_ratio: float = 0.7
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
