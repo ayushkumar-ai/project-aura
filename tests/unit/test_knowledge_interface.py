@@ -42,3 +42,50 @@ def test_orchestrator_accepts_custom_knowledge_interface():
 
     assert "Custom knowledge content" in response.content
     assert "custom_source" in response.content
+
+
+def test_orchestrator_sanitizes_malformed_knowledge_records_from_custom_store():
+    class CustomKnowledgeStore(KnowledgeInterface):
+        def retrieve(
+            self,
+            query: str,
+            top_k: int | None = None,
+        ) -> list[KnowledgeRecord]:
+            return [
+                None,
+                "not a record",
+                123,
+                KnowledgeRecord(content="Valid custom info", source="valid_src"),
+            ]
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        knowledge=CustomKnowledgeStore(),
+    )
+
+    response = orchestrator.run(AURARequest(user_input="custom info"))
+
+    assert "Valid custom info" in response.content
+    assert response.metadata == {"provider": "fake", "policy": "allow"}
+
+
+def test_orchestrator_handles_non_list_knowledge_retrieval_return():
+    class MalformedKnowledgeStore(KnowledgeInterface):
+        def retrieve(
+            self,
+            query: str,
+            top_k: int | None = None,
+        ):
+            return "not a list"
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        knowledge=MalformedKnowledgeStore(),
+    )
+
+    response = orchestrator.run(AURARequest(user_input="test input"))
+
+    assert response.content == "Fake response to: test input"
+    assert response.metadata == {"provider": "fake", "policy": "allow"}

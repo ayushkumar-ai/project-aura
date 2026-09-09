@@ -77,7 +77,11 @@ class Orchestrator:
         if self.memory is not None:
             memory_key = request.metadata.get("memory_key")
 
-            if memory_key is not None:
+            if (
+                memory_key is not None
+                and isinstance(memory_key, str)
+                and memory_key.strip()
+            ):
                 try:
                     memory_value = self.memory.retrieve(memory_key)
                 except Exception:
@@ -87,7 +91,11 @@ class Orchestrator:
                     )
                     raise
 
-                if memory_value is not None:
+                if (
+                    memory_value is not None
+                    and isinstance(memory_value, str)
+                    and memory_value.strip()
+                ):
                     context.state["memory"] = memory_value
 
         return context
@@ -184,7 +192,18 @@ class Orchestrator:
             return []
 
         try:
-            return self.knowledge.retrieve(request.user_input)
+            records = self.knowledge.retrieve(request.user_input)
+            if not isinstance(records, list):
+                return []
+            valid_records = []
+            for record in records:
+                if isinstance(record, KnowledgeRecord):
+                    if (
+                        isinstance(record.content, str)
+                        and record.content.strip()
+                    ):
+                        valid_records.append(record)
+            return valid_records
         except Exception:
             logger.warning(
                 "Knowledge retrieval failed for request %s",

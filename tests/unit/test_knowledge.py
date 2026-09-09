@@ -1,3 +1,5 @@
+import pytest
+
 from knowledge.in_memory import (
     InMemoryKnowledgeStore,
     KnowledgeRecord,
@@ -134,3 +136,66 @@ def test_in_memory_knowledge_store_respects_top_k():
 
     assert len(results) == 2
     assert [record.source for record in results] == ["1", "2"]
+
+
+def test_knowledge_record_rejects_empty_or_non_string_content():
+    with pytest.raises(ValueError):
+        KnowledgeRecord(content="")
+
+    with pytest.raises(ValueError):
+        KnowledgeRecord(content="   ")
+
+    with pytest.raises(ValueError):
+        KnowledgeRecord(content=None)
+
+    with pytest.raises(ValueError):
+        KnowledgeRecord(content=123)
+
+
+def test_knowledge_record_normalizes_empty_source():
+    record1 = KnowledgeRecord(content="Valid content", source="")
+    assert record1.source == "default"
+
+    record2 = KnowledgeRecord(content="Valid content", source="   ")
+    assert record2.source == "default"
+
+    record3 = KnowledgeRecord(content="Valid content", source=None)
+    assert record3.source == "default"
+
+
+def test_in_memory_knowledge_store_filters_malformed_records_on_init():
+    store = InMemoryKnowledgeStore(
+        records=[
+            KnowledgeRecord(content="Valid content", source="test"),
+            None,
+            "raw string",
+            123,
+        ]
+    )
+
+    assert len(store.records) == 1
+    assert store.records[0].content == "Valid content"
+
+
+def test_in_memory_knowledge_store_add_rejects_empty_content():
+    store = InMemoryKnowledgeStore()
+
+    with pytest.raises(ValueError):
+        store.add("")
+
+    with pytest.raises(ValueError):
+        store.add("   ")
+
+    with pytest.raises(ValueError):
+        store.add(None)
+
+
+def test_in_memory_knowledge_store_retrieve_handles_empty_or_non_string_query():
+    store = InMemoryKnowledgeStore(
+        records=[KnowledgeRecord(content="AURA uses Python.", source="docs")]
+    )
+
+    assert store.retrieve("") == []
+    assert store.retrieve("   ") == []
+    assert store.retrieve(None) == []
+    assert store.retrieve(123) == []

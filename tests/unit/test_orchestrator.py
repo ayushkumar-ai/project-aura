@@ -1915,3 +1915,50 @@ def test_orchestrator_handles_model_synthesis_timeout():
         "policy": "allow",
         "error": "model_timeout",
     }
+
+
+def test_orchestrator_ignores_empty_or_non_string_memory_key():
+    memory = InMemoryStore()
+    memory.store("valid_key", "valid_value")
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=memory,
+    )
+
+    request1 = AURARequest(
+        user_input="Hello",
+        metadata={"memory_key": ""},
+    )
+    context1 = orchestrator._build_context(request1)
+    assert "memory" not in context1.state
+
+    request2 = AURARequest(
+        user_input="Hello",
+        metadata={"memory_key": "   "},
+    )
+    context2 = orchestrator._build_context(request2)
+    assert "memory" not in context2.state
+
+
+def test_orchestrator_ignores_empty_or_non_string_memory_value():
+    class BlankMemoryStore(MemoryInterface):
+        def store(self, key: str, value: str) -> None:
+            pass
+
+        def retrieve(self, key: str) -> str | None:
+            return "   "
+
+    orchestrator = Orchestrator(
+        model=FakeModelProvider(),
+        policy=Policy(),
+        memory=BlankMemoryStore(),
+    )
+
+    request = AURARequest(
+        user_input="Hello",
+        metadata={"memory_key": "some_key"},
+    )
+    context = orchestrator._build_context(request)
+    assert "memory" not in context.state
