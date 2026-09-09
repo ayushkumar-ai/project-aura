@@ -109,6 +109,18 @@ class TaintedValue:
             f"step={repr(self.originating_step_id)}, value={val_repr})"
         )
 
+    def __bool__(self) -> bool:
+        return bool(self.raw_value)
+
+    def __hash__(self) -> int:
+        return hash((
+            str(self.raw_value),
+            self.is_untrusted,
+            self.source_type,
+            self.originating_step_id,
+            self.source_urls,
+        ))
+
     def __contains__(self, item: Any) -> bool:
         if hasattr(self.raw_value, "__contains__"):
             return item in self.raw_value
@@ -118,6 +130,11 @@ class TaintedValue:
         if hasattr(self.raw_value, "__getitem__"):
             return self.raw_value[key]
         raise TypeError(f"'{type(self.raw_value).__name__}' object is not subscriptable")
+
+    def __iter__(self):
+        if hasattr(self.raw_value, "__iter__"):
+            return iter(self.raw_value)
+        raise TypeError(f"'{type(self.raw_value).__name__}' object is not iterable")
 
     def __len__(self) -> int:
         if hasattr(self.raw_value, "__len__"):
@@ -134,6 +151,117 @@ class TaintedValue:
                 and self.source_urls == other.source_urls
             )
         return self.raw_value == other
+
+    def __add__(self, other: Any) -> "TaintedValue":
+        res_str = str(self.raw_value) + str(other)
+        return TaintedValue(
+            raw_value=res_str,
+            is_untrusted=self.is_untrusted,
+            source_type=self.source_type,
+            originating_step_id=self.originating_step_id,
+            source_urls=self.source_urls,
+            metadata=dict(self.metadata),
+        )
+
+    def __radd__(self, other: Any) -> "TaintedValue":
+        res_str = str(other) + str(self.raw_value)
+        return TaintedValue(
+            raw_value=res_str,
+            is_untrusted=self.is_untrusted,
+            source_type=self.source_type,
+            originating_step_id=self.originating_step_id,
+            source_urls=self.source_urls,
+            metadata=dict(self.metadata),
+        )
+
+    # String proxy helpers
+    def strip(self, *args: Any, **kwargs: Any) -> "TaintedValue":
+        if isinstance(self.raw_value, str):
+            res = self.raw_value.strip(*args, **kwargs)
+        else:
+            res = str(self.raw_value).strip(*args, **kwargs)
+        return TaintedValue(
+            raw_value=res,
+            is_untrusted=self.is_untrusted,
+            source_type=self.source_type,
+            originating_step_id=self.originating_step_id,
+            source_urls=self.source_urls,
+            metadata=dict(self.metadata),
+        )
+
+    def lower(self) -> "TaintedValue":
+        res = str(self.raw_value).lower()
+        return TaintedValue(
+            raw_value=res,
+            is_untrusted=self.is_untrusted,
+            source_type=self.source_type,
+            originating_step_id=self.originating_step_id,
+            source_urls=self.source_urls,
+            metadata=dict(self.metadata),
+        )
+
+    def upper(self) -> "TaintedValue":
+        res = str(self.raw_value).upper()
+        return TaintedValue(
+            raw_value=res,
+            is_untrusted=self.is_untrusted,
+            source_type=self.source_type,
+            originating_step_id=self.originating_step_id,
+            source_urls=self.source_urls,
+            metadata=dict(self.metadata),
+        )
+
+    def split(self, *args: Any, **kwargs: Any) -> list["TaintedValue"]:
+        parts = str(self.raw_value).split(*args, **kwargs)
+        return [
+            TaintedValue(
+                raw_value=p,
+                is_untrusted=self.is_untrusted,
+                source_type=self.source_type,
+                originating_step_id=self.originating_step_id,
+                source_urls=self.source_urls,
+                metadata=dict(self.metadata),
+            )
+            for p in parts
+        ]
+
+    def replace(self, old: str, new: str, *args: Any, **kwargs: Any) -> "TaintedValue":
+        res = str(self.raw_value).replace(old, new, *args, **kwargs)
+        return TaintedValue(
+            raw_value=res,
+            is_untrusted=self.is_untrusted,
+            source_type=self.source_type,
+            originating_step_id=self.originating_step_id,
+            source_urls=self.source_urls,
+            metadata=dict(self.metadata),
+        )
+
+    def startswith(self, prefix: Any, *args: Any, **kwargs: Any) -> bool:
+        return str(self.raw_value).startswith(prefix, *args, **kwargs)
+
+    def endswith(self, suffix: Any, *args: Any, **kwargs: Any) -> bool:
+        return str(self.raw_value).endswith(suffix, *args, **kwargs)
+
+    # Dict proxy helpers
+    def get(self, key: Any, default: Any = None) -> Any:
+        if isinstance(self.raw_value, dict):
+            return self.raw_value.get(key, default)
+        return default
+
+    def keys(self) -> Any:
+        if isinstance(self.raw_value, dict):
+            return self.raw_value.keys()
+        return [].keys() if hasattr([].keys, "__call__") else ()
+
+    def values(self) -> Any:
+        if isinstance(self.raw_value, dict):
+            return self.raw_value.values()
+        return ()
+
+    def items(self) -> Any:
+        if isinstance(self.raw_value, dict):
+            return self.raw_value.items()
+        return ()
 
 
 def wrap_tainted(

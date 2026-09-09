@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from core.policy import Policy, PolicyDecision
+from core.provenance import TaintedValue
 from core.skill_registry import SkillRegistry
 from core.task_planner import ExecutionPlan, PlanStep
 
@@ -17,7 +18,17 @@ logger = logging.getLogger("aura.approval")
 
 def _canonical_value(val: Any) -> Any:
     """Convert values into deterministic, JSON-serializable primitives."""
-    if isinstance(val, (str, int, float, bool)) or val is None:
+    if isinstance(val, TaintedValue):
+        return {
+            "__tainted__": True,
+            "raw_value": _canonical_value(val.raw_value),
+            "is_untrusted": val.is_untrusted,
+            "source_type": val.source_type,
+            "originating_step_id": val.originating_step_id,
+            "source_urls": sorted(val.source_urls),
+            "metadata": {str(k): _canonical_value(v) for k, v in sorted(val.metadata.items())},
+        }
+    elif isinstance(val, (str, int, float, bool)) or val is None:
         return val
     elif isinstance(val, (list, tuple, set, frozenset)):
         return [_canonical_value(x) for x in val]

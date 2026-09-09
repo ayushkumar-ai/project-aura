@@ -5,12 +5,12 @@ from uuid import uuid4
 
 from core.capability_registry import ModelCapability
 from core.models import AURAResponse
+from core.provenance import TaintedValue, wrap_tainted
 from core.skill_registry import Skill
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
 from research.citations import validate_citations
 from research.service import ResearchService
-from core.provenance import TaintedValue, wrap_tainted
 
 logger = logging.getLogger("aura.research.skill")
 
@@ -86,6 +86,9 @@ def create_research_skill(
         model: ModelInterface | None = ctx.get("model")
         req_id = ctx.get("request_id") or uuid4()
 
+        # Unwrap if input_data is a TaintedValue envelope
+        target_input = input_data.raw_value if isinstance(input_data, TaintedValue) else input_data
+
         # Parse query and options
         query = ""
         max_sources = None
@@ -99,31 +102,31 @@ def create_research_skill(
         max_sub_questions = 3
         synthesize = True
 
-        if isinstance(input_data, str):
-            query = input_data.strip()
-        elif isinstance(input_data, dict):
-            query = str(input_data.get("query", "")).strip()
-            max_sources = input_data.get("max_sources") or input_data.get("max_results")
-            if "fetch" in input_data:
-                fetch_content = bool(input_data["fetch"])
-            if "dynamic" in input_data:
-                use_dynamic = bool(input_data["dynamic"])
-            elif "use_browser" in input_data:
-                use_dynamic = bool(input_data["use_browser"])
-            if "multi_hop" in input_data:
-                multi_hop = bool(input_data["multi_hop"])
-            if "max_hops" in input_data:
-                max_hops = int(input_data["max_hops"])
-            if "max_pages" in input_data:
-                max_pages = int(input_data["max_pages"])
-            if "deep_research" in input_data:
-                deep_research = bool(input_data["deep_research"])
-            if "decompose" in input_data:
-                decompose = bool(input_data["decompose"])
-            if "max_sub_questions" in input_data:
-                max_sub_questions = int(input_data["max_sub_questions"])
-            if "synthesize" in input_data:
-                synthesize = bool(input_data["synthesize"])
+        if isinstance(target_input, str):
+            query = target_input.strip()
+        elif isinstance(target_input, dict):
+            query = str(target_input.get("query", "")).strip()
+            max_sources = target_input.get("max_sources") or target_input.get("max_results")
+            if "fetch" in target_input:
+                fetch_content = bool(target_input["fetch"])
+            if "dynamic" in target_input:
+                use_dynamic = bool(target_input["dynamic"])
+            elif "use_browser" in target_input:
+                use_dynamic = bool(target_input["use_browser"])
+            if "multi_hop" in target_input:
+                multi_hop = bool(target_input["multi_hop"])
+            if "max_hops" in target_input:
+                max_hops = int(target_input["max_hops"])
+            if "max_pages" in target_input:
+                max_pages = int(target_input["max_pages"])
+            if "deep_research" in target_input:
+                deep_research = bool(target_input["deep_research"])
+            if "decompose" in target_input:
+                decompose = bool(target_input["decompose"])
+            if "max_sub_questions" in target_input:
+                max_sub_questions = int(target_input["max_sub_questions"])
+            if "synthesize" in target_input:
+                synthesize = bool(target_input["synthesize"])
         else:
             raise ValueError("input_data must be a string query or dictionary.")
 

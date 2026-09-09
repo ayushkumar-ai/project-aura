@@ -100,6 +100,56 @@ def test_tainted_value_string_and_container_protocol():
     assert len(dict_tv) == 2
 
 
+def test_tainted_value_proxy_methods_and_hashing():
+    """Verify string/dict proxy methods, concatenation, boolean evaluation, and hashing."""
+    str_tv = TaintedValue(raw_value="  Hello World  ", is_untrusted=True, source_urls=("https://x.com",))
+    stripped = str_tv.strip()
+    assert isinstance(stripped, TaintedValue)
+    assert stripped.raw_value == "Hello World"
+    assert stripped.is_untrusted is True
+    assert stripped.source_urls == ("https://x.com",)
+
+    assert str_tv.lower().raw_value == "  hello world  "
+    assert str_tv.upper().raw_value == "  HELLO WORLD  "
+    assert str_tv.startswith("  Hello") is True
+    assert str_tv.endswith("World  ") is True
+
+    split_parts = stripped.split(" ")
+    assert len(split_parts) == 2
+    assert all(isinstance(p, TaintedValue) for p in split_parts)
+    assert split_parts[0].raw_value == "Hello"
+
+    replaced = stripped.replace("World", "AURA")
+    assert replaced.raw_value == "Hello AURA"
+    assert isinstance(replaced, TaintedValue)
+
+    # Addition
+    concat = stripped + " 2.0"
+    assert isinstance(concat, TaintedValue)
+    assert concat.raw_value == "Hello World 2.0"
+
+    rconcat = "Prefix: " + stripped
+    assert isinstance(rconcat, TaintedValue)
+    assert rconcat.raw_value == "Prefix: Hello World"
+
+    # Dict proxy methods
+    dict_tv = TaintedValue(raw_value={"a": 1, "b": 2}, is_untrusted=True)
+    assert dict_tv.get("a") == 1
+    assert dict_tv.get("nonexistent", 99) == 99
+    assert list(dict_tv.keys()) == ["a", "b"]
+    assert list(dict_tv.values()) == [1, 2]
+    assert list(dict_tv.items()) == [("a", 1), ("b", 2)]
+    assert bool(dict_tv) is True
+
+    empty_tv = TaintedValue(raw_value="", is_untrusted=True)
+    assert bool(empty_tv) is False
+
+    # Hashing & Set / Dict key usage
+    tv_set = {str_tv, stripped}
+    assert len(tv_set) == 2
+    assert str_tv in tv_set
+
+
 def test_wrap_and_unwrap_tainted():
     """Verify wrap_tainted and unwrap_tainted across nested structures."""
     tv = wrap_tainted(
@@ -191,6 +241,96 @@ def test_metadata_sanitization_in_tainted_value():
     assert tv.metadata.get("valid_key") == "safe_val"
 
 
+def test_approval_gateway_canonical_fingerprinting_with_tainted_values():
+    """Verify ApprovalGateway deterministically canonicalizes TaintedValues into plan fingerprints."""
+    plan1 = ExecutionPlan(
+        plan_id="plan_fixed",
+        steps=(
+            PlanStep(
+                step_id="s1",
+                skill_name="research_web",
+                input_data={"query": wrap_tainted("quantum computing", source_urls=["https://qc.org"])},
+            ),
+        ),
+    )
+    plan2 = ExecutionPlan(
+        plan_id="plan_fixed",
+        steps=(
+            PlanStep(
+                step_id="s1",
+                skill_name="research_web",
+                input_data={"query": wrap_tainted("quantum computing", source_urls=["https://qc.org"])},
+            ),
+        ),
+    )
+    plan_diff = ExecutionPlan(
+        plan_id="plan_fixed",
+        steps=(
+            PlanStep(
+                step_id="s1",
+                skill_name="research_web",
+                input_data={"query": wrap_tainted("different query", source_urls=["https://qc.org"])},
+            ),
+        ),
+    )
+
+    fp1 = ApprovalGateway.compute_plan_fingerprint(plan1)
+    fp2 = ApprovalGateway.compute_plan_fingerprint(plan2)
+    fp_diff = ApprovalGateway.compute_plan_fingerprint(plan_diff)
+
+    assert fp1 == fp2
+    assert fp1 != fp_diff
+    assert isinstance(fp1, str) and len(fp1) == 64
+
+
+def test_agent_runtime_nested_tainted_schema_validation():
+    """Verify AgentRuntime validates nested tainted dictionaries against input schemas cleanly."""
+    skill_reg = SkillRegistry()
+    skill_reg.register(
+        Skill(
+            name="structured_consumer",
+            description="Consumes structured dictionary input",
+            input_schema={"type": "object", "required": ["topic", "score"]},
+            handler=lambda inp: f"Processed {inp['topic']} with score {inp['score']}",
+        )
+    )
+
+    runtime = AgentRuntime(skill_registry=skill_reg)
+    tainted_dict = {
+        "topic": wrap_tainted("AI safety"),
+        "score": 98,
+    }
+
+    req = AgentRequest(skill_name="structured_consumer", input_data=tainted_dict)
+    res = runtime.execute(req)
+    assert res.success is True
+    assert res.output == "Processed AI safety with score 98"
+
+
+def test_research_skill_accepts_tainted_input_query():
+    """Verify research_web skill accepts string or dict wrapped in TaintedValue."""
+    web_provider = FakeWebProvider(
+        default_items=[SearchItem(title="Cyber Post", url="https://sec.org/post", snippet="Security info")],
+        documents_by_url={
+            "https://sec.org/post": WebDocument(url="https://sec.org/post", title="Cyber Post", content="Security details.")
+        },
+    )
+    service = ResearchService(search_provider=web_provider, fetch_provider=web_provider)
+    skill = create_research_skill(service=service)
+
+    # Tainted string input
+    tainted_str_input = wrap_tainted("cyber security")
+    out1 = skill.handler(tainted_str_input, context={})
+    assert isinstance(out1, TaintedValue)
+    assert "Cyber Post" in str(out1)
+
+    # Tainted dict input
+    tainted_dict_input = wrap_tainted({"query": "cyber security", "synthesize": False})
+    out2 = skill.handler(tainted_dict_input, context={})
+    assert isinstance(out2, TaintedValue)
+    assert "Cyber Post" in str(out2)
+
+
 def test_research_skill_outputs_tainted_value():
     """Verify research_web skill returns a TaintedValue with source URLs populated."""
     web_provider = FakeWebProvider(
@@ -202,7 +342,6 @@ def test_research_skill_outputs_tainted_value():
     service = ResearchService(search_provider=web_provider, fetch_provider=web_provider)
     skill = create_research_skill(service=service)
 
-    # Execute skill handler
     output = skill.handler({"query": "tech"}, context={})
     assert isinstance(output, TaintedValue)
     assert output.is_untrusted is True
