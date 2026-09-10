@@ -41,6 +41,8 @@ def _sanitize_metadata(meta: dict[str, Any]) -> dict[str, Any]:
                 _sanitize_metadata(item) if isinstance(item, dict) else (str(item) if not callable(item) else "")
                 for item in v
             ]
+        elif isinstance(v, TaintedValue):
+            cleaned[k_str] = v
         elif isinstance(v, (str, int, float, bool)) or v is None:
             cleaned[k_str] = v
         else:

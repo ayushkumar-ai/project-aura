@@ -100,6 +100,20 @@ class Settings(BaseSettings):
     aura_event_queue_max_size: int = 1000
     aura_clarification_timeout_seconds: float = 600.0
 
+    # M18 Autonomous Runtime Supervision & Checkpoint Configuration
+    aura_daemon_enabled: bool = False
+    aura_daemon_heartbeat_interval_seconds: float = 1.0
+    aura_daemon_scheduler_interval_seconds: float = 2.0
+    aura_daemon_event_interval_seconds: float = 1.0
+    aura_daemon_lock_prune_interval_seconds: float = 10.0
+    aura_daemon_clarification_interval_seconds: float = 10.0
+    aura_daemon_memory_interval_seconds: float = 300.0
+    aura_daemon_checkpoint_interval_seconds: float = 30.0
+    aura_daemon_shutdown_timeout_seconds: float = 5.0
+    aura_checkpoint_dir: str = ".aura_checkpoints"
+    aura_checkpoint_retention_count: int = 5
+    aura_task_state_storage_dir: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

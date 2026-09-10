@@ -1,0 +1,503 @@
+"""Session State Checkpoint, Persistence & Crash-Recovery Engine (M18).
+
+Provides atomic, thread-safe, and taint-preserving snapshot and recovery for:
+- MultiGoalScheduler (queued and running goal tasks)
+- ResourceBudgetManager (active goals, per-goal usage, sliding window history)
+- SharedResourceLockManager (active resource locks, TTLs, and URI indices)
+- ClarificationGateway (pending clarification requests and user responses)
+- ProactiveEventDispatcher (subscriptions and queued proactive events)
+
+Security Invariant:
+- Sanitizes all metadata and recursively strips forbidden authorization/privilege-escalation keys.
+- Preserves TaintedValue provenance envelopes without untrusted elevation.
+- Supports automatic fallback to previous valid checkpoints if latest checkpoint is corrupted.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import logging
+import os
+import shutil
+import tempfile
+import threading
+import time
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+from core.agent_plan import _canonical_value, _restore_value
+from core.clarification_gateway import ClarificationGateway
+from core.daemon_types import (
+    CheckpointMetadata,
+    FORBIDDEN_PRIVILEGE_KEYS,
+    sanitize_checkpoint_metadata,
+    sanitize_restored_metadata,
+)
+from core.event_dispatcher import ProactiveEventDispatcher
+from core.goal_scheduler import MultiGoalScheduler
+from core.provenance import TaintedValue, is_tainted, unwrap_tainted, wrap_tainted
+from core.resource_budget import ResourceBudgetManager
+from core.resource_locks import SharedResourceLockManager
+from core.scheduling_types import (
+    ClarificationRequest,
+    ClarificationResponse,
+    ClarificationStatus,
+    ClarificationType,
+    EventSubscription,
+    GoalScheduleStatus,
+    LockType,
+    ProactiveEvent,
+    ResourceLock,
+    ScheduledGoalTask,
+)
+
+logger = logging.getLogger("aura.runtime_checkpoint")
+
+
+class RuntimeCheckpointManager:
+    """Manages atomic session snapshot creation, validation, retention, and crash recovery."""
+
+    def __init__(
+        self,
+        checkpoint_dir: str | Path = ".aura_checkpoints",
+        retention_count: int = 5,
+        scheduler: MultiGoalScheduler | None = None,
+        budget_manager: ResourceBudgetManager | None = None,
+        lock_manager: SharedResourceLockManager | None = None,
+        clarification_gateway: ClarificationGateway | None = None,
+        event_dispatcher: ProactiveEventDispatcher | None = None,
+    ) -> None:
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.retention_count = max(1, int(retention_count))
+        self.scheduler = scheduler
+        self.budget_manager = budget_manager
+        self.lock_manager = lock_manager
+        self.clarification_gateway = clarification_gateway
+        self.event_dispatcher = event_dispatcher
+        self._lock = threading.RLock()
+
+    def _pointer_path(self) -> Path:
+        return self.checkpoint_dir / "latest_checkpoint.json"
+
+    def _write_json_atomic(self, path: Path, data: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_file = tempfile.NamedTemporaryFile(
+            "w",
+            dir=str(path.parent),
+            delete=False,
+            encoding="utf-8",
+        )
+        try:
+            json.dump(data, temp_file, indent=2)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+            temp_file.close()
+            shutil.move(temp_file.name, str(path))
+        except Exception:
+            try:
+                temp_file.close()
+            except Exception:
+                pass
+            if os.path.exists(temp_file.name):
+                try:
+                    os.remove(temp_file.name)
+                except Exception:
+                    pass
+            raise
+
+    # ------------------------------------------------------------------
+    # Checkpoint Snapshot
+    # ------------------------------------------------------------------
+    def save_checkpoint(
+        self,
+        checkpoint_id: str | None = None,
+        is_clean_shutdown: bool = False,
+        current_time: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> CheckpointMetadata:
+        """Create and atomically persist a full runtime session checkpoint."""
+        now = current_time if current_time is not None else time.time()
+        cid = str(checkpoint_id).strip() if checkpoint_id else f"ckpt_{int(now)}_{uuid4().hex[:8]}"
+
+        with self._lock:
+            # 1. Capture Scheduler State
+            scheduler_data: list[dict[str, Any]] = []
+            if self.scheduler is not None:
+                with self.scheduler._lock:
+                    for task in self.scheduler._tasks.values():
+                        scheduler_data.append({
+                            "schedule_id": task.schedule_id,
+                            "goal_id": task.goal_id,
+                            "priority": task.priority.value,
+                            "base_weight": task.base_weight,
+                            "effective_priority": task.effective_priority,
+                            "enqueued_at": task.enqueued_at,
+                            "started_at": task.started_at,
+                            "completed_at": task.completed_at,
+                            "status": task.status.value,
+                            "required_resources": list(task.required_resources),
+                            "metadata": sanitize_checkpoint_metadata(_canonical_value(task.metadata)),
+                        })
+
+            # 2. Capture Budget Manager State
+            budget_data: dict[str, Any] = {}
+            if self.budget_manager is not None:
+                with self.budget_manager._lock:
+                    budget_data = {
+                        "active_goals": dict(self.budget_manager._active_goals),
+                        "goal_usage": {
+                            gid: dict(usage)
+                            for gid, usage in self.budget_manager._goal_usage.items()
+                        },
+                        "tool_call_history": [
+                            (float(t), int(c)) for t, c in self.budget_manager._global_tool_call_history
+                        ],
+                        "token_history": [
+                            (float(t), int(c)) for t, c in self.budget_manager._global_token_history
+                        ],
+                    }
+
+            # 3. Capture Lock Manager State
+            locks_data: list[dict[str, Any]] = []
+            if self.lock_manager is not None:
+                with self.lock_manager._lock:
+                    for lk in self.lock_manager._locks.values():
+                        locks_data.append({
+                            "lock_id": lk.lock_id,
+                            "resource_uri": lk.resource_uri,
+                            "lock_type": lk.lock_type.value,
+                            "owner_goal_id": lk.owner_goal_id,
+                            "acquired_at": lk.acquired_at,
+                            "ttl_seconds": lk.ttl_seconds,
+                            "metadata": sanitize_checkpoint_metadata(_canonical_value(lk.metadata)),
+                        })
+
+            # 4. Capture Clarification Gateway State
+            clarification_data: dict[str, Any] = {"requests": [], "responses": []}
+            if self.clarification_gateway is not None:
+                with self.clarification_gateway._lock:
+                    for req in self.clarification_gateway._requests.values():
+                        clarification_data["requests"].append({
+                            "clarification_id": req.clarification_id,
+                            "goal_id": req.goal_id,
+                            "task_id": req.task_id,
+                            "question": req.question,
+                            "options": list(req.options),
+                            "clarification_type": req.clarification_type.value,
+                            "status": req.status.value,
+                            "created_at": req.created_at,
+                            "timeout_seconds": req.timeout_seconds,
+                            "metadata": sanitize_checkpoint_metadata(_canonical_value(req.metadata)),
+                        })
+                    for resp in self.clarification_gateway._responses.values():
+                        clarification_data["responses"].append({
+                            "clarification_id": resp.clarification_id,
+                            "goal_id": resp.goal_id,
+                            "response_data": _canonical_value(resp.response_data),
+                            "status": resp.status.value,
+                            "answered_at": resp.answered_at,
+                            "is_untrusted": resp.is_untrusted,
+                            "metadata": sanitize_checkpoint_metadata(_canonical_value(resp.metadata)),
+                        })
+
+            # 5. Capture Event Dispatcher State
+            events_data: dict[str, Any] = {"subscriptions": [], "queued_events": []}
+            if self.event_dispatcher is not None:
+                with self.event_dispatcher._lock:
+                    for sub in self.event_dispatcher._subscriptions.values():
+                        events_data["subscriptions"].append({
+                            "subscription_id": sub.subscription_id,
+                            "topic_pattern": sub.topic_pattern,
+                            "goal_id": sub.goal_id,
+                            "trigger_id": sub.trigger_id,
+                            "created_at": sub.created_at,
+                            "cooldown_seconds": sub.cooldown_seconds,
+                            "last_dispatched_at": sub.last_dispatched_at,
+                            "metadata": sanitize_checkpoint_metadata(_canonical_value(sub.metadata)),
+                        })
+                    for evt in self.event_dispatcher._event_queue:
+                        events_data["queued_events"].append({
+                            "event_id": evt.event_id,
+                            "topic": evt.topic,
+                            "payload": _canonical_value(evt.payload),
+                            "timestamp": evt.timestamp,
+                            "is_untrusted": evt.is_untrusted,
+                            "source": evt.source,
+                            "metadata": sanitize_checkpoint_metadata(_canonical_value(evt.metadata)),
+                        })
+
+            # Build metadata record
+            ckpt_meta = CheckpointMetadata(
+                checkpoint_id=cid,
+                created_at=now,
+                version="1.0",
+                goal_count=len(scheduler_data),
+                task_count=len(scheduler_data),
+                lock_count=len(locks_data),
+                clarification_count=len(clarification_data["requests"]),
+                event_queue_size=len(events_data["queued_events"]),
+                is_clean_shutdown=is_clean_shutdown,
+                metadata=sanitize_checkpoint_metadata(_canonical_value(metadata or {})),
+            )
+
+            payload = {
+                "metadata": {
+                    "checkpoint_id": ckpt_meta.checkpoint_id,
+                    "created_at": ckpt_meta.created_at,
+                    "version": ckpt_meta.version,
+                    "goal_count": ckpt_meta.goal_count,
+                    "task_count": ckpt_meta.task_count,
+                    "lock_count": ckpt_meta.lock_count,
+                    "clarification_count": ckpt_meta.clarification_count,
+                    "event_queue_size": ckpt_meta.event_queue_size,
+                    "is_clean_shutdown": ckpt_meta.is_clean_shutdown,
+                    "metadata": ckpt_meta.metadata,
+                },
+                "scheduler": scheduler_data,
+                "budget": budget_data,
+                "locks": locks_data,
+                "clarification": clarification_data,
+                "events": events_data,
+            }
+
+            ckpt_path = self.checkpoint_dir / f"{cid}.json"
+            self._write_json_atomic(ckpt_path, payload)
+
+            # Update latest pointer
+            self._write_json_atomic(
+                self._pointer_path(),
+                {"latest_checkpoint_id": cid, "updated_at": now},
+            )
+
+            # Prune old checkpoints
+            self.prune_old_checkpoints()
+
+            logger.info("Saved runtime checkpoint '%s' successfully.", cid)
+            return ckpt_meta
+
+    # ------------------------------------------------------------------
+    # Checkpoint Restoration & Recovery
+    # ------------------------------------------------------------------
+    def list_checkpoints(self) -> list[Path]:
+        """List all valid checkpoint files ordered by creation time (newest first)."""
+        files = [
+            f for f in self.checkpoint_dir.glob("*.json")
+            if f.is_file() and f.name != "latest_checkpoint.json"
+        ]
+        return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+
+    def prune_old_checkpoints(self) -> int:
+        """Retain only the latest N checkpoints and delete older ones."""
+        with self._lock:
+            all_ckpts = self.list_checkpoints()
+            if len(all_ckpts) <= self.retention_count:
+                return 0
+
+            pruned_count = 0
+            for old_file in all_ckpts[self.retention_count:]:
+                try:
+                    old_file.unlink()
+                    pruned_count += 1
+                except Exception as e:
+                    logger.warning("Error deleting old checkpoint '%s': %s", old_file, e)
+            return pruned_count
+
+    def load_checkpoint_data(self, path: Path) -> dict[str, Any]:
+        """Safely load and validate checkpoint JSON."""
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or "metadata" not in data:
+            raise ValueError(f"Invalid checkpoint schema in '{path}'")
+        return data
+
+    def restore_latest_checkpoint(self) -> CheckpointMetadata | None:
+        """Find and restore from the newest valid checkpoint, falling back if corrupted."""
+        with self._lock:
+            ckpts = self.list_checkpoints()
+            if not ckpts:
+                logger.info("No runtime checkpoints found to restore.")
+                return None
+
+            for ckpt_path in ckpts:
+                try:
+                    meta = self.restore_from_file(ckpt_path)
+                    logger.info("Restored runtime state from checkpoint '%s'.", ckpt_path.name)
+                    return meta
+                except Exception as e:
+                    logger.warning("Failed to restore checkpoint '%s': %s. Trying fallback...", ckpt_path.name, e)
+
+            logger.error("All available checkpoints were corrupted or invalid.")
+            return None
+
+    def restore_from_file(self, checkpoint_path: str | Path) -> CheckpointMetadata:
+        """Restore runtime state atomically from a specific checkpoint file."""
+        path = Path(checkpoint_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Checkpoint file not found: {path}")
+
+        data = self.load_checkpoint_data(path)
+        meta_d = data.get("metadata", {})
+        ckpt_meta = CheckpointMetadata(
+            checkpoint_id=str(meta_d.get("checkpoint_id", path.stem)),
+            created_at=float(meta_d.get("created_at", time.time())),
+            version=str(meta_d.get("version", "1.0")),
+            goal_count=int(meta_d.get("goal_count", 0)),
+            task_count=int(meta_d.get("task_count", 0)),
+            lock_count=int(meta_d.get("lock_count", 0)),
+            clarification_count=int(meta_d.get("clarification_count", 0)),
+            event_queue_size=int(meta_d.get("event_queue_size", 0)),
+            is_clean_shutdown=bool(meta_d.get("is_clean_shutdown", False)),
+            metadata=sanitize_restored_metadata(_restore_value(meta_d.get("metadata", {}))),
+        )
+
+        with self._lock:
+            # 1. Restore Scheduler
+            if self.scheduler is not None and "scheduler" in data:
+                with self.scheduler._lock:
+                    self.scheduler._tasks.clear()
+                    from core.goal import GoalPriority
+                    for td in data["scheduler"]:
+                        if not isinstance(td, dict):
+                            continue
+                        clean_meta = sanitize_restored_metadata(_restore_value(td.get("metadata", {})))
+                        # Ensure no authorization flags in restored task metadata
+                        for k in list(clean_meta.keys()):
+                            if k.lower() in FORBIDDEN_PRIVILEGE_KEYS:
+                                del clean_meta[k]
+
+                        task = ScheduledGoalTask(
+                            schedule_id=str(td.get("schedule_id", uuid4())),
+                            goal_id=str(td["goal_id"]),
+                            priority=GoalPriority(td.get("priority", GoalPriority.MEDIUM.value)),
+                            base_weight=float(td.get("base_weight", 1.0)),
+                            effective_priority=float(td.get("effective_priority", 1.0)),
+                            enqueued_at=float(td.get("enqueued_at", time.time())),
+                            started_at=float(td["started_at"]) if td.get("started_at") is not None else None,
+                            completed_at=float(td["completed_at"]) if td.get("completed_at") is not None else None,
+                            status=GoalScheduleStatus(td.get("status", GoalScheduleStatus.QUEUED.value)),
+                            required_resources=tuple(td.get("required_resources", ())),
+                            metadata=clean_meta,
+                        )
+                        self.scheduler._tasks[task.goal_id] = task
+
+            # 2. Restore Budget Manager
+            if self.budget_manager is not None and "budget" in data:
+                with self.budget_manager._lock:
+                    bd = data["budget"]
+                    self.budget_manager._active_goals = {
+                        str(k): float(v) for k, v in bd.get("active_goals", {}).items()
+                    }
+                    self.budget_manager._goal_usage = {
+                        str(k): dict(v) for k, v in bd.get("goal_usage", {}).items()
+                    }
+                    self.budget_manager._global_tool_call_history = [
+                        (float(t), int(c)) for t, c in bd.get("tool_call_history", [])
+                    ]
+                    self.budget_manager._global_token_history = [
+                        (float(t), int(c)) for t, c in bd.get("token_history", [])
+                    ]
+
+            # 3. Restore Locks
+            if self.lock_manager is not None and "locks" in data:
+                with self.lock_manager._lock:
+                    self.lock_manager._locks.clear()
+                    self.lock_manager._resource_index.clear()
+                    for ld in data["locks"]:
+                        if not isinstance(ld, dict):
+                            continue
+                        clean_meta = sanitize_restored_metadata(_restore_value(ld.get("metadata", {})))
+                        lk = ResourceLock(
+                            lock_id=str(ld["lock_id"]),
+                            resource_uri=str(ld["resource_uri"]),
+                            lock_type=LockType(ld.get("lock_type", LockType.SHARED_READ.value)),
+                            owner_goal_id=str(ld["owner_goal_id"]),
+                            acquired_at=float(ld.get("acquired_at", time.time())),
+                            ttl_seconds=float(ld.get("ttl_seconds", 30.0)),
+                            metadata=clean_meta,
+                        )
+                        self.lock_manager._locks[lk.lock_id] = lk
+                        uri = lk.resource_uri
+                        if uri not in self.lock_manager._resource_index:
+                            self.lock_manager._resource_index[uri] = []
+                        self.lock_manager._resource_index[uri].append(lk.lock_id)
+
+            # 4. Restore Clarifications
+            if self.clarification_gateway is not None and "clarification" in data:
+                with self.clarification_gateway._lock:
+                    self.clarification_gateway._requests.clear()
+                    self.clarification_gateway._responses.clear()
+                    cd = data["clarification"]
+                    for req_d in cd.get("requests", []):
+                        if not isinstance(req_d, dict):
+                            continue
+                        clean_meta = sanitize_restored_metadata(_restore_value(req_d.get("metadata", {})))
+                        req = ClarificationRequest(
+                            clarification_id=str(req_d["clarification_id"]),
+                            goal_id=str(req_d["goal_id"]),
+                            task_id=str(req_d["task_id"]),
+                            question=str(req_d["question"]),
+                            options=tuple(req_d.get("options", ())),
+                            clarification_type=ClarificationType(req_d.get("clarification_type", ClarificationType.SINGLE_CHOICE.value)),
+                            status=ClarificationStatus(req_d.get("status", ClarificationStatus.PENDING.value)),
+                            created_at=float(req_d.get("created_at", time.time())),
+                            timeout_seconds=float(req_d.get("timeout_seconds", 600.0)),
+                            metadata=clean_meta,
+                        )
+                        self.clarification_gateway._requests[req.clarification_id] = req
+
+                    for resp_d in cd.get("responses", []):
+                        if not isinstance(resp_d, dict):
+                            continue
+                        clean_meta = sanitize_restored_metadata(_restore_value(resp_d.get("metadata", {})))
+                        resp = ClarificationResponse(
+                            clarification_id=str(resp_d["clarification_id"]),
+                            goal_id=str(resp_d.get("goal_id", "")),
+                            response_data=_restore_value(resp_d.get("response_data")),
+                            status=ClarificationStatus(resp_d.get("status", ClarificationStatus.ANSWERED.value)),
+                            answered_at=float(resp_d.get("answered_at", time.time())),
+                            is_untrusted=bool(resp_d.get("is_untrusted", False)),
+                            metadata=clean_meta,
+                        )
+                        self.clarification_gateway._responses[resp.clarification_id] = resp
+
+            # 5. Restore Events
+            if self.event_dispatcher is not None and "events" in data:
+                with self.event_dispatcher._lock:
+                    self.event_dispatcher._subscriptions.clear()
+                    self.event_dispatcher._event_queue.clear()
+                    ed = data["events"]
+                    for sub_d in ed.get("subscriptions", []):
+                        if not isinstance(sub_d, dict):
+                            continue
+                        clean_meta = sanitize_restored_metadata(_restore_value(sub_d.get("metadata", {})))
+                        sub = EventSubscription(
+                            subscription_id=str(sub_d["subscription_id"]),
+                            topic_pattern=str(sub_d["topic_pattern"]),
+                            goal_id=str(sub_d["goal_id"]),
+                            trigger_id=sub_d.get("trigger_id"),
+                            created_at=float(sub_d.get("created_at", time.time())),
+                            cooldown_seconds=float(sub_d.get("cooldown_seconds", 0.0)),
+                            last_dispatched_at=float(sub_d["last_dispatched_at"]) if sub_d.get("last_dispatched_at") is not None else None,
+                            metadata=clean_meta,
+                        )
+                        self.event_dispatcher._subscriptions[sub.subscription_id] = sub
+
+                    for evt_d in ed.get("queued_events", []):
+                        if not isinstance(evt_d, dict):
+                            continue
+                        clean_meta = sanitize_restored_metadata(_restore_value(evt_d.get("metadata", {})))
+                        evt = ProactiveEvent(
+                            event_id=str(evt_d.get("event_id", uuid4())),
+                            topic=str(evt_d.get("topic", "")),
+                            payload=_restore_value(evt_d.get("payload")),
+                            timestamp=float(evt_d.get("timestamp", time.time())),
+                            is_untrusted=bool(evt_d.get("is_untrusted", False)),
+                            source=str(evt_d.get("source", "external")),
+                            metadata=clean_meta,
+                        )
+                        self.event_dispatcher._event_queue.append(evt)
+
+        return ckpt_meta

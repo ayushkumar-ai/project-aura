@@ -26,3 +26,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Project AURA runtime checkpoints
+.aura_checkpoints/

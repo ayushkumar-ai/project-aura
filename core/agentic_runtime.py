@@ -1,8 +1,10 @@
 import logging
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from app.config import settings
 from core.agent_plan import AgentPlan
 from core.agent_runtime import AgentRuntime
 from core.approval import ApprovalGateway
@@ -18,7 +20,8 @@ from core.policy import Policy
 from core.skill_registry import SkillRegistry
 from core.task_planner import ExecutionPlan, PlanStep, TaskPlanner
 from core.task_state import TaskState, TaskStatus
-from core.task_state_store import TaskStateStore
+from core.task_state_store import InMemoryTaskStateStore, TaskStateStore
+from core.file_task_state_store import FileTaskStateStore
 from core.workflow_executor import WorkflowExecutor, WorkflowResult
 from core.memory_manager import MemoryManager
 from core.meta_policy import MetaPolicyEngine
@@ -31,6 +34,14 @@ from core.goal_scheduler import MultiGoalScheduler
 from core.event_dispatcher import ProactiveEventDispatcher
 from core.clarification_gateway import ClarificationGateway
 from core.scheduling_types import ProactiveEvent
+from core.daemon_types import (
+    CheckpointMetadata,
+    DaemonStatus,
+    SupervisorConfig,
+    SupervisorTelemetry,
+)
+from core.runtime_checkpoint import RuntimeCheckpointManager
+from core.runtime_supervisor import AutonomousSupervisor
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
 
@@ -79,6 +90,9 @@ class AgenticRuntime:
         scheduler: MultiGoalScheduler | None = None,
         event_dispatcher: ProactiveEventDispatcher | None = None,
         clarification_gateway: ClarificationGateway | None = None,
+        checkpoint_manager: RuntimeCheckpointManager | None = None,
+        supervisor: AutonomousSupervisor | None = None,
+        supervisor_config: SupervisorConfig | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -108,6 +122,12 @@ class AgenticRuntime:
             raise TypeError("policy must be an instance of Policy or None.")
         if memory_manager is not None and not isinstance(memory_manager, MemoryManager):
             raise TypeError("memory_manager must be an instance of MemoryManager or None.")
+        if checkpoint_manager is not None and not isinstance(checkpoint_manager, RuntimeCheckpointManager):
+            raise TypeError("checkpoint_manager must be an instance of RuntimeCheckpointManager or None.")
+        if supervisor is not None and not isinstance(supervisor, AutonomousSupervisor):
+            raise TypeError("supervisor must be an instance of AutonomousSupervisor or None.")
+        if supervisor_config is not None and not isinstance(supervisor_config, SupervisorConfig):
+            raise TypeError("supervisor_config must be an instance of SupervisorConfig or None.")
         if not isinstance(max_replans, int) or max_replans < 0:
             raise ValueError("max_replans must be a non-negative integer.")
         if isinstance(default_mode, str):
@@ -179,7 +199,17 @@ class AgenticRuntime:
         self.model = model
         self.tool_executor = tool_executor
         self.policy = policy
-        self.state_store = state_store
+
+        # Determine effective state_store (M10/M18)
+        if state_store is not None:
+            self.state_store = state_store
+        else:
+            task_dir = getattr(settings, "aura_task_state_storage_dir", "")
+            if task_dir:
+                self.state_store = FileTaskStateStore(task_dir)
+            else:
+                self.state_store = InMemoryTaskStateStore()
+
         self.approval_gateway = approval_gateway
         self.max_replans = max_replans
         self.default_timeout = default_timeout
@@ -311,6 +341,48 @@ class AgenticRuntime:
                 event_dispatcher=self.event_dispatcher,
                 clarification_gateway=self.clarification_gateway,
             )
+
+        # Runtime Checkpoint Manager & Supervisor Daemon (M18)
+        ckpt_dir = getattr(settings, "aura_checkpoint_dir", ".aura_checkpoints")
+        ckpt_ret = getattr(settings, "aura_checkpoint_retention_count", 5)
+        self.checkpoint_manager = (
+            checkpoint_manager
+            if checkpoint_manager is not None
+            else RuntimeCheckpointManager(
+                checkpoint_dir=ckpt_dir,
+                retention_count=ckpt_ret,
+                scheduler=self.scheduler,
+                budget_manager=self.budget_manager,
+                lock_manager=self.lock_manager,
+                clarification_gateway=self.clarification_gateway,
+                event_dispatcher=self.event_dispatcher,
+            )
+        )
+        self.supervisor_config = (
+            supervisor_config
+            if supervisor_config is not None
+            else SupervisorConfig(
+                checkpoint_dir=ckpt_dir,
+                checkpoint_retention_count=ckpt_ret,
+                shutdown_timeout_seconds=getattr(settings, "aura_daemon_shutdown_timeout_seconds", 5.0),
+                heartbeat_interval_seconds=getattr(settings, "aura_daemon_heartbeat_interval_seconds", 1.0),
+                scheduler_interval_seconds=getattr(settings, "aura_daemon_scheduler_interval_seconds", 2.0),
+                event_interval_seconds=getattr(settings, "aura_daemon_event_interval_seconds", 1.0),
+                lock_prune_interval_seconds=getattr(settings, "aura_daemon_lock_prune_interval_seconds", 10.0),
+                clarification_interval_seconds=getattr(settings, "aura_daemon_clarification_interval_seconds", 10.0),
+                memory_interval_seconds=getattr(settings, "aura_daemon_memory_interval_seconds", 300.0),
+                checkpoint_interval_seconds=getattr(settings, "aura_daemon_checkpoint_interval_seconds", 30.0),
+            )
+        )
+        self.supervisor = (
+            supervisor
+            if supervisor is not None
+            else AutonomousSupervisor(
+                runtime=self,
+                config=self.supervisor_config,
+                checkpoint_manager=self.checkpoint_manager,
+            )
+        )
 
     def execute(
         self,
@@ -635,3 +707,57 @@ class AgenticRuntime:
         for g in self.goal_engine.list_goals(status=GoalStatus.ACTIVE):
             self.scheduler.schedule_goal(g.goal_id, priority=g.priority)
         return self.scheduler.step_next_batch(self.goal_engine, max_batch_size=max_batch_size)
+
+    # ---------------------------------------------------------
+    # Runtime Supervision & Checkpoint Management (M18)
+    # ---------------------------------------------------------
+    def get_checkpoint_manager(self) -> RuntimeCheckpointManager:
+        """Return the runtime's session checkpoint manager."""
+        return self.checkpoint_manager
+
+    def get_supervisor(self) -> AutonomousSupervisor:
+        """Return the runtime's autonomous supervisor daemon instance."""
+        return self.supervisor
+
+    def start_daemon(self, auto_recover: bool | None = None) -> bool:
+        """Start the background supervisor daemon."""
+        return self.supervisor.start(auto_recover=auto_recover)
+
+    def stop_daemon(self, timeout: float | None = None) -> bool:
+        """Gracefully stop the background supervisor daemon."""
+        return self.supervisor.stop(timeout=timeout)
+
+    def is_daemon_running(self) -> bool:
+        """Check if the supervisor daemon is actively running."""
+        return self.supervisor.is_running()
+
+    @property
+    def daemon_status(self) -> DaemonStatus:
+        """Return the current lifecycle status of the supervisor daemon."""
+        return self.supervisor.status
+
+    def get_supervisor_telemetry(self) -> SupervisorTelemetry:
+        """Return an aggregated telemetry and health diagnostics snapshot."""
+        return self.supervisor.get_telemetry()
+
+    def create_checkpoint(
+        self,
+        checkpoint_id: str | None = None,
+        is_clean_shutdown: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ) -> CheckpointMetadata:
+        """Create and persist an atomic runtime session checkpoint."""
+        return self.checkpoint_manager.save_checkpoint(
+            checkpoint_id=checkpoint_id,
+            is_clean_shutdown=is_clean_shutdown,
+            metadata=metadata,
+        )
+
+    def restore_checkpoint(
+        self,
+        checkpoint_path: str | Path | None = None,
+    ) -> CheckpointMetadata | None:
+        """Restore runtime state from a specific checkpoint or the latest valid checkpoint."""
+        if checkpoint_path is not None:
+            return self.checkpoint_manager.restore_from_file(checkpoint_path)
+        return self.checkpoint_manager.restore_latest_checkpoint()

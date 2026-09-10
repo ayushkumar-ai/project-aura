@@ -113,10 +113,14 @@ class MultiGoalScheduler:
         now = current_time if current_time is not None else time.time()
         with self._lock:
             queued = [t for t in self._tasks.values() if t.status == GoalScheduleStatus.QUEUED]
-
             updated_tasks: list[ScheduledGoalTask] = []
             for t in queued:
-                goal_obj = goal_engine.get_goal(t.goal_id) if goal_engine and hasattr(goal_engine, "get_goal") else None
+                goal_obj = None
+                if goal_engine and hasattr(goal_engine, "get_goal"):
+                    try:
+                        goal_obj = goal_engine.get_goal(t.goal_id)
+                    except Exception:
+                        goal_obj = None
                 eff_p = self.compute_effective_priority(t, goal=goal_obj, current_time=now)
                 upd = t.with_status(GoalScheduleStatus.QUEUED, effective_priority=eff_p)
                 self._tasks[t.goal_id] = upd
