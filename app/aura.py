@@ -173,3 +173,152 @@ class AURA:
             "last_checkpoint_timestamp": telemetry.last_checkpoint_timestamp,
             "last_error": telemetry.last_error,
         }
+    # ---------------------------------------------------------
+    # M19 Multi-Session, Real-Time Streaming & Operator Bridge
+    # ---------------------------------------------------------
+    def create_session(
+        self,
+        session_id: str | None = None,
+        user_id: str = "default_user",
+        metadata: dict[str, Any] | None = None,
+        ttl_seconds: float | None = None,
+    ) -> Any:
+        """Create a new isolated session context."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.create_session(
+            session_id=session_id,
+            user_id=user_id,
+            metadata=metadata,
+            ttl_seconds=ttl_seconds,
+        )
+
+    def get_session(self, session_id: str) -> Any:
+        """Retrieve an existing session context by ID."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.get_session(session_id=session_id)
+
+    def close_session(self, session_id: str, reason: str = "normal") -> bool:
+        """Close an active session."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.close_session(session_id=session_id, reason=reason)
+
+    def list_sessions(self, user_id: str | None = None, active_only: bool = False) -> list[Any]:
+        """List metadata for registered sessions."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.get_session_manager().list_sessions(
+            user_id=user_id,
+            active_only=active_only,
+        )
+
+    def get_session_status(self, session_id: str) -> dict[str, Any]:
+        """Inspect the status and active bindings of a specific session."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        ctx = self.agentic_runtime.get_session(session_id=session_id)
+        if ctx is None:
+            return {"status": "not_found", "session_id": session_id}
+        return {
+            "session_id": ctx.session_id,
+            "user_id": ctx.metadata.user_id,
+            "status": ctx.status.value,
+            "active_goals": list(ctx.active_goal_ids),
+            "active_tasks": list(ctx.active_task_ids),
+            "turn_count": len(ctx.history.turns),
+            "created_at": ctx.metadata.created_at,
+            "last_accessed_at": ctx.metadata.last_accessed_at,
+        }
+
+    def send_message_stream(
+        self,
+        user_input: str,
+        session_id: str = "default",
+        user_id: str = "default_user",
+        mode: Any = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """Stream real-time tokens and execution progress for a session message."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.send_message_stream(
+            message=user_input,
+            session_id=session_id,
+            user_id=user_id,
+            mode=mode,
+            metadata=metadata,
+        )
+
+    def submit_session_goal(
+        self,
+        title: str,
+        session_id: str = "default",
+        priority: Any = None,
+        metadata: dict[str, Any] | None = None,
+        parent_goal_id: str | None = None,
+        depends_on_goal_ids: Sequence[str] = (),
+    ) -> Any:
+        """Submit and schedule a goal bound to a specific session."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.submit_session_goal(
+            title=title,
+            session_id=session_id,
+            priority=priority,
+            metadata=metadata,
+            parent_goal_id=parent_goal_id,
+            depends_on_goal_ids=depends_on_goal_ids,
+        )
+
+    def approve_action(
+        self,
+        approval_id: str,
+        session_id: str = "default",
+        operator_id: str = "operator",
+        rationale: str = "",
+    ) -> Any:
+        """Submit an operator approval for a pending sensitive action."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.approve_action(
+            approval_id=approval_id,
+            session_id=session_id,
+            operator_id=operator_id,
+            rationale=rationale,
+        )
+
+    def answer_session_clarification(
+        self,
+        clarification_id: str,
+        response_data: Any,
+        session_id: str = "default",
+        operator_id: str = "operator",
+    ) -> Any:
+        """Submit an operator response to a pending clarification via the Operator Bridge."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.answer_clarification(
+            clarification_id=clarification_id,
+            response_data=response_data,
+            session_id=session_id,
+            operator_id=operator_id,
+        )
+
+    def subscribe_events(
+        self,
+        subscriber_id: str | None = None,
+        session_id: str | None = None,
+        event_types: set[Any] | None = None,
+        last_event_id: str | None = None,
+    ) -> tuple[str, Any]:
+        """Subscribe to real-time events on the AURA streaming gateway."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.subscribe_stream(
+            subscriber_id=subscriber_id,
+            session_id=session_id,
+            event_types=event_types,
+            last_event_id=last_event_id,
+        )

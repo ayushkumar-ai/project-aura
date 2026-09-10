@@ -114,6 +114,17 @@ class Settings(BaseSettings):
     aura_checkpoint_retention_count: int = 5
     aura_task_state_storage_dir: str = ""
 
+    # M19 Multi-Session, Real-Time Streaming & Operator Bridge Configuration
+    aura_session_ttl_seconds: float = 3600.0
+    aura_max_active_sessions: int = 100
+    aura_max_session_history_turns: int = 100
+    aura_session_storage_dir: str = ""
+    aura_streaming_queue_max_size: int = 1000
+    aura_streaming_replay_buffer_size: int = 1000
+    aura_operator_timeout_seconds: float = 300.0
+    aura_session_lock_timeout_seconds: float = 10.0
+    aura_max_event_payload_chars: int = 50000
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

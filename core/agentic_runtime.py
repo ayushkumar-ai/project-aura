@@ -42,6 +42,22 @@ from core.daemon_types import (
 )
 from core.runtime_checkpoint import RuntimeCheckpointManager
 from core.runtime_supervisor import AutonomousSupervisor
+from core.session_types import (
+    SessionContext,
+    SessionMetadata,
+    SessionStatus,
+    StreamEvent,
+    StreamEventType,
+    OperatorAction,
+    OperatorActionType,
+    OperatorResolution,
+    validate_session_id,
+)
+from core.session_store import SessionStore, InMemorySessionStore, FileSessionStore
+from core.session_manager import SessionManager
+from core.streaming_gateway import StreamingGateway
+from core.operator_bridge import OperatorBridge
+
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
 
@@ -93,6 +109,10 @@ class AgenticRuntime:
         checkpoint_manager: RuntimeCheckpointManager | None = None,
         supervisor: AutonomousSupervisor | None = None,
         supervisor_config: SupervisorConfig | None = None,
+        session_store: SessionStore | None = None,
+        session_manager: SessionManager | None = None,
+        streaming_gateway: StreamingGateway | None = None,
+        operator_bridge: OperatorBridge | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -128,6 +148,14 @@ class AgenticRuntime:
             raise TypeError("supervisor must be an instance of AutonomousSupervisor or None.")
         if supervisor_config is not None and not isinstance(supervisor_config, SupervisorConfig):
             raise TypeError("supervisor_config must be an instance of SupervisorConfig or None.")
+        if session_store is not None and not isinstance(session_store, SessionStore):
+            raise TypeError("session_store must be an instance of SessionStore or None.")
+        if session_manager is not None and not isinstance(session_manager, SessionManager):
+            raise TypeError("session_manager must be an instance of SessionManager or None.")
+        if streaming_gateway is not None and not isinstance(streaming_gateway, StreamingGateway):
+            raise TypeError("streaming_gateway must be an instance of StreamingGateway or None.")
+        if operator_bridge is not None and not isinstance(operator_bridge, OperatorBridge):
+            raise TypeError("operator_bridge must be an instance of OperatorBridge or None.")
         if not isinstance(max_replans, int) or max_replans < 0:
             raise ValueError("max_replans must be a non-negative integer.")
         if isinstance(default_mode, str):
@@ -381,6 +409,46 @@ class AgenticRuntime:
                 runtime=self,
                 config=self.supervisor_config,
                 checkpoint_manager=self.checkpoint_manager,
+            )
+        )
+
+        # Multi-Session & Streaming Gateway (M19)
+        sess_dir = getattr(settings, "aura_session_storage_dir", "")
+        if session_store is not None:
+            self.session_store = session_store
+        elif sess_dir:
+            self.session_store = FileSessionStore(sess_dir)
+        else:
+            self.session_store = InMemorySessionStore()
+
+        self.session_manager = (
+            session_manager
+            if session_manager is not None
+            else SessionManager(
+                store=self.session_store,
+                default_ttl_seconds=getattr(settings, "aura_session_ttl_seconds", 3600.0),
+                max_active_sessions=getattr(settings, "aura_max_active_sessions", 100),
+                max_history_turns=getattr(settings, "aura_max_session_history_turns", 100),
+            )
+        )
+        self.streaming_gateway = (
+            streaming_gateway
+            if streaming_gateway is not None
+            else StreamingGateway(
+                max_queue_size=getattr(settings, "aura_streaming_queue_max_size", 1000),
+                replay_buffer_size=getattr(settings, "aura_streaming_replay_buffer_size", 1000),
+                max_payload_chars=getattr(settings, "aura_max_event_payload_chars", 50000),
+            )
+        )
+        self.operator_bridge = (
+            operator_bridge
+            if operator_bridge is not None
+            else OperatorBridge(
+                approval_gateway=self.approval_gateway,
+                clarification_gateway=self.clarification_gateway,
+                streaming_gateway=self.streaming_gateway,
+                supervisor=self.supervisor,
+                default_operator_timeout=getattr(settings, "aura_operator_timeout_seconds", 300.0),
             )
         )
 
@@ -761,3 +829,211 @@ class AgenticRuntime:
         if checkpoint_path is not None:
             return self.checkpoint_manager.restore_from_file(checkpoint_path)
         return self.checkpoint_manager.restore_latest_checkpoint()
+
+    # ---------------------------------------------------------
+    # Multi-Session, Real-Time Streaming & Operator Bridge (M19)
+    # ---------------------------------------------------------
+    def get_session_manager(self) -> SessionManager:
+        """Return the multi-session manager instance."""
+        return self.session_manager
+
+    def get_streaming_gateway(self) -> StreamingGateway:
+        """Return the real-time event streaming gateway."""
+        return self.streaming_gateway
+
+    def get_operator_bridge(self) -> OperatorBridge:
+        """Return the human-in-the-loop operator bridge."""
+        return self.operator_bridge
+
+    def create_session(
+        self,
+        session_id: str | None = None,
+        user_id: str = "default_user",
+        metadata: dict[str, Any] | None = None,
+        ttl_seconds: float | None = None,
+    ) -> SessionContext:
+        """Create a new isolated session context."""
+        return self.session_manager.create_session(
+            session_id=session_id,
+            user_id=user_id,
+            metadata=metadata,
+            ttl_seconds=ttl_seconds,
+        )
+
+    def get_session(self, session_id: str) -> SessionContext | None:
+        """Retrieve an existing session context by ID."""
+        return self.session_manager.get_session(session_id=session_id)
+
+    def close_session(self, session_id: str, reason: str = "normal") -> bool:
+        """Close an active session and emit SESSION_CLOSED event."""
+        res = self.session_manager.close_session(session_id=session_id, reason=reason)
+        if res:
+            self.streaming_gateway.create_and_publish(
+                session_id=session_id,
+                event_type=StreamEventType.SESSION_CLOSED,
+                data={"reason": reason},
+            )
+        return res
+
+    def submit_session_goal(
+        self,
+        title: str,
+        session_id: str = "default",
+        priority: Any = None,
+        metadata: dict[str, Any] | None = None,
+        parent_goal_id: str | None = None,
+        depends_on_goal_ids: tuple[str, ...] | list[str] = (),
+    ) -> Goal:
+        """Submit a goal bound to a specific session and register it with the scheduler."""
+        from core.goal import GoalPriority
+        eff_priority = priority if priority is not None else GoalPriority.MEDIUM
+        ctx = self.session_manager.get_or_create_session(session_id=session_id)
+
+        goal = self.goal_engine.create_goal(
+            title=title,
+            priority=eff_priority,
+            metadata=metadata,
+            parent_goal_id=parent_goal_id,
+            depends_on_goal_ids=depends_on_goal_ids,
+        )
+        self.session_manager.bind_goal(session_id=session_id, goal_id=goal.goal_id)
+        self.scheduler.schedule_goal(goal.goal_id, priority=goal.priority)
+
+        self.streaming_gateway.create_and_publish(
+            session_id=session_id,
+            event_type=StreamEventType.GOAL_UPDATED,
+            data={"goal_id": goal.goal_id, "title": goal.title, "status": goal.status.value, "priority": str(goal.priority)},
+            goal_id=goal.goal_id,
+        )
+        return goal
+
+    def approve_action(
+        self,
+        approval_id: str,
+        session_id: str = "default",
+        operator_id: str = "operator",
+        rationale: str = "",
+    ) -> OperatorResolution:
+        """Submit an operator approval action."""
+        action = OperatorAction(
+            session_id=session_id,
+            request_id=approval_id,
+            action_type=OperatorActionType.APPROVE,
+            operator_id=operator_id,
+            decision_rationale=rationale,
+        )
+        return self.operator_bridge.submit_action(action)
+
+    def answer_clarification(
+        self,
+        clarification_id: str,
+        response_data: Any,
+        session_id: str = "default",
+        operator_id: str = "operator",
+    ) -> OperatorResolution:
+        """Submit an operator response to a pending clarification request."""
+        action = OperatorAction(
+            session_id=session_id,
+            request_id=clarification_id,
+            action_type=OperatorActionType.CLARIFY,
+            operator_id=operator_id,
+            clarification_payload=response_data if isinstance(response_data, dict) else {"response": response_data},
+        )
+        return self.operator_bridge.submit_action(action)
+
+    def publish_stream_event(self, event: StreamEvent) -> int:
+        """Publish an event to active stream subscribers."""
+        return self.streaming_gateway.publish(event)
+
+    def subscribe_stream(
+        self,
+        subscriber_id: str | None = None,
+        session_id: str | None = None,
+        event_types: set[StreamEventType] | None = None,
+        last_event_id: str | None = None,
+    ) -> tuple[str, Any]:
+        """Subscribe to real-time events on the streaming gateway."""
+        return self.streaming_gateway.subscribe(
+            subscriber_id=subscriber_id,
+            session_id=session_id,
+            event_types=event_types,
+            last_event_id=last_event_id,
+        )
+
+    def send_message_stream(
+        self,
+        message: str,
+        session_id: str = "default",
+        user_id: str = "default_user",
+        mode: ExecutionMode | str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ):
+        """Execute a message or task in the context of an isolated session, streaming progress events and updating session history."""
+        ctx = self.session_manager.get_or_create_session(session_id=session_id, user_id=user_id)
+
+        # 1. Emit STEP_STARTED
+        step_event = self.streaming_gateway.create_and_publish(
+            session_id=session_id,
+            event_type=StreamEventType.STEP_STARTED,
+            data={"user_input": message, "mode": str(mode or self.default_mode)},
+        )
+        yield step_event
+
+        try:
+            eff_mode = mode if mode is not None else self.default_mode
+            result = self.execute(
+                task=message,
+                mode=eff_mode,
+                metadata=metadata,
+            )
+
+            if isinstance(result, WorkflowResult):
+                output_text = str(result.final_output or (result.error if not result.success else "Task completed successfully."))
+                tool_name = None
+                tool_res = None
+            elif isinstance(result, AutonomousAgentResult):
+                output_text = str(result.final_answer or (result.error if not result.success else "Goal accomplished."))
+                tool_name = None
+                tool_res = None
+            elif isinstance(result, GoalEvaluationResult):
+                output_text = f"Goal {result.goal_id} evaluated with status {result.status}."
+                tool_name = None
+                tool_res = None
+            else:
+                output_text = str(result)
+                tool_name = None
+                tool_res = None
+
+            # 2. Emit TOKEN_CHUNK
+            token_event = self.streaming_gateway.create_and_publish(
+                session_id=session_id,
+                event_type=StreamEventType.TOKEN_CHUNK,
+                data={"chunk": output_text},
+            )
+            yield token_event
+
+            # 3. Add to session history
+            self.session_manager.add_turn(
+                session_id=session_id,
+                user_input=message,
+                assistant_output=output_text,
+                tool_name=tool_name,
+                tool_result=tool_res,
+            )
+
+            # 4. Emit STEP_COMPLETED
+            completed_event = self.streaming_gateway.create_and_publish(
+                session_id=session_id,
+                event_type=StreamEventType.STEP_COMPLETED,
+                data={"result": output_text, "success": True},
+            )
+            yield completed_event
+
+        except Exception as e:
+            error_event = self.streaming_gateway.create_and_publish(
+                session_id=session_id,
+                event_type=StreamEventType.ERROR,
+                data={"error": str(e)},
+            )
+            yield error_event
+            raise
