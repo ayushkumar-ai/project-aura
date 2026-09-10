@@ -122,6 +122,7 @@ class TaskPlanner:
         model: ModelInterface | None = None,
         model_router: ModelRouter | None = None,
         memory_manager: Any | None = None,
+        heuristic_calibrator: Any | None = None,
     ):
         if not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry.")
@@ -134,6 +135,7 @@ class TaskPlanner:
         self.model = model
         self.model_router = model_router
         self.memory_manager = memory_manager
+        self.heuristic_calibrator = heuristic_calibrator
 
     def create_plan(
         self,
@@ -169,11 +171,23 @@ class TaskPlanner:
             if mem_text:
                 mem_section = f"\nRelevant Memory & Context:\n{mem_text}\n"
 
+        heuristics_section = ""
+        if self.heuristic_calibrator is not None and hasattr(self.heuristic_calibrator, "list_promoted_rules"):
+            promoted = self.heuristic_calibrator.list_promoted_rules()
+            usable = [
+                r for r in promoted
+                if not hasattr(self.heuristic_calibrator, "is_rule_usable") or self.heuristic_calibrator.is_rule_usable(r.rule_id)
+            ]
+            if usable:
+                rules_text = "\n".join(f"- Rule {r.rule_id}: {r.trigger_condition} (Confidence: {r.calibrated_confidence:.2f})" for r in usable[:5])
+                heuristics_section = f"\nCalibrated Heuristic Rules (PROMOTED):\n{rules_text}\n"
+
         return (
             "You are a task planner in AURA.\n"
             "Decompose the following task into an execution plan using ONLY the available skills.\n\n"
             f"Available Skills:\n{skills_text}\n\n"
             f"{mem_section}"
+            f"{heuristics_section}"
             f"Task to accomplish:\n{task.strip()}\n\n"
             "Output the execution plan as a JSON object with a 'steps' list where each step has:\n"
             "- 'step_id': unique string (e.g. 'step_1')\n"
@@ -215,11 +229,23 @@ class TaskPlanner:
             if mem_text:
                 mem_section = f"\nRelevant Memory & Context:\n{mem_text}\n"
 
+        heuristics_section = ""
+        if self.heuristic_calibrator is not None and hasattr(self.heuristic_calibrator, "list_promoted_rules"):
+            promoted = self.heuristic_calibrator.list_promoted_rules()
+            usable = [
+                r for r in promoted
+                if not hasattr(self.heuristic_calibrator, "is_rule_usable") or self.heuristic_calibrator.is_rule_usable(r.rule_id)
+            ]
+            if usable:
+                rules_text = "\n".join(f"- Rule {r.rule_id}: {r.trigger_condition} (Confidence: {r.calibrated_confidence:.2f})" for r in usable[:5])
+                heuristics_section = f"\nCalibrated Heuristic Rules (PROMOTED):\n{rules_text}\n"
+
         return (
             "You are an adaptive task planner in AURA.\n"
             "A multi-step workflow failed during execution. Create a replacement execution plan to achieve the task.\n\n"
             f"Available Skills:\n{skills_text}\n\n"
             f"{mem_section}"
+            f"{heuristics_section}"
             f"Overall Task Goal:\n{context.task.strip()}\n\n"
             f"Execution Failure Context:\n"
             f"- Completed Steps (will not be re-executed): {completed_desc}\n"

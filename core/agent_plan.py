@@ -333,11 +333,11 @@ class AgentPlan:
         return any(s.step_id == clean_id for s in self.steps)
 
     def get_ready_steps(self) -> tuple[AgentPlanStep, ...]:
-        """Return all steps that are pending/ready and have all dependencies satisfied."""
+        """Return all steps that are pending/ready/paused and have all dependencies satisfied."""
         completed_ids = {s.step_id for s in self.steps if s.status == StepStatus.SUCCEEDED}
         ready: list[AgentPlanStep] = []
         for s in self.steps:
-            if s.status in (StepStatus.PENDING, StepStatus.READY):
+            if s.status in (StepStatus.PENDING, StepStatus.READY, StepStatus.PAUSED):
                 if all(dep in completed_ids for dep in s.dependencies):
                     ready.append(s)
         return tuple(ready)

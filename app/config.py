@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     aura_rule_deprecation_failure_rate: float = 0.60
     aura_lifecycle_batch_timeout_seconds: float = 10.0
 
+    # M16 Goal Strategy Adaptation, Meta-Policy & Stagnation Configuration
+    aura_max_strategy_retries: int = 3
+    aura_max_goal_stagnation_evaluations: int = 5
+    aura_max_strategy_history_per_goal: int = 10
+    aura_strategy_selection_timeout_seconds: float = 5.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

@@ -21,6 +21,10 @@ from core.task_state import TaskState, TaskStatus
 from core.task_state_store import TaskStateStore
 from core.workflow_executor import WorkflowExecutor, WorkflowResult
 from core.memory_manager import MemoryManager
+from core.meta_policy import MetaPolicyEngine
+from core.strategy_lineage import StrategyLineageStore
+from core.goal_adapter import GoalAdapter
+from core.goal_stagnation import GoalStagnationMonitor
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
 
@@ -60,6 +64,10 @@ class AgenticRuntime:
         reflector: Any | None = None,
         consolidator: Any | None = None,
         calibrator: Any | None = None,
+        meta_policy: MetaPolicyEngine | None = None,
+        strategy_lineage: StrategyLineageStore | None = None,
+        goal_adapter: GoalAdapter | None = None,
+        stagnation_monitor: GoalStagnationMonitor | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -110,6 +118,23 @@ class AgenticRuntime:
             else MemoryConsolidator(
                 memory_store=getattr(self.memory_manager, "store", None),
                 memory_manager=self.memory_manager,
+            )
+        )
+        self.strategy_lineage = strategy_lineage if strategy_lineage is not None else StrategyLineageStore()
+        self.meta_policy = (
+            meta_policy
+            if meta_policy is not None
+            else MetaPolicyEngine(
+                lineage_store=self.strategy_lineage,
+                calibrator=self.calibrator,
+            )
+        )
+        self.stagnation_monitor = (
+            stagnation_monitor
+            if stagnation_monitor is not None
+            else GoalStagnationMonitor(
+                lineage_store=self.strategy_lineage,
+                meta_policy=self.meta_policy,
             )
         )
 
@@ -172,6 +197,7 @@ class AgenticRuntime:
                 model=self.model,
                 model_router=self.model_router,
                 memory_manager=self.memory_manager,
+                heuristic_calibrator=self.calibrator,
             )
 
         # Resolve or create WorkflowExecutor (M8)
@@ -217,10 +243,31 @@ class AgenticRuntime:
         else:
             self.goal_store = InMemoryGoalStore()
 
+        self.goal_adapter = (
+            goal_adapter
+            if goal_adapter is not None
+            else GoalAdapter(
+                meta_policy=self.meta_policy,
+                lineage_store=self.strategy_lineage,
+                planner=self.planner,
+                heuristic_calibrator=self.calibrator,
+            )
+        )
+
         if goal_engine is not None:
             self.goal_engine = goal_engine
             if self.goal_engine.memory_manager is None:
                 self.goal_engine.memory_manager = self.memory_manager
+            if getattr(self.goal_engine, "heuristic_calibrator", None) is None and self.calibrator is not None:
+                self.goal_engine.heuristic_calibrator = self.calibrator
+            if getattr(self.goal_engine, "meta_policy", None) is None:
+                self.goal_engine.meta_policy = self.meta_policy
+            if getattr(self.goal_engine, "strategy_lineage", None) is None:
+                self.goal_engine.strategy_lineage = self.strategy_lineage
+            if getattr(self.goal_engine, "goal_adapter", None) is None:
+                self.goal_engine.goal_adapter = self.goal_adapter
+            if getattr(self.goal_engine, "stagnation_monitor", None) is None:
+                self.goal_engine.stagnation_monitor = self.stagnation_monitor
         else:
             self.goal_engine = GoalEngine(
                 goal_store=self.goal_store,
@@ -229,6 +276,11 @@ class AgenticRuntime:
                 state_store=self.state_store,
                 approval_gateway=self.approval_gateway,
                 memory_manager=self.memory_manager,
+                heuristic_calibrator=self.calibrator,
+                meta_policy=self.meta_policy,
+                strategy_lineage=self.strategy_lineage,
+                goal_adapter=self.goal_adapter,
+                stagnation_monitor=self.stagnation_monitor,
             )
 
     def execute(

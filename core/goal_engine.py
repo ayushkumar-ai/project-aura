@@ -31,7 +31,13 @@ from core.goal_store import GoalStore, InMemoryGoalStore
 from core.policy import Policy
 from core.provenance import TaintedValue, is_tainted, wrap_tainted
 from core.skill_registry import SkillRegistry
+from core.task_state import TaskState, TaskStatus
 from core.task_state_store import TaskStateStore
+from core.meta_policy import MetaPolicyEngine
+from core.strategy_lineage import StrategyLineageStore
+from core.goal_adapter import GoalAdapter
+from core.goal_stagnation import GoalStagnationMonitor
+from core.strategy_types import StrategyAttemptOutcome, StrategyType
 
 logger = logging.getLogger("aura.goal_engine")
 
@@ -88,6 +94,11 @@ class GoalEngine:
         approval_gateway: ApprovalGateway | None = None,
         config: GoalEngineConfig | None = None,
         memory_manager: Any | None = None,
+        heuristic_calibrator: Any | None = None,
+        meta_policy: MetaPolicyEngine | None = None,
+        strategy_lineage: StrategyLineageStore | None = None,
+        goal_adapter: GoalAdapter | None = None,
+        stagnation_monitor: GoalStagnationMonitor | None = None,
     ):
         if goal_store is not None and not isinstance(goal_store, GoalStore):
             raise TypeError("goal_store must be an instance of GoalStore or None.")
@@ -105,6 +116,34 @@ class GoalEngine:
             raise TypeError("config must be an instance of GoalEngineConfig or None.")
 
         self.memory_manager = memory_manager
+        self.heuristic_calibrator = heuristic_calibrator
+        self.strategy_lineage = strategy_lineage if strategy_lineage is not None else StrategyLineageStore()
+        self.meta_policy = (
+            meta_policy
+            if meta_policy is not None
+            else MetaPolicyEngine(
+                lineage_store=self.strategy_lineage,
+                calibrator=self.heuristic_calibrator,
+            )
+        )
+        self.goal_adapter = (
+            goal_adapter
+            if goal_adapter is not None
+            else GoalAdapter(
+                meta_policy=self.meta_policy,
+                lineage_store=self.strategy_lineage,
+                heuristic_calibrator=self.heuristic_calibrator,
+            )
+        )
+        self.stagnation_monitor = (
+            stagnation_monitor
+            if stagnation_monitor is not None
+            else GoalStagnationMonitor(
+                lineage_store=self.strategy_lineage,
+                meta_policy=self.meta_policy,
+            )
+        )
+
         self.goal_store = goal_store if goal_store is not None else InMemoryGoalStore()
         self.state_store = state_store
         self.approval_gateway = approval_gateway
@@ -128,9 +167,12 @@ class GoalEngine:
         self.reasoner = reasoner if reasoner is not None else GoalReasoner(
             skill_registry=self.runtime.skill_registry if self.runtime else None,
             memory_manager=self.memory_manager,
+            heuristic_calibrator=self.heuristic_calibrator,
         )
         if self.reasoner.memory_manager is None and self.memory_manager is not None:
             self.reasoner.memory_manager = self.memory_manager
+        if getattr(self.reasoner, "heuristic_calibrator", None) is None and self.heuristic_calibrator is not None:
+            self.reasoner.heuristic_calibrator = self.heuristic_calibrator
 
         self.executor = executor if executor is not None else (
             AutonomousAgentExecutor(
@@ -479,7 +521,46 @@ class GoalEngine:
 
         # 6. Invoke GoalReasoner with persistent observations
         obs_list = self.get_observations(goal_id)
-        eval_res = self.reasoner.evaluate(eval_goal, observations=obs_list)
+
+        # Check if there is a paused task awaiting continuation
+        resuming_plan = None
+        if self.state_store is not None and eval_goal.executed_task_ids:
+            last_tid = eval_goal.executed_task_ids[-1]
+            if self.state_store.exists(last_tid):
+                last_state = self.state_store.get(last_tid)
+                if last_state.status == TaskStatus.PAUSED and last_state.plan:
+                    resuming_plan = last_state.plan
+
+        if resuming_plan is not None:
+            eval_res = GoalEvaluationResult(
+                is_completed=False,
+                action_needed=True,
+                new_progress=eval_goal.progress,
+                proposed_plan=resuming_plan,
+                rationale=f"Resuming paused task for goal '{goal_id}'.",
+            )
+        else:
+            eval_res = self.reasoner.evaluate(eval_goal, observations=obs_list)
+
+        # Stagnation Monitoring & Convergence Evaluation (M16)
+        stag_report = self.stagnation_monitor.check_stagnation(
+            eval_goal,
+            current_progress_percentage=eval_res.new_progress.percentage,
+        )
+        if stag_report.should_abandon_goal:
+            logger.warning("Goal '%s' irrecoverably stagnant, marking FAILED.", goal_id)
+            abandoned_goal = eval_goal.with_progress(
+                progress=eval_res.new_progress,
+                status=GoalStatus.FAILED,
+                evaluation_count=eval_goal.evaluation_count + 1,
+            )
+            self.goal_store.update(abandoned_goal)
+            return GoalEvaluationResult(
+                is_completed=False,
+                action_needed=False,
+                new_progress=eval_res.new_progress,
+                rationale=stag_report.diagnostic_summary,
+            )
 
         # 7. Check Sub-Goal Completion Constraint (M12)
         # Parent goals cannot complete until all sub-goals are completed
@@ -564,7 +645,16 @@ class GoalEngine:
             executing_goal = eval_goal.with_status(GoalStatus.EXECUTING)
             self.goal_store.update(executing_goal)
 
-            task_id = f"goal_{goal_id}_act_{executing_goal.action_count + 1}"
+            # Check if resuming an existing paused task
+            if (
+                self.state_store is not None
+                and eval_goal.executed_task_ids
+                and self.state_store.exists(eval_goal.executed_task_ids[-1])
+                and self.state_store.get(eval_goal.executed_task_ids[-1]).status == TaskStatus.PAUSED
+            ):
+                task_id = eval_goal.executed_task_ids[-1]
+            else:
+                task_id = f"goal_{goal_id}_act_{executing_goal.action_count + 1}"
 
             # Attach goal lineage metadata to plan
             plan_meta = dict(eval_res.proposed_plan.metadata)
@@ -592,6 +682,22 @@ class GoalEngine:
                 task_description=plan_with_lineage.task_goal,
             )
 
+            # Handle execution pauses (e.g. approval required)
+            if agent_res.is_paused:
+                paused_goal = executing_goal.with_progress(
+                    progress=eval_res.new_progress,
+                    status=GoalStatus.PAUSED,
+                    evaluation_count=executing_goal.evaluation_count + 1,
+                    action_count=executing_goal.action_count,
+                )
+                self.goal_store.update(paused_goal)
+                return GoalEvaluationResult(
+                    is_completed=False,
+                    action_needed=False,
+                    new_progress=eval_res.new_progress,
+                    rationale=f"Action paused awaiting approval: {agent_res.error}",
+                )
+
             # Record action outcome as persistent observation
             out_val = agent_res.final_output if agent_res.success else agent_res.error
             is_untrusted_out = is_tainted(out_val) or any(o.is_untrusted for o in agent_res.trace.observations)
@@ -608,21 +714,38 @@ class GoalEngine:
                 },
             )
 
-            # Handle execution pauses (e.g. approval required)
-            if agent_res.is_paused:
-                paused_goal = executing_goal.with_progress(
-                    progress=eval_res.new_progress,
-                    status=GoalStatus.PAUSED,
-                    evaluation_count=executing_goal.evaluation_count + 1,
-                    action_count=executing_goal.action_count + 1,
+            # Record Strategy Lineage / Heuristic Outcome (M16)
+            self.goal_adapter.record_adaptation_outcome(
+                goal_id=goal_id,
+                plan_id=plan_with_lineage.plan_id,
+                success=agent_res.success,
+                failure_category=str(agent_res.error) if not agent_res.success else None,
+                rationale=f"Executed task {task_id}",
+            )
+
+            # Trigger Goal Adaptation upon failure (M16)
+            if not agent_res.success:
+                fail_obs = self.get_observations(goal_id)
+                adapt_res = self.goal_adapter.adapt_goal_plan(
+                    goal=executing_goal,
+                    failed_plan=plan_with_lineage,
+                    error_message=str(agent_res.error or "Action execution failed"),
+                    observations=fail_obs,
                 )
-                self.goal_store.update(paused_goal)
-                return GoalEvaluationResult(
-                    is_completed=False,
-                    action_needed=False,
-                    new_progress=eval_res.new_progress,
-                    rationale=f"Action paused awaiting approval: {agent_res.error}",
-                )
+                if adapt_res.should_abandon:
+                    abandoned_goal = executing_goal.with_progress(
+                        progress=eval_res.new_progress,
+                        status=GoalStatus.FAILED,
+                        evaluation_count=executing_goal.evaluation_count + 1,
+                        action_count=executing_goal.action_count + 1,
+                    )
+                    self.goal_store.update(abandoned_goal)
+                    return GoalEvaluationResult(
+                        is_completed=False,
+                        action_needed=False,
+                        new_progress=eval_res.new_progress,
+                        rationale=adapt_res.rationale,
+                    )
 
             # Re-evaluate progress after action
             updated_obs = self.get_observations(goal_id)

@@ -49,6 +49,7 @@ class GoalReasoner:
         model: ModelInterface | None = None,
         model_router: ModelRouter | None = None,
         memory_manager: Any | None = None,
+        heuristic_calibrator: Any | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -61,6 +62,7 @@ class GoalReasoner:
         self.model = model
         self.model_router = model_router
         self.memory_manager = memory_manager
+        self.heuristic_calibrator = heuristic_calibrator
 
     def evaluate(
         self,
@@ -84,6 +86,9 @@ class GoalReasoner:
         for obs in observations:
             if not isinstance(obs, GoalObservation):
                 continue
+            # If observation is explicitly marked as a failed action outcome, skip matching its criterion
+            if obs.metadata and obs.metadata.get("success") is False:
+                continue
             if obs.source:
                 obs_texts.append(obs.source.lower())
             if obs.metadata:
@@ -93,7 +98,10 @@ class GoalReasoner:
             if isinstance(val, TaintedValue) or is_tainted(val):
                 obs_texts.append(render_for_prompt(val, wrap_untrusted=True).lower())
             elif isinstance(val, (dict, list)):
-                obs_texts.append(json.dumps(val).lower())
+                try:
+                    obs_texts.append(json.dumps(val, default=str).lower())
+                except Exception:
+                    obs_texts.append(str(val).lower())
             elif val is not None:
                 obs_texts.append(str(val).lower())
 
