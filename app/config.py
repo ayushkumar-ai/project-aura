@@ -92,6 +92,14 @@ class Settings(BaseSettings):
     aura_max_strategy_history_per_goal: int = 10
     aura_strategy_selection_timeout_seconds: float = 5.0
 
+    # M17 Multi-Goal Resource Arbitration, Scheduling & Event Dispatch Configuration
+    aura_max_concurrent_active_goals: int = 4
+    aura_global_max_tool_calls_per_minute: int = 120
+    aura_global_max_tokens_per_minute: int = 100000
+    aura_resource_lock_default_ttl_seconds: float = 30.0
+    aura_event_queue_max_size: int = 1000
+    aura_clarification_timeout_seconds: float = 600.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

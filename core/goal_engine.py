@@ -38,6 +38,12 @@ from core.strategy_lineage import StrategyLineageStore
 from core.goal_adapter import GoalAdapter
 from core.goal_stagnation import GoalStagnationMonitor
 from core.strategy_types import StrategyAttemptOutcome, StrategyType
+from core.resource_budget import ResourceBudgetManager
+from core.resource_locks import SharedResourceLockManager
+from core.goal_scheduler import MultiGoalScheduler
+from core.event_dispatcher import ProactiveEventDispatcher
+from core.clarification_gateway import ClarificationGateway
+from core.scheduling_types import LockType, ClarificationStatus
 
 logger = logging.getLogger("aura.goal_engine")
 
@@ -99,6 +105,11 @@ class GoalEngine:
         strategy_lineage: StrategyLineageStore | None = None,
         goal_adapter: GoalAdapter | None = None,
         stagnation_monitor: GoalStagnationMonitor | None = None,
+        budget_manager: ResourceBudgetManager | None = None,
+        lock_manager: SharedResourceLockManager | None = None,
+        scheduler: MultiGoalScheduler | None = None,
+        event_dispatcher: ProactiveEventDispatcher | None = None,
+        clarification_gateway: ClarificationGateway | None = None,
     ):
         if goal_store is not None and not isinstance(goal_store, GoalStore):
             raise TypeError("goal_store must be an instance of GoalStore or None.")
@@ -141,6 +152,18 @@ class GoalEngine:
             else GoalStagnationMonitor(
                 lineage_store=self.strategy_lineage,
                 meta_policy=self.meta_policy,
+            )
+        )
+        self.budget_manager = budget_manager
+        self.lock_manager = lock_manager
+        self.clarification_gateway = clarification_gateway
+        self.event_dispatcher = event_dispatcher
+        self.scheduler = (
+            scheduler
+            if scheduler is not None
+            else MultiGoalScheduler(
+                budget_manager=self.budget_manager,
+                lock_manager=self.lock_manager,
             )
         )
 
@@ -513,6 +536,17 @@ class GoalEngine:
                     rationale=f"Trigger '{trigger_id}' is on cooldown or condition not met.",
                 )
 
+        # 4.5 Check for pending interactive clarification
+        if self.clarification_gateway is not None:
+            pending_clarifications = self.clarification_gateway.get_pending_requests(goal_id=goal_id)
+            if pending_clarifications:
+                return GoalEvaluationResult(
+                    is_completed=False,
+                    action_needed=False,
+                    new_progress=goal.progress,
+                    rationale=f"Goal paused awaiting user clarification: {pending_clarifications[0].question}",
+                )
+
         # 5. Transition to EVALUATING
         eval_goal = goal.with_status(GoalStatus.EVALUATING)
         if matched_trigger:
@@ -656,8 +690,80 @@ class GoalEngine:
             else:
                 task_id = f"goal_{goal_id}_act_{executing_goal.action_count + 1}"
 
-            # Attach goal lineage metadata to plan
+            # Check if plan requires interactive clarification (M16/M17)
             plan_meta = dict(eval_res.proposed_plan.metadata)
+            first_step = eval_res.proposed_plan.steps[0] if eval_res.proposed_plan.steps else None
+            is_clarification_step = (
+                plan_meta.get("requires_interactive_clarification") is True
+                or (first_step and first_step.skill_name == "request_user_clarification")
+            )
+            if is_clarification_step and self.clarification_gateway is not None:
+                q_text = plan_meta.get("clarification_question") or (first_step.objective if first_step else "Clarification needed.")
+                opts = plan_meta.get("clarification_options", ("retry", "abort", "custom"))
+                clarif_req = self.clarification_gateway.request_clarification(
+                    goal_id=goal_id,
+                    task_id=task_id,
+                    question=q_text,
+                    options=list(opts),
+                )
+                paused_goal = executing_goal.with_progress(
+                    progress=eval_res.new_progress,
+                    status=GoalStatus.PAUSED,
+                    evaluation_count=executing_goal.evaluation_count + 1,
+                    action_count=executing_goal.action_count,
+                )
+                self.goal_store.update(paused_goal)
+                return GoalEvaluationResult(
+                    is_completed=False,
+                    action_needed=False,
+                    new_progress=eval_res.new_progress,
+                    rationale=f"Action paused awaiting interactive clarification: {clarif_req.question}",
+                )
+
+            # Check Resource Budget Quota (M17)
+            if self.budget_manager is not None:
+                alloc_res = self.budget_manager.acquire_quota(goal_id=goal_id)
+                if not alloc_res.is_granted:
+                    logger.warning("Goal '%s' execution throttled by resource budget: %s", goal_id, alloc_res.reason)
+                    throttled_goal = executing_goal.with_progress(
+                        progress=eval_res.new_progress,
+                        status=GoalStatus.ACTIVE,
+                        evaluation_count=executing_goal.evaluation_count + 1,
+                    )
+                    self.goal_store.update(throttled_goal)
+                    return GoalEvaluationResult(
+                        is_completed=False,
+                        action_needed=False,
+                        new_progress=eval_res.new_progress,
+                        rationale=f"Execution throttled by resource budget: {alloc_res.reason}",
+                    )
+
+            # Check Resource Locks (M17)
+            required_resources = plan_meta.get("required_resources", ())
+            if self.lock_manager is not None and required_resources:
+                lock_res = self.lock_manager.acquire_locks_batch(
+                    resource_uris=required_resources,
+                    goal_id=goal_id,
+                    lock_type=LockType.EXCLUSIVE_WRITE,
+                )
+                if not lock_res.success:
+                    logger.warning("Goal '%s' execution paused due to lock contention: %s", goal_id, lock_res.reason)
+                    if self.budget_manager is not None:
+                        self.budget_manager.release_quota(goal_id=goal_id)
+                    lock_paused_goal = executing_goal.with_progress(
+                        progress=eval_res.new_progress,
+                        status=GoalStatus.ACTIVE,
+                        evaluation_count=executing_goal.evaluation_count + 1,
+                    )
+                    self.goal_store.update(lock_paused_goal)
+                    return GoalEvaluationResult(
+                        is_completed=False,
+                        action_needed=False,
+                        new_progress=eval_res.new_progress,
+                        rationale=f"Execution deferred due to lock contention: {lock_res.reason}",
+                    )
+
+            # Attach goal lineage metadata to plan
             plan_meta["goal_id"] = goal_id
             if goal.parent_goal_id:
                 plan_meta["parent_goal_id"] = goal.parent_goal_id
@@ -697,6 +803,12 @@ class GoalEngine:
                     new_progress=eval_res.new_progress,
                     rationale=f"Action paused awaiting approval: {agent_res.error}",
                 )
+
+            # Release locks and record resource consumption (M17)
+            if self.lock_manager is not None and required_resources:
+                self.lock_manager.release_all_locks_for_goal(goal_id)
+            if self.budget_manager is not None:
+                self.budget_manager.release_quota(goal_id=goal_id, actual_tool_calls=1)
 
             # Record action outcome as persistent observation
             out_val = agent_res.final_output if agent_res.success else agent_res.error
@@ -793,3 +905,15 @@ class GoalEngine:
                     results.append(res)
 
         return results
+
+    def step_batch_scheduled(self, max_batch_size: int = 4) -> list[GoalEvaluationResult]:
+        """Evaluate the next batch of queued goals via MultiGoalScheduler."""
+        if self.scheduler is None:
+            self.scheduler = MultiGoalScheduler(
+                budget_manager=self.budget_manager,
+                lock_manager=self.lock_manager,
+            )
+        # Enqueue active goals to scheduler
+        for g in self.list_goals(status=GoalStatus.ACTIVE):
+            self.scheduler.schedule_goal(g.goal_id, priority=g.priority)
+        return self.scheduler.step_next_batch(self, max_batch_size=max_batch_size)

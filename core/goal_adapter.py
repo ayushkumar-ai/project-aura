@@ -37,6 +37,8 @@ from core.reflection_types import (
     ReflectionRecord,
 )
 from core.strategy_lineage import StrategyLineageStore
+from core.clarification_gateway import ClarificationGateway
+from core.scheduling_types import ClarificationType
 from core.strategy_types import (
     GoalStrategyRecord,
     StrategyAttempt,
@@ -102,7 +104,9 @@ class GoalAdapter:
         planner: TaskPlanner | None = None,
         heuristic_calibrator: HeuristicCalibrator | None = None,
         max_strategy_retries: int | None = None,
+        clarification_gateway: ClarificationGateway | None = None,
     ) -> None:
+        self.clarification_gateway = clarification_gateway
         self.lineage_store = lineage_store or StrategyLineageStore()
         self.heuristic_calibrator = heuristic_calibrator
         self.meta_policy = meta_policy or MetaPolicyEngine(
@@ -392,13 +396,29 @@ class GoalAdapter:
             )
 
         elif selected_strategy == StrategyType.HUMAN_INTERACTIVE_CLARIFICATION:
+            q_text = f"Goal '{goal.title}' failed with error: {error_message}. How to proceed?"
+            opts = ("retry_with_decomposition", "abort_goal", "provide_custom_input")
+            if self.clarification_gateway is not None:
+                self.clarification_gateway.request_clarification(
+                    goal_id=goal.goal_id,
+                    task_id=f"goal_{goal.goal_id}_clarification",
+                    question=q_text,
+                    options=list(opts),
+                    clarification_type=ClarificationType.SINGLE_CHOICE,
+                )
             steps.append(
                 AgentPlanStep(
                     step_id="step_1",
                     skill_name="request_user_clarification",
-                    objective=f"Request user clarification or approval for {goal.title}",
-                    input_data={"goal_id": goal.goal_id, "question": f"Goal failed with error: {error_message}. How to proceed?"},
-                    metadata={"strategy": selected_strategy.value, "interactive": True},
+                    objective=f"Request user clarification for {goal.title}",
+                    input_data={"goal_id": goal.goal_id, "question": q_text, "options": list(opts)},
+                    metadata={
+                        "strategy": selected_strategy.value,
+                        "interactive": True,
+                        "requires_interactive_clarification": True,
+                        "clarification_question": q_text,
+                        "clarification_options": opts,
+                    },
                 )
             )
 

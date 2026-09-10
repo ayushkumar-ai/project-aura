@@ -25,6 +25,12 @@ from core.meta_policy import MetaPolicyEngine
 from core.strategy_lineage import StrategyLineageStore
 from core.goal_adapter import GoalAdapter
 from core.goal_stagnation import GoalStagnationMonitor
+from core.resource_budget import ResourceBudgetManager
+from core.resource_locks import SharedResourceLockManager
+from core.goal_scheduler import MultiGoalScheduler
+from core.event_dispatcher import ProactiveEventDispatcher
+from core.clarification_gateway import ClarificationGateway
+from core.scheduling_types import ProactiveEvent
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
 
@@ -68,6 +74,11 @@ class AgenticRuntime:
         strategy_lineage: StrategyLineageStore | None = None,
         goal_adapter: GoalAdapter | None = None,
         stagnation_monitor: GoalStagnationMonitor | None = None,
+        budget_manager: ResourceBudgetManager | None = None,
+        lock_manager: SharedResourceLockManager | None = None,
+        scheduler: MultiGoalScheduler | None = None,
+        event_dispatcher: ProactiveEventDispatcher | None = None,
+        clarification_gateway: ClarificationGateway | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -135,6 +146,18 @@ class AgenticRuntime:
             else GoalStagnationMonitor(
                 lineage_store=self.strategy_lineage,
                 meta_policy=self.meta_policy,
+            )
+        )
+        self.budget_manager = budget_manager if budget_manager is not None else ResourceBudgetManager()
+        self.lock_manager = lock_manager if lock_manager is not None else SharedResourceLockManager()
+        self.clarification_gateway = clarification_gateway if clarification_gateway is not None else ClarificationGateway()
+        self.event_dispatcher = event_dispatcher if event_dispatcher is not None else ProactiveEventDispatcher()
+        self.scheduler = (
+            scheduler
+            if scheduler is not None
+            else MultiGoalScheduler(
+                budget_manager=self.budget_manager,
+                lock_manager=self.lock_manager,
             )
         )
 
@@ -251,6 +274,7 @@ class AgenticRuntime:
                 lineage_store=self.strategy_lineage,
                 planner=self.planner,
                 heuristic_calibrator=self.calibrator,
+                clarification_gateway=self.clarification_gateway,
             )
         )
 
@@ -281,6 +305,11 @@ class AgenticRuntime:
                 strategy_lineage=self.strategy_lineage,
                 goal_adapter=self.goal_adapter,
                 stagnation_monitor=self.stagnation_monitor,
+                budget_manager=self.budget_manager,
+                lock_manager=self.lock_manager,
+                scheduler=self.scheduler,
+                event_dispatcher=self.event_dispatcher,
+                clarification_gateway=self.clarification_gateway,
             )
 
     def execute(
@@ -572,3 +601,37 @@ class AgenticRuntime:
     def get_heuristic_calibrator(self) -> Any:
         """Return the runtime's heuristic calibrator instance."""
         return self.calibrator
+
+    # ---------------------------------------------------------
+    # Scheduling, Resource Governance & Event Dispatch (M17)
+    # ---------------------------------------------------------
+    def get_budget_manager(self) -> ResourceBudgetManager:
+        """Return the runtime's resource budget manager."""
+        return self.budget_manager
+
+    def get_lock_manager(self) -> SharedResourceLockManager:
+        """Return the runtime's shared resource lock manager."""
+        return self.lock_manager
+
+    def get_scheduler(self) -> MultiGoalScheduler:
+        """Return the runtime's multi-goal priority scheduler."""
+        return self.scheduler
+
+    def get_event_dispatcher(self) -> ProactiveEventDispatcher:
+        """Return the runtime's proactive event dispatcher."""
+        return self.event_dispatcher
+
+    def get_clarification_gateway(self) -> ClarificationGateway:
+        """Return the runtime's interactive clarification gateway."""
+        return self.clarification_gateway
+
+    def publish_event(self, event: ProactiveEvent) -> int:
+        """Publish a proactive event to trigger subscribed goals."""
+        return self.event_dispatcher.publish_event(event)
+
+    def step_scheduled_goals(self, max_batch_size: int = 4) -> list[GoalEvaluationResult]:
+        """Step the multi-goal scheduler to evaluate the next batch of queued goals."""
+        # Enqueue any active goals from the store into the scheduler
+        for g in self.goal_engine.list_goals(status=GoalStatus.ACTIVE):
+            self.scheduler.schedule_goal(g.goal_id, priority=g.priority)
+        return self.scheduler.step_next_batch(self.goal_engine, max_batch_size=max_batch_size)
