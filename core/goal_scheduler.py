@@ -80,6 +80,9 @@ class MultiGoalScheduler:
         required_resources: Sequence[str] = (),
         metadata: dict[str, Any] | None = None,
         current_time: float | None = None,
+        assigned_team_id: str | None = None,
+        assigned_role_id: str | None = None,
+        execution_topology: str | None = None,
     ) -> ScheduledGoalTask:
         """Enqueue or update a goal in the scheduler."""
         clean_gid = str(goal_id).strip()
@@ -103,6 +106,9 @@ class MultiGoalScheduler:
                 status=GoalScheduleStatus.QUEUED,
                 enqueued_at=now,
                 required_resources=tuple(required_resources),
+                assigned_team_id=assigned_team_id,
+                assigned_role_id=assigned_role_id,
+                execution_topology=execution_topology,
                 metadata=dict(metadata or {}),
             )
             self._tasks[clean_gid] = task
@@ -257,3 +263,6 @@ class MultiGoalScheduler:
                 "counts_by_status": counts,
                 "max_concurrent_goals": self.max_concurrent_goals,
             }
+
+
+GoalScheduler = MultiGoalScheduler

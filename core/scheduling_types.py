@@ -255,6 +255,9 @@ class ScheduledGoalTask:
     started_at: float | None = None
     completed_at: float | None = None
     required_resources: tuple[str, ...] = field(default_factory=tuple)
+    assigned_team_id: str | None = None
+    assigned_role_id: str | None = None
+    execution_topology: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -318,6 +321,9 @@ class ScheduledGoalTask:
             started_at=new_start,
             completed_at=new_comp,
             required_resources=self.required_resources,
+            assigned_team_id=self.assigned_team_id,
+            assigned_role_id=self.assigned_role_id,
+            execution_topology=self.execution_topology,
             metadata=dict(self.metadata),
         )
 

@@ -59,6 +59,7 @@ class GoalAdaptationResult:
     goal_id: str
     selected_strategy: StrategyType
     adapted_plan: AgentPlan | None = None
+    adapted_team_binding: Any | None = None
     attempt_number: int = 1
     rationale: str = ""
     is_stagnant: bool = False
@@ -80,6 +81,11 @@ class GoalAdaptationResult:
 
         if self.adapted_plan is not None and not isinstance(self.adapted_plan, AgentPlan):
             raise TypeError("adapted_plan must be an AgentPlan instance or None.")
+
+        if self.adapted_team_binding is not None:
+            from core.goal_team_binding import GoalTeamBinding
+            if not isinstance(self.adapted_team_binding, GoalTeamBinding):
+                raise TypeError("adapted_team_binding must be a GoalTeamBinding instance or None.")
 
         object.__setattr__(self, "attempt_number", max(1, int(self.attempt_number)))
         object.__setattr__(self, "rationale", str(self.rationale or "").strip())
@@ -105,8 +111,10 @@ class GoalAdapter:
         heuristic_calibrator: HeuristicCalibrator | None = None,
         max_strategy_retries: int | None = None,
         clarification_gateway: ClarificationGateway | None = None,
+        role_registry: Any | None = None,
     ) -> None:
         self.clarification_gateway = clarification_gateway
+        self.role_registry = role_registry
         self.lineage_store = lineage_store or StrategyLineageStore()
         self.heuristic_calibrator = heuristic_calibrator
         self.meta_policy = meta_policy or MetaPolicyEngine(
@@ -224,8 +232,59 @@ class GoalAdapter:
         applied_heuristics = self._get_promoted_heuristics()
 
         # 4. Synthesize adapted plan
+        # 4. Synthesize adapted plan and team binding if applicable
         task_str = task_description or (failed_plan.task_goal if failed_plan else goal.title)
         attempt_num = (failed_attempts[-1].attempt_number + 1) if failed_attempts else 1
+
+        adapted_team_binding = None
+        if selected_strategy in (StrategyType.MULTI_AGENT_TEAM_COLLABORATION, StrategyType.TEAM_CONSENSUS_DELIBERATION):
+            from core.goal_team_binding import GoalTeamBinding, GoalTeamBindingStatus
+            from core.team_types import TeamDefinition, TeamMember, TeamTopology
+            if selected_strategy == StrategyType.TEAM_CONSENSUS_DELIBERATION:
+                topology = TeamTopology.CONSENSUS_VOTING
+            elif isinstance(goal.execution_topology, TeamTopology):
+                topology = goal.execution_topology
+            elif isinstance(goal.execution_topology, str):
+                try:
+                    topology = TeamTopology(goal.execution_topology)
+                except Exception:
+                    topology = TeamTopology.HIERARCHICAL
+            else:
+                topology = TeamTopology.HIERARCHICAL
+
+            assigned_roles: list[str] = []
+            if goal.assigned_role_id:
+                assigned_roles.append(goal.assigned_role_id)
+            if self.role_registry is not None and hasattr(self.role_registry, "list_roles"):
+                try:
+                    roles = self.role_registry.list_roles()
+                    for r in roles:
+                        if r.role_id not in assigned_roles:
+                            assigned_roles.append(r.role_id)
+                except Exception:
+                    pass
+
+            if not assigned_roles:
+                assigned_roles = ["general_assistant"]
+
+            members = []
+            for i, r in enumerate(assigned_roles):
+                is_lead = (r == goal.assigned_role_id) if goal.assigned_role_id else (i == 0)
+                members.append(TeamMember(role_id=r, is_lead=is_lead))
+
+            team_def = TeamDefinition(
+                team_id=goal.assigned_team_id or f"team_{goal_id}",
+                name=f"Team for {goal.title}",
+                members=members,
+                topology=topology,
+            )
+            adapted_team_binding = GoalTeamBinding(
+                binding_id=f"binding_{goal_id}_{int(time.time())}",
+                goal_id=goal_id,
+                team_definition=team_def,
+                task_description=f"Multi-agent adaptation for goal '{goal.title}'. Previous error: {error_text}",
+                status=GoalTeamBindingStatus.BOUND,
+            )
 
         adapted_plan = self._synthesize_adapted_plan(
             goal=goal,
@@ -264,6 +323,7 @@ class GoalAdapter:
             goal_id=goal_id,
             selected_strategy=selected_strategy,
             adapted_plan=adapted_plan,
+            adapted_team_binding=adapted_team_binding,
             attempt_number=attempt_num,
             rationale=decision.rationale,
             is_stagnant=False,
@@ -271,6 +331,8 @@ class GoalAdapter:
             heuristics_applied=tuple(applied_heuristics),
             metadata=clean_meta,
         )
+
+    adapt_goal = adapt_goal_plan
 
     def _synthesize_adapted_plan(
         self,
@@ -419,6 +481,28 @@ class GoalAdapter:
                         "clarification_question": q_text,
                         "clarification_options": opts,
                     },
+                )
+            )
+
+        elif selected_strategy == StrategyType.MULTI_AGENT_TEAM_COLLABORATION:
+            steps.append(
+                AgentPlanStep(
+                    step_id="step_team_collab_1",
+                    skill_name="team_orchestration_step",
+                    objective=f"Execute multi-agent team collaboration for {goal.title}",
+                    input_data={"goal_id": goal.goal_id, "strategy": selected_strategy.value},
+                    metadata={"strategy": selected_strategy.value, "multi_agent": True},
+                )
+            )
+
+        elif selected_strategy == StrategyType.TEAM_CONSENSUS_DELIBERATION:
+            steps.append(
+                AgentPlanStep(
+                    step_id="step_team_consensus_1",
+                    skill_name="team_consensus_step",
+                    objective=f"Execute team consensus deliberation for {goal.title}",
+                    input_data={"goal_id": goal.goal_id, "strategy": selected_strategy.value},
+                    metadata={"strategy": selected_strategy.value, "consensus": True},
                 )
             )
 

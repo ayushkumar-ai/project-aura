@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ from core.agent_runtime import AgentRuntime
 from core.approval import ApprovalGateway
 from core.autonomous_agent import AutonomousAgentExecutor, AutonomousAgentResult
 from core.capability_registry import ModelCapability
-from core.goal import Goal, GoalStatus
+from core.goal import Goal, GoalPriority, GoalStatus
 from core.goal_engine import GoalEngine
 from core.goal_reasoner import GoalEvaluationResult
 from core.goal_store import GoalStore, InMemoryGoalStore
@@ -352,102 +353,6 @@ class AgenticRuntime:
                 calibrator=self.calibrator,
             )
 
-        # Resolve or create GoalStore & GoalEngine (M11 / M12)
-        if goal_store is not None:
-            self.goal_store = goal_store
-        elif goal_engine is not None:
-            self.goal_store = goal_engine.goal_store
-        else:
-            self.goal_store = InMemoryGoalStore()
-
-        self.goal_adapter = (
-            goal_adapter
-            if goal_adapter is not None
-            else GoalAdapter(
-                meta_policy=self.meta_policy,
-                lineage_store=self.strategy_lineage,
-                planner=self.planner,
-                heuristic_calibrator=self.calibrator,
-                clarification_gateway=self.clarification_gateway,
-            )
-        )
-
-        if goal_engine is not None:
-            self.goal_engine = goal_engine
-            if self.goal_engine.memory_manager is None:
-                self.goal_engine.memory_manager = self.memory_manager
-            if getattr(self.goal_engine, "heuristic_calibrator", None) is None and self.calibrator is not None:
-                self.goal_engine.heuristic_calibrator = self.calibrator
-            if getattr(self.goal_engine, "meta_policy", None) is None:
-                self.goal_engine.meta_policy = self.meta_policy
-            if getattr(self.goal_engine, "strategy_lineage", None) is None:
-                self.goal_engine.strategy_lineage = self.strategy_lineage
-            if getattr(self.goal_engine, "goal_adapter", None) is None:
-                self.goal_engine.goal_adapter = self.goal_adapter
-            if getattr(self.goal_engine, "stagnation_monitor", None) is None:
-                self.goal_engine.stagnation_monitor = self.stagnation_monitor
-        else:
-            self.goal_engine = GoalEngine(
-                goal_store=self.goal_store,
-                runtime=self.runtime,
-                executor=self.autonomous_executor,
-                state_store=self.state_store,
-                approval_gateway=self.approval_gateway,
-                memory_manager=self.memory_manager,
-                heuristic_calibrator=self.calibrator,
-                meta_policy=self.meta_policy,
-                strategy_lineage=self.strategy_lineage,
-                goal_adapter=self.goal_adapter,
-                stagnation_monitor=self.stagnation_monitor,
-                budget_manager=self.budget_manager,
-                lock_manager=self.lock_manager,
-                scheduler=self.scheduler,
-                event_dispatcher=self.event_dispatcher,
-                clarification_gateway=self.clarification_gateway,
-            )
-
-        # Runtime Checkpoint Manager & Supervisor Daemon (M18)
-        ckpt_dir = getattr(settings, "aura_checkpoint_dir", ".aura_checkpoints")
-        ckpt_ret = getattr(settings, "aura_checkpoint_retention_count", 5)
-        self.checkpoint_manager = (
-            checkpoint_manager
-            if checkpoint_manager is not None
-            else RuntimeCheckpointManager(
-                checkpoint_dir=ckpt_dir,
-                retention_count=ckpt_ret,
-                scheduler=self.scheduler,
-                budget_manager=self.budget_manager,
-                lock_manager=self.lock_manager,
-                clarification_gateway=self.clarification_gateway,
-                event_dispatcher=self.event_dispatcher,
-            )
-        )
-        self.supervisor_config = (
-            supervisor_config
-            if supervisor_config is not None
-            else SupervisorConfig(
-                checkpoint_dir=ckpt_dir,
-                checkpoint_retention_count=ckpt_ret,
-                shutdown_timeout_seconds=getattr(settings, "aura_daemon_shutdown_timeout_seconds", 5.0),
-                heartbeat_interval_seconds=getattr(settings, "aura_daemon_heartbeat_interval_seconds", 1.0),
-                scheduler_interval_seconds=getattr(settings, "aura_daemon_scheduler_interval_seconds", 2.0),
-                event_interval_seconds=getattr(settings, "aura_daemon_event_interval_seconds", 1.0),
-                lock_prune_interval_seconds=getattr(settings, "aura_daemon_lock_prune_interval_seconds", 10.0),
-                clarification_interval_seconds=getattr(settings, "aura_daemon_clarification_interval_seconds", 10.0),
-                memory_interval_seconds=getattr(settings, "aura_daemon_memory_interval_seconds", 300.0),
-                checkpoint_interval_seconds=getattr(settings, "aura_daemon_checkpoint_interval_seconds", 30.0),
-            )
-        )
-        self.supervisor = (
-            supervisor
-            if supervisor is not None
-            else AutonomousSupervisor(
-                runtime=self,
-                config=self.supervisor_config,
-                checkpoint_manager=self.checkpoint_manager,
-            )
-        )
-
         # Multi-Session & Streaming Gateway (M19)
         sess_dir = getattr(settings, "aura_session_storage_dir", "")
         if session_store is not None:
@@ -476,19 +381,8 @@ class AgenticRuntime:
                 max_payload_chars=getattr(settings, "aura_max_event_payload_chars", 50000),
             )
         )
-        self.operator_bridge = (
-            operator_bridge
-            if operator_bridge is not None
-            else OperatorBridge(
-                approval_gateway=self.approval_gateway,
-                clarification_gateway=self.clarification_gateway,
-                streaming_gateway=self.streaming_gateway,
-                supervisor=self.supervisor,
-                default_operator_timeout=getattr(settings, "aura_operator_timeout_seconds", 300.0),
-            )
-        )
 
-        # Multi-Agent Team Collaboration & Role Mesh (M21)
+        # Multi-Agent Team Collaboration & Role Mesh (M21/M22)
         self.role_registry = role_registry if role_registry is not None else RoleRegistry()
         self.message_bus = (
             message_bus
@@ -518,6 +412,124 @@ class AgenticRuntime:
                 streaming_gateway=self.streaming_gateway,
                 max_team_members=getattr(settings, "aura_max_team_members", 20),
                 max_delegation_depth=getattr(settings, "aura_max_delegation_depth", 3),
+            )
+        )
+
+        # Resolve or create GoalStore & GoalEngine (M11 / M12 / M22)
+        if goal_store is not None:
+            self.goal_store = goal_store
+        elif goal_engine is not None:
+            self.goal_store = goal_engine.goal_store
+        else:
+            self.goal_store = InMemoryGoalStore()
+
+        self.goal_adapter = (
+            goal_adapter
+            if goal_adapter is not None
+            else GoalAdapter(
+                meta_policy=self.meta_policy,
+                lineage_store=self.strategy_lineage,
+                planner=self.planner,
+                heuristic_calibrator=self.calibrator,
+                clarification_gateway=self.clarification_gateway,
+                role_registry=self.role_registry,
+            )
+        )
+
+        if goal_engine is not None:
+            self.goal_engine = goal_engine
+            if self.goal_engine.memory_manager is None:
+                self.goal_engine.memory_manager = self.memory_manager
+            if getattr(self.goal_engine, "heuristic_calibrator", None) is None and self.calibrator is not None:
+                self.goal_engine.heuristic_calibrator = self.calibrator
+            if getattr(self.goal_engine, "meta_policy", None) is None:
+                self.goal_engine.meta_policy = self.meta_policy
+            if getattr(self.goal_engine, "strategy_lineage", None) is None:
+                self.goal_engine.strategy_lineage = self.strategy_lineage
+            if getattr(self.goal_engine, "goal_adapter", None) is None:
+                self.goal_engine.goal_adapter = self.goal_adapter
+            if getattr(self.goal_engine, "stagnation_monitor", None) is None:
+                self.goal_engine.stagnation_monitor = self.stagnation_monitor
+            if getattr(self.goal_engine, "team_orchestrator", None) is None:
+                self.goal_engine.team_orchestrator = self.team_orchestrator
+            if getattr(self.goal_engine, "role_registry", None) is None:
+                self.goal_engine.role_registry = self.role_registry
+        else:
+            self.goal_engine = GoalEngine(
+                goal_store=self.goal_store,
+                runtime=self.runtime,
+                executor=self.autonomous_executor,
+                state_store=self.state_store,
+                approval_gateway=self.approval_gateway,
+                memory_manager=self.memory_manager,
+                heuristic_calibrator=self.calibrator,
+                meta_policy=self.meta_policy,
+                strategy_lineage=self.strategy_lineage,
+                goal_adapter=self.goal_adapter,
+                stagnation_monitor=self.stagnation_monitor,
+                budget_manager=self.budget_manager,
+                lock_manager=self.lock_manager,
+                scheduler=self.scheduler,
+                event_dispatcher=self.event_dispatcher,
+                clarification_gateway=self.clarification_gateway,
+                team_orchestrator=self.team_orchestrator,
+                role_registry=self.role_registry,
+            )
+
+        # Runtime Checkpoint Manager & Supervisor Daemon (M18 / M22)
+        ckpt_dir = getattr(settings, "aura_checkpoint_dir", ".aura_checkpoints")
+        ckpt_ret = getattr(settings, "aura_checkpoint_retention_count", 5)
+        self.checkpoint_manager = (
+            checkpoint_manager
+            if checkpoint_manager is not None
+            else RuntimeCheckpointManager(
+                checkpoint_dir=ckpt_dir,
+                retention_count=ckpt_ret,
+                scheduler=self.scheduler,
+                budget_manager=self.budget_manager,
+                lock_manager=self.lock_manager,
+                clarification_gateway=self.clarification_gateway,
+                event_dispatcher=self.event_dispatcher,
+                delegation_tree=self.team_orchestrator.delegation_tree,
+                message_bus=self.message_bus,
+                role_registry=self.role_registry,
+            )
+        )
+        self.supervisor_config = (
+            supervisor_config
+            if supervisor_config is not None
+            else SupervisorConfig(
+                checkpoint_dir=ckpt_dir,
+                checkpoint_retention_count=ckpt_ret,
+                shutdown_timeout_seconds=getattr(settings, "aura_daemon_shutdown_timeout_seconds", 5.0),
+                heartbeat_interval_seconds=getattr(settings, "aura_daemon_heartbeat_interval_seconds", 1.0),
+                scheduler_interval_seconds=getattr(settings, "aura_daemon_scheduler_interval_seconds", 2.0),
+                event_interval_seconds=getattr(settings, "aura_daemon_event_interval_seconds", 1.0),
+                lock_prune_interval_seconds=getattr(settings, "aura_daemon_lock_prune_interval_seconds", 10.0),
+                clarification_interval_seconds=getattr(settings, "aura_daemon_clarification_interval_seconds", 10.0),
+                memory_interval_seconds=getattr(settings, "aura_daemon_memory_interval_seconds", 300.0),
+                checkpoint_interval_seconds=getattr(settings, "aura_daemon_checkpoint_interval_seconds", 30.0),
+            )
+        )
+        self.supervisor = (
+            supervisor
+            if supervisor is not None
+            else AutonomousSupervisor(
+                runtime=self,
+                config=self.supervisor_config,
+                checkpoint_manager=self.checkpoint_manager,
+            )
+        )
+
+        self.operator_bridge = (
+            operator_bridge
+            if operator_bridge is not None
+            else OperatorBridge(
+                approval_gateway=self.approval_gateway,
+                clarification_gateway=self.clarification_gateway,
+                streaming_gateway=self.streaming_gateway,
+                supervisor=self.supervisor,
+                default_operator_timeout=getattr(settings, "aura_operator_timeout_seconds", 300.0),
             )
         )
 
@@ -639,10 +651,17 @@ class AgenticRuntime:
                 context=context,
             )
         elif isinstance(goal, str):
-            if not goal.strip():
+            clean_gid = goal.strip()
+            if not clean_gid:
                 raise ValueError("Goal title cannot be empty.")
+            if self.goal_store.exists(clean_gid):
+                return self.goal_engine.evaluate_goal(
+                    goal_id=clean_gid,
+                    trigger_id=trigger_id,
+                    context=context,
+                )
             g = self.goal_engine.create_goal(
-                title=goal.strip(),
+                title=clean_gid,
                 metadata=dict(metadata or {}),
                 parent_goal_id=parent_goal_id,
                 depends_on_goal_ids=depends_on_goal_ids,
@@ -982,6 +1001,49 @@ class AgenticRuntime:
         )
         return goal
 
+    def submit_team_goal(
+        self,
+        title: str,
+        description: str = "",
+        team_id: str | None = None,
+        role_id: str | None = None,
+        topology: Any = None,
+        success_criteria: list[str] | tuple[str, ...] = (),
+        constraints: list[str] | tuple[str, ...] = (),
+        priority: Any = None,
+        metadata: dict[str, Any] | None = None,
+        auto_activate: bool = True,
+        parent_goal_id: str | None = None,
+        depends_on_goal_ids: Sequence[str] = (),
+    ) -> Goal:
+        """Create and schedule a multi-agent team bound goal (M22)."""
+        from core.goal import GoalPriority
+        from core.team_types import TeamTopology
+        eff_pri = priority if isinstance(priority, GoalPriority) else (GoalPriority(priority) if isinstance(priority, str) else GoalPriority.MEDIUM)
+        eff_topo = topology.value if isinstance(topology, TeamTopology) else (str(topology) if topology else None)
+        goal = self.goal_engine.create_goal(
+            title=title,
+            description=description,
+            success_criteria=success_criteria,
+            constraints=constraints,
+            priority=eff_pri,
+            auto_activate=auto_activate,
+            metadata=metadata,
+            parent_goal_id=parent_goal_id,
+            depends_on_goal_ids=tuple(depends_on_goal_ids),
+            assigned_team_id=team_id,
+            assigned_role_id=role_id,
+            execution_topology=eff_topo,
+        )
+        self.scheduler.schedule_goal(
+            goal.goal_id,
+            priority=goal.priority,
+            assigned_team_id=goal.assigned_team_id,
+            assigned_role_id=goal.assigned_role_id,
+            execution_topology=goal.execution_topology,
+        )
+        return goal
+
     def approve_action(
         self,
         approval_id: str,
@@ -1174,3 +1236,55 @@ class AgenticRuntime:
             session_id=session_id,
             team_id=team_id,
         )
+
+    def submit_team_goal(
+        self,
+        title: str,
+        description: str,
+        team: TeamDefinition | None = None,
+        topology: TeamTopology | str | None = None,
+        priority: GoalPriority | None = None,
+        success_criteria: tuple[str, ...] | list[str] = (),
+        session_id: str = "default",
+        metadata: dict[str, Any] | None = None,
+    ) -> Goal:
+        """Submit a goal explicitly bound to a multi-agent team or topology (M22)."""
+        from core.goal_team_binding import sanitize_binding_metadata
+        topo = None
+        team_id = None
+        clean_meta = sanitize_binding_metadata(metadata or {})
+        if team is not None:
+            team_id = team.team_id
+            topo = team.topology
+            if hasattr(team, "members") and team.members:
+                clean_meta["team_members"] = [{"role_id": m.role_id, "is_lead": m.is_lead} for m in team.members]
+            if hasattr(team, "name") and team.name:
+                clean_meta["team_name"] = team.name
+            if hasattr(team, "metadata") and team.metadata:
+                sanitized_team_meta = sanitize_binding_metadata(team.metadata)
+                clean_meta = {**sanitized_team_meta, **clean_meta}
+        elif topology is not None:
+            topo = TeamTopology(topology) if isinstance(topology, str) else topology
+
+        if session_id:
+            clean_meta["session_id"] = str(session_id).strip()
+
+        goal = self.goal_engine.create_goal(
+            title=title,
+            description=description,
+            priority=priority or GoalPriority.MEDIUM,
+            success_criteria=tuple(success_criteria),
+            assigned_team_id=team_id,
+            execution_topology=topo,
+            metadata=clean_meta,
+        )
+        if self.scheduler is not None:
+            self.scheduler.schedule_goal(
+                goal_id=goal.goal_id,
+                priority=goal.priority,
+                assigned_team_id=goal.assigned_team_id,
+                assigned_role_id=goal.assigned_role_id,
+                execution_topology=topo.value if hasattr(topo, "value") else (str(topo) if topo is not None else None),
+                metadata=clean_meta,
+            )
+        return goal

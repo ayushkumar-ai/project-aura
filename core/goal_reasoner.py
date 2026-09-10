@@ -24,6 +24,7 @@ class GoalEvaluationResult:
     action_needed: bool
     new_progress: GoalProgress
     proposed_plan: AgentPlan | None = None
+    proposed_team_binding: Any | None = None
     rationale: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -36,8 +37,20 @@ class GoalEvaluationResult:
             raise TypeError("new_progress must be an instance of GoalProgress.")
         if self.proposed_plan is not None and not isinstance(self.proposed_plan, AgentPlan):
             raise TypeError("proposed_plan must be an instance of AgentPlan or None.")
+        if self.proposed_team_binding is not None:
+            from core.goal_team_binding import GoalTeamBinding
+            if not isinstance(self.proposed_team_binding, GoalTeamBinding):
+                raise TypeError("proposed_team_binding must be an instance of GoalTeamBinding or None.")
         if not isinstance(self.rationale, str):
             raise TypeError("rationale must be a string.")
+
+    @property
+    def success(self) -> bool:
+        return self.is_completed
+
+    @property
+    def status(self) -> GoalStatus:
+        return GoalStatus.COMPLETED if self.is_completed else GoalStatus.IN_PROGRESS
 
 
 class GoalReasoner:
@@ -132,7 +145,18 @@ class GoalReasoner:
 
         total_crit = len(goal.success_criteria)
         if total_crit == 0:
-            percentage = 1.0
+            if goal.assigned_team_id or (self.skill_registry is not None and self.skill_registry.list_skills()):
+                if len(observations) == 0 and goal.action_count == 0:
+                    remaining = [goal.title or "Execute goal"]
+                    total_crit = 1
+                    percentage = 0.0
+                    is_complete = False
+                else:
+                    percentage = 1.0
+                    is_complete = True
+            else:
+                percentage = 1.0
+                is_complete = True
         else:
             percentage = len(satisfied) / float(total_crit)
 
@@ -161,12 +185,57 @@ class GoalReasoner:
                 rationale="All success criteria have been satisfied.",
             )
 
-        # 2. If not complete, determine if an action plan should be formulated
-        # If we have registered skills, formulate an action plan for the next remaining criterion
+        # 2. If not complete, determine if an action plan or team binding should be formulated
         proposed_plan: AgentPlan | None = None
+        proposed_team_binding: Any | None = None
         action_needed = False
 
-        if self.skill_registry is not None and self.skill_registry.list_skills():
+        if goal.assigned_team_id:
+            from core.goal_team_binding import GoalTeamBinding, GoalTeamBindingStatus
+            from core.team_types import TeamDefinition, TeamMember, TeamTopology
+            if isinstance(goal.execution_topology, TeamTopology):
+                topology = goal.execution_topology
+            elif isinstance(goal.execution_topology, str):
+                try:
+                    topology = TeamTopology(goal.execution_topology)
+                except Exception:
+                    topology = TeamTopology.HIERARCHICAL
+            else:
+                topology = TeamTopology.HIERARCHICAL
+
+            next_crit = remaining[0] if remaining else "Advance team goal"
+            
+            if goal.metadata and "team_members" in goal.metadata and isinstance(goal.metadata["team_members"], list):
+                members = [
+                    TeamMember(role_id=m["role_id"], is_lead=m.get("is_lead", False))
+                    for m in goal.metadata["team_members"]
+                    if isinstance(m, dict) and "role_id" in m
+                ]
+            elif goal.assigned_role_id:
+                members = [TeamMember(role_id=goal.assigned_role_id, is_lead=True)]
+            elif hasattr(self, "role_registry") and self.role_registry is not None and self.role_registry.list_roles():
+                registered = self.role_registry.list_roles()
+                members = [TeamMember(role_id=r.role_id, is_lead=(i == 0)) for i, r in enumerate(registered)]
+            else:
+                members = [TeamMember(role_id="general_assistant", is_lead=True)]
+
+            team_name = goal.metadata.get("team_name") if goal.metadata else None
+            team_def = TeamDefinition(
+                team_id=goal.assigned_team_id,
+                name=team_name or f"Team for {goal.title}",
+                members=members,
+                topology=topology,
+            )
+            proposed_team_binding = GoalTeamBinding(
+                binding_id=f"binding_{goal.goal_id}_{int(time.time())}",
+                goal_id=goal.goal_id,
+                team_definition=team_def,
+                task_description=f"Execute goal '{goal.title}': {next_crit}. Context: {goal.description}",
+                target_criteria=(next_crit,) if next_crit else (),
+                status=GoalTeamBindingStatus.BOUND,
+            )
+            action_needed = True
+        elif self.skill_registry is not None and self.skill_registry.list_skills():
             next_crit = remaining[0] if remaining else "Advance goal"
             proposed_plan = self._propose_plan_for_criterion(
                 goal=goal,
@@ -181,6 +250,7 @@ class GoalReasoner:
             action_needed=action_needed,
             new_progress=new_prog,
             proposed_plan=proposed_plan,
+            proposed_team_binding=proposed_team_binding,
             rationale=(
                 f"Action required to address remaining criteria: {', '.join(remaining[:2])}"
                 if action_needed

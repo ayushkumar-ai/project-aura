@@ -95,6 +95,8 @@ class AgentMessageBus:
             except Exception as cb_err:
                 logger.error("Error executing subscriber callback on message '%s': %s", message.message_id, cb_err)
 
+    post_message = publish
+
     def send_direct(
         self,
         sender: str,

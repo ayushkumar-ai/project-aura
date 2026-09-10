@@ -125,6 +125,8 @@ class RoleRegistry:
             self._roles[role.role_id] = role
             logger.info("Registered AgentRole: %s (%s)", role.role_id, role.name)
 
+    register = register_role
+
     def get_role(self, role_id: str) -> AgentRole:
         """Retrieve a registered AgentRole by its role_id."""
         if not isinstance(role_id, str) or not role_id.strip():

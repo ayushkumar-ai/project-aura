@@ -109,6 +109,8 @@ class StrategyType(str, Enum):
     RESEARCH_ASSISTED_SYNTHESIS = "research_assisted_synthesis"
     FALLBACK_TOOL_ROUTING = "fallback_tool_routing"
     HUMAN_INTERACTIVE_CLARIFICATION = "human_interactive_clarification"
+    MULTI_AGENT_TEAM_COLLABORATION = "multi_agent_team_collaboration"
+    TEAM_CONSENSUS_DELIBERATION = "team_consensus_deliberation"
 
 
 class StrategyAttemptOutcome(str, Enum):

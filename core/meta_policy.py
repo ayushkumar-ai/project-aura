@@ -170,10 +170,22 @@ class MetaPolicyEngine:
 
         elif last_attempt is None:
             # Initial evaluation (no prior attempts)
+            goal_text = f"{goal.title} {goal.description} {' '.join(goal.success_criteria)}".lower()
+            is_consensus = (
+                (hasattr(goal, "execution_topology") and (
+                    str(goal.execution_topology).lower() in ("consensus_voting", "teamtopology.consensus_voting")
+                    or getattr(goal.execution_topology, "value", None) == "consensus_voting"
+                ))
+                or any(k in goal_text for k in ("consensus", "deliberat", "voting", "vote", "peer review"))
+            )
+            if is_consensus:
+                candidate = StrategyType.TEAM_CONSENSUS_DELIBERATION
+            elif goal.assigned_team_id or any(k in goal_text for k in ("team", "collaborate", "multi-agent", "role-specialized")):
+                candidate = StrategyType.MULTI_AGENT_TEAM_COLLABORATION
             # Complex goals (many criteria or subgoals) -> DECOMPOSED_HIERARCHICAL
-            if len(goal.success_criteria) > 2 or bool(goal.subgoal_ids):
+            elif len(goal.success_criteria) > 2 or bool(goal.subgoal_ids):
                 candidate = StrategyType.DECOMPOSED_HIERARCHICAL
-            elif any(k in f"{goal.title} {goal.description}".lower() for k in ("research", "find", "search", "investigate", "compare")):
+            elif any(k in goal_text for k in ("research", "find", "search", "investigate", "compare")):
                 candidate = StrategyType.RESEARCH_ASSISTED_SYNTHESIS
             else:
                 candidate = StrategyType.DIRECT_SKILL
@@ -188,27 +200,46 @@ class MetaPolicyEngine:
                 eff_lower = effective_failure.lower()
                 if "timeout" in eff_lower:
                     # Timeout: break down into smaller steps or try fallback tool
-                    candidates = [StrategyType.FALLBACK_TOOL_ROUTING, StrategyType.DECOMPOSED_HIERARCHICAL]
+                    candidates = [
+                        StrategyType.FALLBACK_TOOL_ROUTING,
+                        StrategyType.DECOMPOSED_HIERARCHICAL,
+                        StrategyType.MULTI_AGENT_TEAM_COLLABORATION,
+                    ]
                 elif "policy" in eff_lower or "permission" in eff_lower:
                     # Policy denial: interactive clarification or fallback
-                    candidates = [StrategyType.HUMAN_INTERACTIVE_CLARIFICATION, StrategyType.FALLBACK_TOOL_ROUTING]
+                    candidates = [
+                        StrategyType.HUMAN_INTERACTIVE_CLARIFICATION,
+                        StrategyType.FALLBACK_TOOL_ROUTING,
+                    ]
                 elif "payload" in eff_lower or "tool_error" in eff_lower:
                     # Tool payload error: fallback tool or research synthesis
-                    candidates = [StrategyType.FALLBACK_TOOL_ROUTING, StrategyType.RESEARCH_ASSISTED_SYNTHESIS]
+                    candidates = [
+                        StrategyType.FALLBACK_TOOL_ROUTING,
+                        StrategyType.RESEARCH_ASSISTED_SYNTHESIS,
+                        StrategyType.MULTI_AGENT_TEAM_COLLABORATION,
+                    ]
                 elif "dependency" in eff_lower:
                     # Missing prerequisite: decomposed hierarchical
-                    candidates = [StrategyType.DECOMPOSED_HIERARCHICAL, StrategyType.RESEARCH_ASSISTED_SYNTHESIS]
-                else:
                     candidates = [
                         StrategyType.DECOMPOSED_HIERARCHICAL,
                         StrategyType.RESEARCH_ASSISTED_SYNTHESIS,
+                        StrategyType.MULTI_AGENT_TEAM_COLLABORATION,
+                    ]
+                else:
+                    candidates = [
+                        StrategyType.DECOMPOSED_HIERARCHICAL,
+                        StrategyType.MULTI_AGENT_TEAM_COLLABORATION,
+                        StrategyType.RESEARCH_ASSISTED_SYNTHESIS,
+                        StrategyType.TEAM_CONSENSUS_DELIBERATION,
                         StrategyType.FALLBACK_TOOL_ROUTING,
                         StrategyType.HUMAN_INTERACTIVE_CLARIFICATION,
                     ]
             else:
                 candidates = [
                     StrategyType.DECOMPOSED_HIERARCHICAL,
+                    StrategyType.MULTI_AGENT_TEAM_COLLABORATION,
                     StrategyType.RESEARCH_ASSISTED_SYNTHESIS,
+                    StrategyType.TEAM_CONSENSUS_DELIBERATION,
                     StrategyType.FALLBACK_TOOL_ROUTING,
                     StrategyType.HUMAN_INTERACTIVE_CLARIFICATION,
                     StrategyType.DIRECT_SKILL,

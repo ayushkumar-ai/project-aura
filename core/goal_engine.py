@@ -110,6 +110,8 @@ class GoalEngine:
         scheduler: MultiGoalScheduler | None = None,
         event_dispatcher: ProactiveEventDispatcher | None = None,
         clarification_gateway: ClarificationGateway | None = None,
+        team_orchestrator: Any | None = None,
+        role_registry: Any | None = None,
     ):
         if goal_store is not None and not isinstance(goal_store, GoalStore):
             raise TypeError("goal_store must be an instance of GoalStore or None.")
@@ -126,6 +128,8 @@ class GoalEngine:
         if config is not None and not isinstance(config, GoalEngineConfig):
             raise TypeError("config must be an instance of GoalEngineConfig or None.")
 
+        self.team_orchestrator = team_orchestrator
+        self.role_registry = role_registry
         self.memory_manager = memory_manager
         self.heuristic_calibrator = heuristic_calibrator
         self.strategy_lineage = strategy_lineage if strategy_lineage is not None else StrategyLineageStore()
@@ -144,6 +148,7 @@ class GoalEngine:
                 meta_policy=self.meta_policy,
                 lineage_store=self.strategy_lineage,
                 heuristic_calibrator=self.heuristic_calibrator,
+                role_registry=self.role_registry,
             )
         )
         self.stagnation_monitor = (
@@ -225,6 +230,9 @@ class GoalEngine:
         subgoal_ids: list[str] | tuple[str, ...] = (),
         depends_on_goal_ids: list[str] | tuple[str, ...] = (),
         depth: int = 0,
+        assigned_team_id: str | None = None,
+        assigned_role_id: str | None = None,
+        execution_topology: str | None = None,
     ) -> Goal:
         """Create and store a new Goal entity with hierarchical sub-goal and dependency support."""
         active_goals = self.goal_store.list_goals(status=GoalStatus.ACTIVE)
@@ -281,6 +289,9 @@ class GoalEngine:
             subgoal_ids=tuple(str(s).strip() for s in subgoal_ids if str(s).strip()),
             depends_on_goal_ids=tuple(clean_deps),
             depth=effective_depth,
+            assigned_team_id=assigned_team_id,
+            assigned_role_id=assigned_role_id,
+            execution_topology=execution_topology,
         )
 
         # Check for dependency cycle
@@ -314,6 +325,9 @@ class GoalEngine:
         auto_activate: bool = True,
         metadata: dict[str, Any] | None = None,
         depends_on_goal_ids: list[str] | tuple[str, ...] = (),
+        assigned_team_id: str | None = None,
+        assigned_role_id: str | None = None,
+        execution_topology: str | None = None,
     ) -> Goal:
         """Convenience method to create a hierarchical sub-goal linked to a parent."""
         return self.create_goal(
@@ -328,6 +342,9 @@ class GoalEngine:
             metadata=metadata,
             parent_goal_id=parent_goal_id,
             depends_on_goal_ids=depends_on_goal_ids,
+            assigned_team_id=assigned_team_id,
+            assigned_role_id=assigned_role_id,
+            execution_topology=execution_topology,
         )
 
     def get_goal(self, goal_id: str) -> Goal:
@@ -647,6 +664,173 @@ class GoalEngine:
             )
             self.goal_store.update(completed_goal)
             return eval_res
+
+        # 8.5 If action needed via team binding and TeamOrchestrator is available
+        if eval_res.action_needed and (eval_res.proposed_team_binding is not None or eval_goal.assigned_team_id) and self.team_orchestrator is not None:
+            if eval_goal.action_count >= self.config.max_actions_per_goal:
+                logger.warning("Goal '%s' exceeded max_actions_per_goal limit.", goal_id)
+                failed_goal = eval_goal.with_progress(
+                    progress=eval_res.new_progress,
+                    status=GoalStatus.FAILED,
+                    evaluation_count=eval_goal.evaluation_count + 1,
+                )
+                self.goal_store.update(failed_goal)
+                return GoalEvaluationResult(
+                    is_completed=False,
+                    action_needed=False,
+                    new_progress=eval_res.new_progress,
+                    rationale=f"Max actions limit reached ({self.config.max_actions_per_goal}).",
+                )
+
+            binding = eval_res.proposed_team_binding
+            if binding is None and eval_goal.assigned_team_id:
+                from core.team_types import TeamDefinition, TeamMember, TeamTopology
+                from core.goal_team_binding import GoalTeamBinding
+                if eval_goal.metadata and "team_members" in eval_goal.metadata and isinstance(eval_goal.metadata["team_members"], list):
+                    members = [
+                        TeamMember(role_id=m["role_id"], is_lead=m.get("is_lead", False))
+                        for m in eval_goal.metadata["team_members"]
+                        if isinstance(m, dict) and "role_id" in m
+                    ]
+                elif eval_goal.assigned_role_id:
+                    members = [TeamMember(role_id=eval_goal.assigned_role_id, is_lead=True)]
+                elif self.role_registry is not None and self.role_registry.list_roles():
+                    registered = self.role_registry.list_roles()
+                    members = [TeamMember(role_id=r.role_id, is_lead=(i == 0)) for i, r in enumerate(registered)]
+                else:
+                    members = [TeamMember(role_id="general_assistant", is_lead=True)]
+
+                topology = (
+                    TeamTopology(eval_goal.execution_topology)
+                    if eval_goal.execution_topology and eval_goal.execution_topology in [t.value for t in TeamTopology]
+                    else TeamTopology.HIERARCHICAL
+                )
+                team_name = eval_goal.metadata.get("team_name") if eval_goal.metadata else None
+                team_def = TeamDefinition(
+                    team_id=eval_goal.assigned_team_id,
+                    name=team_name or f"Team for {eval_goal.title}",
+                    members=members,
+                    topology=topology,
+                )
+                binding = GoalTeamBinding(
+                    goal_id=goal_id,
+                    team_definition=team_def,
+                    task_description=f"Execute goal '{eval_goal.title}': {eval_goal.description}",
+                )
+
+            # Check Resource Budget Quota (M17)
+            if self.budget_manager is not None:
+                alloc_res = self.budget_manager.acquire_quota(goal_id=goal_id)
+                if not alloc_res.is_granted:
+                    logger.warning("Goal '%s' execution throttled by resource budget: %s", goal_id, alloc_res.reason)
+                    throttled_goal = eval_goal.with_progress(
+                        progress=eval_res.new_progress,
+                        status=GoalStatus.ACTIVE,
+                        evaluation_count=eval_goal.evaluation_count + 1,
+                    )
+                    self.goal_store.update(throttled_goal)
+                    return GoalEvaluationResult(
+                        is_completed=False,
+                        action_needed=False,
+                        new_progress=eval_res.new_progress,
+                        rationale=f"Execution throttled by resource budget: {alloc_res.reason}",
+                    )
+
+            # Transition to EXECUTING
+            executing_goal = eval_goal.with_status(GoalStatus.EXECUTING)
+            task_id = f"goal_{goal_id}_team_act_{executing_goal.action_count + 1}"
+            executing_goal = executing_goal.with_executed_task(task_id)
+            self.goal_store.update(executing_goal)
+
+            try:
+                sess_id = eval_goal.metadata.get("session_id", "default") if eval_goal.metadata else "default"
+                team_exec_result = self.team_orchestrator.execute_team(
+                    task=binding.task_description,
+                    team=binding.team_definition,
+                    session_id=sess_id,
+                    metadata=eval_goal.metadata,
+                )
+            except Exception as exc:
+                logger.error("Team execution failed for goal %s: %s", goal_id, exc)
+                from core.team_types import TeamExecutionResult, TeamTopology
+                team_exec_result = TeamExecutionResult(
+                    team_id=binding.team_definition.team_id,
+                    task=binding.task_description,
+                    topology=binding.team_definition.topology,
+                    success=False,
+                    final_output=f"Team execution error: {exc}",
+                    error=str(exc),
+                )
+
+            from core.goal_team_binding import GoalTeamExecutionResult
+            team_res = GoalTeamExecutionResult.from_team_result(binding, team_exec_result)
+
+            if self.budget_manager is not None:
+                self.budget_manager.release_quota(goal_id=goal_id, actual_tool_calls=len(team_res.subtask_results) or 1)
+
+            # Record team observation
+            obs = team_res.to_goal_observation()
+            self.goal_store.add_observation(goal_id, obs)
+
+            # Record lineage outcome
+            if self.strategy_lineage is not None:
+                from core.strategy_types import StrategyAttemptOutcome, StrategyType
+                from core.team_types import TeamTopology
+                strat_type = (
+                    StrategyType.TEAM_CONSENSUS_DELIBERATION
+                    if binding.team_definition.topology == TeamTopology.CONSENSUS_VOTING
+                    else StrategyType.MULTI_AGENT_TEAM_COLLABORATION
+                )
+                self.strategy_lineage.record_attempt(
+                    goal_id=goal_id,
+                    strategy_type=strat_type,
+                    outcome=StrategyAttemptOutcome.SUCCESS if team_res.success else StrategyAttemptOutcome.FAILURE,
+                    plan_id=binding.binding_id,
+                    failure_category=team_res.error if not team_res.success else None,
+                    rationale=f"Executed team binding {binding.binding_id}",
+                )
+
+            # Trigger adaptation upon team failure
+            if not team_res.success:
+                fail_obs = self.get_observations(goal_id)
+                adapt_res = self.goal_adapter.adapt_goal_plan(
+                    goal=executing_goal,
+                    error_message=str(team_res.error_message or "Team execution failed"),
+                    observations=fail_obs,
+                )
+                if adapt_res.should_abandon:
+                    abandoned_goal = executing_goal.with_progress(
+                        progress=eval_res.new_progress,
+                        status=GoalStatus.FAILED,
+                        evaluation_count=executing_goal.evaluation_count + 1,
+                        action_count=executing_goal.action_count + 1,
+                    )
+                    self.goal_store.update(abandoned_goal)
+                    return GoalEvaluationResult(
+                        is_completed=False,
+                        action_needed=False,
+                        new_progress=eval_res.new_progress,
+                        rationale=adapt_res.rationale,
+                    )
+
+            # Re-evaluate progress after action
+            updated_obs = self.get_observations(goal_id)
+            post_eval = self.reasoner.evaluate(executing_goal, observations=updated_obs)
+
+            final_status = (
+                GoalStatus.COMPLETED
+                if post_eval.is_completed and not subgoals_pending
+                else GoalStatus.PROGRESS_UPDATED
+            )
+
+            final_goal = executing_goal.with_progress(
+                progress=post_eval.new_progress,
+                status=final_status,
+                evaluation_count=executing_goal.evaluation_count + 1,
+                action_count=executing_goal.action_count + 1,
+            )
+            self.goal_store.update(final_goal)
+            return post_eval
 
         # 9. If action needed, execute proposed plan via AutonomousAgentExecutor with lineage tracking
         if eval_res.action_needed and eval_res.proposed_plan is not None:

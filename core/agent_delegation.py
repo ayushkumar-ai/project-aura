@@ -174,6 +174,7 @@ class DelegationTree:
         self.max_active_delegations = max_active_delegations
         self._lock = threading.RLock()
         self._active_contracts: dict[str, DelegationContract] = {}
+        self._contracts: dict[str, DelegationContract] = {}
         self._results: dict[str, DelegationResult] = {}
         self._tree_edges: dict[str, list[str]] = {}  # parent_id -> list of child delegation_ids
 
@@ -199,6 +200,7 @@ class DelegationTree:
                 if not role_registry.has_role(contract.delegatee_role_id):
                     raise DelegationPolicyError(f"Delegatee role '{contract.delegatee_role_id}' is not registered.")
 
+            self._contracts[contract.delegation_id] = contract
             self._active_contracts[contract.delegation_id] = contract
             parent_key = contract.parent_task_id or "root"
             if parent_key not in self._tree_edges:
@@ -222,10 +224,12 @@ class DelegationTree:
                 del self._active_contracts[result.delegation_id]
             self._results[result.delegation_id] = result
 
+    record_result = complete_delegation
+
     def get_contract(self, delegation_id: str) -> DelegationContract | None:
-        """Retrieve active contract by ID."""
+        """Retrieve contract by ID."""
         with self._lock:
-            return self._active_contracts.get(delegation_id)
+            return self._contracts.get(delegation_id) or self._active_contracts.get(delegation_id)
 
     def get_result(self, delegation_id: str) -> DelegationResult | None:
         """Retrieve result by delegation ID."""
@@ -241,5 +245,6 @@ class DelegationTree:
         """Reset the delegation tree."""
         with self._lock:
             self._active_contracts.clear()
+            self._contracts.clear()
             self._results.clear()
             self._tree_edges.clear()

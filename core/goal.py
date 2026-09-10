@@ -341,11 +341,22 @@ class Goal:
     depends_on_goal_ids: tuple[str, ...] = field(default_factory=tuple)
     depth: int = 0
     executed_task_ids: tuple[str, ...] = field(default_factory=tuple)
+    assigned_team_id: str | None = None
+    assigned_role_id: str | None = None
+    execution_topology: str | None = None
 
     def __post_init__(self):
         if not isinstance(self.goal_id, str) or not self.goal_id.strip():
             raise ValueError("goal_id must be a non-empty string.")
         object.__setattr__(self, "goal_id", self.goal_id.strip())
+
+        if self.assigned_team_id is not None:
+            object.__setattr__(self, "assigned_team_id", str(self.assigned_team_id).strip().lower() if str(self.assigned_team_id).strip() else None)
+        if self.assigned_role_id is not None:
+            object.__setattr__(self, "assigned_role_id", str(self.assigned_role_id).strip().lower() if str(self.assigned_role_id).strip() else None)
+        if self.execution_topology is not None:
+            top_val = self.execution_topology.value if hasattr(self.execution_topology, "value") else str(self.execution_topology).strip().lower()
+            object.__setattr__(self, "execution_topology", top_val if top_val else None)
 
         if not isinstance(self.title, str) or not self.title.strip():
             raise ValueError("title must be a non-empty string.")
@@ -481,6 +492,9 @@ class Goal:
             depends_on_goal_ids=self.depends_on_goal_ids,
             depth=self.depth,
             executed_task_ids=self.executed_task_ids,
+            assigned_team_id=self.assigned_team_id,
+            assigned_role_id=self.assigned_role_id,
+            execution_topology=self.execution_topology,
         )
 
     def with_progress(
@@ -522,6 +536,9 @@ class Goal:
             depends_on_goal_ids=self.depends_on_goal_ids,
             depth=self.depth,
             executed_task_ids=self.executed_task_ids,
+            assigned_team_id=self.assigned_team_id,
+            assigned_role_id=self.assigned_role_id,
+            execution_topology=self.execution_topology,
         )
 
     def with_updated_trigger(self, trigger_id: str, fired_at: float | None = None) -> "Goal":
@@ -552,6 +569,9 @@ class Goal:
             depends_on_goal_ids=self.depends_on_goal_ids,
             depth=self.depth,
             executed_task_ids=self.executed_task_ids,
+            assigned_team_id=self.assigned_team_id,
+            assigned_role_id=self.assigned_role_id,
+            execution_topology=self.execution_topology,
         )
 
     def with_subgoal(self, subgoal_id: str) -> "Goal":
@@ -583,6 +603,9 @@ class Goal:
             depends_on_goal_ids=self.depends_on_goal_ids,
             depth=self.depth,
             executed_task_ids=self.executed_task_ids,
+            assigned_team_id=self.assigned_team_id,
+            assigned_role_id=self.assigned_role_id,
+            execution_topology=self.execution_topology,
         )
 
     def with_dependency(self, dependency_goal_id: str) -> "Goal":
@@ -614,6 +637,9 @@ class Goal:
             depends_on_goal_ids=new_deps,
             depth=self.depth,
             executed_task_ids=self.executed_task_ids,
+            assigned_team_id=self.assigned_team_id,
+            assigned_role_id=self.assigned_role_id,
+            execution_topology=self.execution_topology,
         )
 
     def with_executed_task(self, task_id: str) -> "Goal":
@@ -645,6 +671,42 @@ class Goal:
             depends_on_goal_ids=self.depends_on_goal_ids,
             depth=self.depth,
             executed_task_ids=new_tasks,
+            assigned_team_id=self.assigned_team_id,
+            assigned_role_id=self.assigned_role_id,
+            execution_topology=self.execution_topology,
+        )
+
+    def with_team_assignment(
+        self,
+        team_id: str | None = None,
+        role_id: str | None = None,
+        topology: Any = None,
+    ) -> "Goal":
+        """Return a new Goal with team correlation and topology assignment."""
+        return Goal(
+            goal_id=self.goal_id,
+            title=self.title,
+            description=self.description,
+            success_criteria=self.success_criteria,
+            constraints=self.constraints,
+            priority=self.priority,
+            status=self.status,
+            triggers=self.triggers,
+            progress=self.progress,
+            evaluation_count=self.evaluation_count,
+            action_count=self.action_count,
+            created_at=self.created_at,
+            updated_at=time.time(),
+            expires_at=self.expires_at,
+            metadata=dict(self.metadata),
+            parent_goal_id=self.parent_goal_id,
+            subgoal_ids=self.subgoal_ids,
+            depends_on_goal_ids=self.depends_on_goal_ids,
+            depth=self.depth,
+            executed_task_ids=self.executed_task_ids,
+            assigned_team_id=team_id if team_id is not None else self.assigned_team_id,
+            assigned_role_id=role_id if role_id is not None else self.assigned_role_id,
+            execution_topology=topology if topology is not None else self.execution_topology,
         )
 
 
@@ -884,6 +946,9 @@ def serialize_goal(goal: Goal) -> dict[str, Any]:
         "depends_on_goal_ids": list(goal.depends_on_goal_ids),
         "depth": goal.depth,
         "executed_task_ids": list(goal.executed_task_ids),
+        "assigned_team_id": goal.assigned_team_id,
+        "assigned_role_id": goal.assigned_role_id,
+        "execution_topology": goal.execution_topology,
     }
 
 
@@ -926,4 +991,7 @@ def deserialize_goal(data: dict[str, Any]) -> Goal:
         depends_on_goal_ids=tuple(data.get("depends_on_goal_ids", ())),
         depth=int(data.get("depth", 0)),
         executed_task_ids=tuple(data.get("executed_task_ids", ())),
+        assigned_team_id=data.get("assigned_team_id"),
+        assigned_role_id=data.get("assigned_role_id"),
+        execution_topology=data.get("execution_topology"),
     )

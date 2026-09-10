@@ -272,6 +272,37 @@ class AURA:
             depends_on_goal_ids=depends_on_goal_ids,
         )
 
+    def submit_team_goal(
+        self,
+        title: str,
+        description: str = "",
+        team_id: str | None = None,
+        role_id: str | None = None,
+        topology: Any = None,
+        success_criteria: Sequence[str] = (),
+        constraints: Sequence[str] = (),
+        priority: Any = None,
+        metadata: dict[str, Any] | None = None,
+        parent_goal_id: str | None = None,
+        depends_on_goal_ids: Sequence[str] = (),
+    ) -> Any:
+        """Submit and schedule a multi-agent team bound goal (M22)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.submit_team_goal(
+            title=title,
+            description=description,
+            team_id=team_id,
+            role_id=role_id,
+            topology=topology,
+            success_criteria=list(success_criteria),
+            constraints=list(constraints),
+            priority=priority,
+            metadata=metadata,
+            parent_goal_id=parent_goal_id,
+            depends_on_goal_ids=depends_on_goal_ids,
+        )
+
     def approve_action(
         self,
         approval_id: str,
@@ -383,3 +414,31 @@ class AURA:
         if self.agentic_runtime is None:
             return None
         return self.agentic_runtime.get_role_registry()
+
+    # ---------------------------------------------------------
+    # M22 Multi-Agent Goal Convergence & Team-Aware Scheduling
+    # ---------------------------------------------------------
+    def submit_team_goal(
+        self,
+        title: str,
+        description: str,
+        team: Any = None,
+        topology: Any = None,
+        priority: Any = None,
+        success_criteria: tuple[str, ...] | list[str] = (),
+        session_id: str = "default",
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """Submit a multi-agent team-bound goal for autonomous convergence (M22)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.submit_team_goal(
+            title=title,
+            description=description,
+            team=team,
+            topology=topology,
+            priority=priority,
+            success_criteria=success_criteria,
+            session_id=session_id,
+            metadata=metadata,
+        )

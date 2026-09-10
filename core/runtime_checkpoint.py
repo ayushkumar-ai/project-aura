@@ -68,16 +68,30 @@ class RuntimeCheckpointManager:
         lock_manager: SharedResourceLockManager | None = None,
         clarification_gateway: ClarificationGateway | None = None,
         event_dispatcher: ProactiveEventDispatcher | None = None,
+        delegation_tree: Any | None = None,
+        message_bus: Any | None = None,
+        role_registry: Any | None = None,
     ) -> None:
         self.checkpoint_dir = Path(checkpoint_dir)
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.retention_count = max(1, int(retention_count))
         self.scheduler = scheduler
         self.budget_manager = budget_manager
         self.lock_manager = lock_manager
         self.clarification_gateway = clarification_gateway
         self.event_dispatcher = event_dispatcher
+        self.delegation_tree = delegation_tree
+        self.message_bus = message_bus
+        self.role_registry = role_registry
         self._lock = threading.RLock()
+
+    @property
+    def checkpoint_dir(self) -> Path:
+        return self._checkpoint_dir
+
+    @checkpoint_dir.setter
+    def checkpoint_dir(self, value: str | Path) -> None:
+        self._checkpoint_dir = Path(value)
+        self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     def _pointer_path(self) -> Path:
         return self.checkpoint_dir / "latest_checkpoint.json"
@@ -139,6 +153,9 @@ class RuntimeCheckpointManager:
                             "completed_at": task.completed_at,
                             "status": task.status.value,
                             "required_resources": list(task.required_resources),
+                            "assigned_team_id": task.assigned_team_id,
+                            "assigned_role_id": task.assigned_role_id,
+                            "execution_topology": task.execution_topology,
                             "metadata": sanitize_checkpoint_metadata(_canonical_value(task.metadata)),
                         })
 
@@ -229,6 +246,110 @@ class RuntimeCheckpointManager:
                             "metadata": sanitize_checkpoint_metadata(_canonical_value(evt.metadata)),
                         })
 
+            # 6. Capture Delegation Tree State (M22)
+            delegation_data: dict[str, Any] = {"active_contracts": [], "contracts": [], "results": [], "tree_edges": {}}
+            if self.delegation_tree is not None:
+                with self.delegation_tree._lock:
+                    all_cts = dict(getattr(self.delegation_tree, "_contracts", {}))
+                    all_cts.update(self.delegation_tree._active_contracts)
+                    for contract in all_cts.values():
+                        delegation_data["contracts"].append({
+                            "delegation_id": contract.delegation_id,
+                            "delegator_role_id": contract.delegator_role_id,
+                            "delegatee_role_id": contract.delegatee_role_id,
+                            "task_description": contract.task_description,
+                            "parent_task_id": contract.parent_task_id,
+                            "context": sanitize_checkpoint_metadata(_canonical_value(contract.context)),
+                            "allowed_skills": list(contract.allowed_skills),
+                            "current_depth": contract.current_depth,
+                            "max_depth": contract.max_depth,
+                            "timeout_seconds": contract.timeout_seconds,
+                            "is_untrusted": contract.is_untrusted,
+                            "delegation_path": list(contract.delegation_path),
+                            "metadata": sanitize_checkpoint_metadata(_canonical_value(contract.metadata)),
+                        })
+                    for contract in self.delegation_tree._active_contracts.values():
+                        delegation_data["active_contracts"].append({
+                            "delegation_id": contract.delegation_id,
+                            "delegator_role_id": contract.delegator_role_id,
+                            "delegatee_role_id": contract.delegatee_role_id,
+                            "task_description": contract.task_description,
+                            "parent_task_id": contract.parent_task_id,
+                            "context": sanitize_checkpoint_metadata(_canonical_value(contract.context)),
+                            "allowed_skills": list(contract.allowed_skills),
+                            "current_depth": contract.current_depth,
+                            "max_depth": contract.max_depth,
+                            "timeout_seconds": contract.timeout_seconds,
+                            "is_untrusted": contract.is_untrusted,
+                            "delegation_path": list(contract.delegation_path),
+                            "metadata": sanitize_checkpoint_metadata(_canonical_value(contract.metadata)),
+                        })
+                    for res in self.delegation_tree._results.values():
+                        delegation_data["results"].append({
+                            "delegation_id": res.delegation_id,
+                            "delegator_role_id": res.delegator_role_id,
+                            "delegatee_role_id": res.delegatee_role_id,
+                            "status": res.status.value,
+                            "output": res.output,
+                            "result_payload": sanitize_checkpoint_metadata(_canonical_value(res.result_payload)),
+                            "latency_seconds": res.latency_seconds,
+                            "is_untrusted": res.is_untrusted,
+                            "error": res.error,
+                            "metadata": sanitize_checkpoint_metadata(_canonical_value(res.metadata)),
+                        })
+                    delegation_data["tree_edges"] = {
+                        k: list(v) for k, v in self.delegation_tree._tree_edges.items()
+                    }
+
+            # 7. Capture Message Bus State (M22)
+            message_bus_data: dict[str, Any] = {"mailboxes": {}, "history": []}
+            if self.message_bus is not None:
+                with self.message_bus._lock:
+                    for role_id, msgs in self.message_bus._mailboxes.items():
+                        message_bus_data["mailboxes"][role_id] = [
+                            {
+                                "message_id": m.message_id,
+                                "sender_role_id": m.sender_role_id,
+                                "recipient_role_id": m.recipient_role_id,
+                                "message_type": m.message_type.value,
+                                "content": m.content,
+                                "payload": sanitize_checkpoint_metadata(_canonical_value(m.payload)),
+                                "is_untrusted": m.is_untrusted,
+                                "timestamp": m.timestamp,
+                                "metadata": sanitize_checkpoint_metadata(_canonical_value(m.metadata)),
+                            }
+                            for m in msgs
+                        ]
+                    for m in self.message_bus._history:
+                        message_bus_data["history"].append({
+                            "message_id": m.message_id,
+                            "sender_role_id": m.sender_role_id,
+                            "recipient_role_id": m.recipient_role_id,
+                            "message_type": m.message_type.value,
+                            "content": m.content,
+                            "payload": sanitize_checkpoint_metadata(_canonical_value(m.payload)),
+                            "is_untrusted": m.is_untrusted,
+                            "timestamp": m.timestamp,
+                            "metadata": sanitize_checkpoint_metadata(_canonical_value(m.metadata)),
+                        })
+
+            # 8. Capture Role Registry State (M22)
+            roles_data: list[dict[str, Any]] = []
+            if self.role_registry is not None:
+                with getattr(self.role_registry, "_lock", threading.RLock()):
+                    for r in self.role_registry.list_roles():
+                        roles_data.append({
+                            "role_id": r.role_id,
+                            "name": r.name,
+                            "description": r.description,
+                            "system_prompt": r.system_prompt,
+                            "allowed_skills": list(r.allowed_skills),
+                            "required_capabilities": [c.value if hasattr(c, "value") else str(c) for c in r.required_capabilities],
+                            "temperature": r.temperature,
+                            "max_tokens": r.max_tokens,
+                            "metadata": sanitize_checkpoint_metadata(_canonical_value(r.metadata)),
+                        })
+
             # Build metadata record
             ckpt_meta = CheckpointMetadata(
                 checkpoint_id=cid,
@@ -261,6 +382,9 @@ class RuntimeCheckpointManager:
                 "locks": locks_data,
                 "clarification": clarification_data,
                 "events": events_data,
+                "delegation": delegation_data,
+                "message_bus": message_bus_data,
+                "roles": roles_data,
             }
 
             ckpt_path = self.checkpoint_dir / f"{cid}.json"
@@ -331,6 +455,8 @@ class RuntimeCheckpointManager:
 
             logger.error("All available checkpoints were corrupted or invalid.")
             return None
+
+    restore_latest = restore_latest_checkpoint
 
     def restore_from_file(self, checkpoint_path: str | Path) -> CheckpointMetadata:
         """Restore runtime state atomically from a specific checkpoint file."""
@@ -499,5 +625,148 @@ class RuntimeCheckpointManager:
                             metadata=clean_meta,
                         )
                         self.event_dispatcher._event_queue.append(evt)
+
+            # 6. Restore Delegation Tree (M22)
+            if self.delegation_tree is not None and "delegation" in data:
+                from core.agent_delegation import DelegationContract, DelegationResult, DelegationStatus
+                with self.delegation_tree._lock:
+                    self.delegation_tree._active_contracts.clear()
+                    if hasattr(self.delegation_tree, "_contracts"):
+                        self.delegation_tree._contracts.clear()
+                    self.delegation_tree._results.clear()
+                    self.delegation_tree._tree_edges.clear()
+                    del_d = data["delegation"]
+                    for cd in del_d.get("contracts", []):
+                        if not isinstance(cd, dict):
+                            continue
+                        clean_meta = sanitize_restored_metadata(_restore_value(cd.get("metadata", {})))
+                        contract = DelegationContract(
+                            delegation_id=str(cd["delegation_id"]),
+                            delegator_role_id=str(cd["delegator_role_id"]),
+                            delegatee_role_id=str(cd["delegatee_role_id"]),
+                            task_description=str(cd["task_description"]),
+                            parent_task_id=str(cd.get("parent_task_id", "")),
+                            context=dict(sanitize_restored_metadata(_restore_value(cd.get("context", {})))),
+                            allowed_skills=tuple(cd.get("allowed_skills", ())),
+                            current_depth=int(cd.get("current_depth", 1)),
+                            max_depth=int(cd.get("max_depth", 3)),
+                            timeout_seconds=float(cd.get("timeout_seconds", 300.0)),
+                            is_untrusted=bool(cd.get("is_untrusted", False)),
+                            delegation_path=tuple(cd.get("delegation_path", ())),
+                            metadata=clean_meta,
+                        )
+                        if hasattr(self.delegation_tree, "_contracts"):
+                            self.delegation_tree._contracts[contract.delegation_id] = contract
+
+                    for cd in del_d.get("active_contracts", []):
+                        if not isinstance(cd, dict):
+                            continue
+                        clean_meta = sanitize_restored_metadata(_restore_value(cd.get("metadata", {})))
+                        contract = DelegationContract(
+                            delegation_id=str(cd["delegation_id"]),
+                            delegator_role_id=str(cd["delegator_role_id"]),
+                            delegatee_role_id=str(cd["delegatee_role_id"]),
+                            task_description=str(cd["task_description"]),
+                            parent_task_id=str(cd.get("parent_task_id", "")),
+                            context=dict(sanitize_restored_metadata(_restore_value(cd.get("context", {})))),
+                            allowed_skills=tuple(cd.get("allowed_skills", ())),
+                            current_depth=int(cd.get("current_depth", 1)),
+                            max_depth=int(cd.get("max_depth", 3)),
+                            timeout_seconds=float(cd.get("timeout_seconds", 300.0)),
+                            is_untrusted=bool(cd.get("is_untrusted", False)),
+                            delegation_path=tuple(cd.get("delegation_path", ())),
+                            metadata=clean_meta,
+                        )
+                        self.delegation_tree._active_contracts[contract.delegation_id] = contract
+                        if hasattr(self.delegation_tree, "_contracts"):
+                            self.delegation_tree._contracts[contract.delegation_id] = contract
+
+                    for rd in del_d.get("results", []):
+                        if not isinstance(rd, dict):
+                            continue
+                        clean_meta = sanitize_restored_metadata(_restore_value(rd.get("metadata", {})))
+                        res = DelegationResult(
+                            delegation_id=str(rd["delegation_id"]),
+                            delegator_role_id=str(rd["delegator_role_id"]),
+                            delegatee_role_id=str(rd["delegatee_role_id"]),
+                            status=DelegationStatus(rd.get("status", DelegationStatus.COMPLETED.value)),
+                            output=str(rd.get("output", "")),
+                            result_payload=dict(sanitize_restored_metadata(_restore_value(rd.get("result_payload", {})))),
+                            latency_seconds=float(rd.get("latency_seconds", 0.0)),
+                            is_untrusted=bool(rd.get("is_untrusted", True)),
+                            error=rd.get("error"),
+                            metadata=clean_meta,
+                        )
+                        self.delegation_tree._results[res.delegation_id] = res
+
+                    self.delegation_tree._tree_edges = {
+                        str(k): list(v) for k, v in del_d.get("tree_edges", {}).items()
+                    }
+
+            # 7. Restore Message Bus (M22)
+            if self.message_bus is not None and "message_bus" in data:
+                from core.agent_message_types import AgentMessage, AgentMessageType
+                with self.message_bus._lock:
+                    self.message_bus._mailboxes.clear()
+                    self.message_bus._history.clear()
+                    mb_d = data["message_bus"]
+                    for role_id, msgs in mb_d.get("mailboxes", {}).items():
+                        self.message_bus._mailboxes[str(role_id)] = [
+                            AgentMessage(
+                                message_id=str(md["message_id"]),
+                                sender_role_id=str(md["sender_role_id"]),
+                                recipient_role_id=str(md["recipient_role_id"]),
+                                message_type=AgentMessageType(md.get("message_type", AgentMessageType.TASK_DELEGATION.value)),
+                                content=str(md.get("content", "")),
+                                payload=sanitize_restored_metadata(_restore_value(md.get("payload", {}))),
+                                is_untrusted=bool(md.get("is_untrusted", False)),
+                                timestamp=float(md.get("timestamp", time.time())),
+                                metadata=sanitize_restored_metadata(_restore_value(md.get("metadata", {}))),
+                            )
+                            for md in msgs if isinstance(md, dict)
+                        ]
+                    for md in mb_d.get("history", []):
+                        if not isinstance(md, dict):
+                            continue
+                        self.message_bus._history.append(
+                            AgentMessage(
+                                message_id=str(md["message_id"]),
+                                sender_role_id=str(md["sender_role_id"]),
+                                recipient_role_id=str(md["recipient_role_id"]),
+                                message_type=AgentMessageType(md.get("message_type", AgentMessageType.TASK_DELEGATION.value)),
+                                content=str(md.get("content", "")),
+                                payload=sanitize_restored_metadata(_restore_value(md.get("payload", {}))),
+                                is_untrusted=bool(md.get("is_untrusted", False)),
+                                timestamp=float(md.get("timestamp", time.time())),
+                                metadata=sanitize_restored_metadata(_restore_value(md.get("metadata", {}))),
+                            )
+                        )
+
+            # 8. Restore Roles (M22)
+            if self.role_registry is not None and "roles" in data:
+                from core.agent_role import AgentRole
+                from core.capability_registry import ModelCapability
+                for rd in data.get("roles", []):
+                    if not isinstance(rd, dict):
+                        continue
+                    caps = []
+                    for c in rd.get("required_capabilities", []):
+                        try:
+                            caps.append(ModelCapability(c))
+                        except Exception:
+                            pass
+                    clean_meta = sanitize_restored_metadata(_restore_value(rd.get("metadata", {})))
+                    role = AgentRole(
+                        role_id=str(rd["role_id"]),
+                        name=str(rd.get("name", "")),
+                        description=str(rd.get("description", "")),
+                        system_prompt=str(rd.get("system_prompt", "")),
+                        allowed_skills=tuple(rd.get("allowed_skills", ())),
+                        required_capabilities=tuple(caps),
+                        temperature=float(rd.get("temperature", 0.7)),
+                        max_tokens=int(rd["max_tokens"]) if rd.get("max_tokens") is not None else None,
+                        metadata=clean_meta,
+                    )
+                    self.role_registry.register_role(role, overwrite=True)
 
         return ckpt_meta
