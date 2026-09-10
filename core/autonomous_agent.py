@@ -121,6 +121,8 @@ class AutonomousAgentExecutor:
         approval_gateway: ApprovalGateway | None = None,
         config: AgentLoopConfig | None = None,
         memory_manager: Any | None = None,
+        reflector: Any | None = None,
+        consolidator: Any | None = None,
     ):
         if not isinstance(runtime, AgentRuntime):
             raise TypeError("runtime must be an instance of AgentRuntime.")
@@ -139,6 +141,8 @@ class AutonomousAgentExecutor:
 
         self.runtime = runtime
         self.memory_manager = memory_manager
+        self.reflector = reflector
+        self.consolidator = consolidator
         self.planner = (
             planner
             if planner is not None
@@ -163,7 +167,18 @@ class AutonomousAgentExecutor:
         start_time: float,
         task_desc: str,
     ) -> AutonomousAgentResult:
-        """Helper to record episodic trace and finalize result."""
+        """Helper to record episodic trace, reflect on execution, and finalize result."""
+        reflection_rec = None
+        if self.reflector is not None and not result.is_paused:
+            try:
+                reflection_rec = self.reflector.reflect_on_execution(
+                    plan=result.plan,
+                    trace=result.trace,
+                    task_id=result.task_id,
+                )
+            except Exception as ex:
+                logger.warning("Failed to reflect on execution in AutonomousAgentExecutor: %s", ex)
+
         if (
             self.memory_manager is not None
             and hasattr(self.memory_manager, "record_episode")
@@ -184,10 +199,26 @@ class AutonomousAgentExecutor:
                     trace_summary={
                         "completed_steps": len(result.trace.observations),
                         "replan_count": len(result.trace.replan_history),
+                        "reflection_id": reflection_rec.reflection_id if reflection_rec else None,
                     },
                 )
             except Exception as ex:
                 logger.warning("Failed to record episodic memory in AutonomousAgentExecutor: %s", ex)
+
+        if reflection_rec is not None:
+            new_meta = dict(result.metadata)
+            new_meta["reflection_record"] = reflection_rec
+            return AutonomousAgentResult(
+                success=result.success,
+                task_id=result.task_id,
+                plan=result.plan,
+                trace=result.trace,
+                final_output=result.final_output,
+                error=result.error,
+                is_paused=result.is_paused,
+                approval_request=result.approval_request,
+                metadata=new_meta,
+            )
         return result
 
     def _resolve_step_input(

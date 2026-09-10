@@ -71,6 +71,9 @@ class ResearchService:
         max_passage_chars: int = 400,
         default_timeout: float = 10.0,
         extract_text_fn: Callable[[str, int], str] | None = None,
+        memory_manager: Any | None = None,
+        memory_store: Any | None = None,
+        consolidator: Any | None = None,
     ):
         if not isinstance(search_provider, SearchProvider):
             raise TypeError("search_provider must be an instance of SearchProvider.")
@@ -102,6 +105,18 @@ class ResearchService:
         self.max_passage_chars = max_passage_chars
         self.default_timeout = float(default_timeout)
         self.extract_text_fn = extract_text_fn or default_text_extractor
+        self.memory_manager = memory_manager
+        self.memory_store = memory_store
+        self.consolidator = consolidator
+        if self.consolidator is None and (self.memory_manager is not None or self.memory_store is not None):
+            try:
+                from core.memory_consolidation import MemoryConsolidator
+                self.consolidator = MemoryConsolidator(
+                    memory_store=self.memory_store,
+                    memory_manager=self.memory_manager,
+                )
+            except Exception as ex:
+                logger.warning("Could not initialize default MemoryConsolidator in ResearchService: %s", ex)
 
     def search(
         self,
@@ -560,7 +575,7 @@ class ResearchService:
             claims=updated_claims,
         )
 
-        return ResearchReport(
+        report = ResearchReport(
             query=query.strip(),
             sources=tuple(ranked_sources),
             failed_sources=tuple(failed_sources_list),
@@ -585,6 +600,12 @@ class ResearchService:
                 "max_age_days": max_age_days,
             },
         )
+        if self.consolidator is not None:
+            try:
+                self.consolidator.distill_research_report(report, query=query)
+            except Exception as ex:
+                logger.warning("Failed to distill research report into semantic memory: %s", ex)
+        return report
 
     def research_deep(
         self,
@@ -821,7 +842,7 @@ class ResearchService:
             claims=updated_claims,
         )
 
-        return ResearchReport(
+        report = ResearchReport(
             query=query.strip(),
             sources=tuple(ranked_sources),
             failed_sources=tuple(aggregated_failed),
@@ -854,6 +875,12 @@ class ResearchService:
                 "max_age_days": max_age_days,
             },
         )
+        if self.consolidator is not None:
+            try:
+                self.consolidator.distill_research_report(report, query=query)
+            except Exception as ex:
+                logger.warning("Failed to distill deep research report into semantic memory: %s", ex)
+        return report
 
     def research_iterative(
         self,

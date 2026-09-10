@@ -57,6 +57,8 @@ class AgenticRuntime:
         default_timeout: float | None = None,
         default_mode: ExecutionMode = ExecutionMode.STANDARD_WORKFLOW,
         memory_manager: MemoryManager | None = None,
+        reflector: Any | None = None,
+        consolidator: Any | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -94,6 +96,19 @@ class AgenticRuntime:
             raise TypeError("default_mode must be an instance of ExecutionMode.")
 
         self.memory_manager = memory_manager if memory_manager is not None else MemoryManager()
+
+        from core.agent_reflection import AgentReflector
+        from core.memory_consolidation import MemoryConsolidator
+
+        self.reflector = reflector if reflector is not None else AgentReflector()
+        self.consolidator = (
+            consolidator
+            if consolidator is not None
+            else MemoryConsolidator(
+                memory_store=getattr(self.memory_manager, "store", None),
+                memory_manager=self.memory_manager,
+            )
+        )
 
         # Determine effective skill_registry
         if skill_registry is None:
@@ -173,6 +188,10 @@ class AgenticRuntime:
             self.autonomous_executor = autonomous_executor
             if self.autonomous_executor.memory_manager is None:
                 self.autonomous_executor.memory_manager = self.memory_manager
+            if getattr(self.autonomous_executor, "reflector", None) is None:
+                self.autonomous_executor.reflector = self.reflector
+            if getattr(self.autonomous_executor, "consolidator", None) is None:
+                self.autonomous_executor.consolidator = self.consolidator
         else:
             self.autonomous_executor = AutonomousAgentExecutor(
                 runtime=self.runtime,
@@ -180,6 +199,8 @@ class AgenticRuntime:
                 state_store=self.state_store,
                 approval_gateway=self.approval_gateway,
                 memory_manager=self.memory_manager,
+                reflector=self.reflector,
+                consolidator=self.consolidator,
             )
 
         # Resolve or create GoalStore & GoalEngine (M11 / M12)

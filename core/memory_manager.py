@@ -483,3 +483,21 @@ class MemoryManager:
             top_k=top_k,
             max_chars=max_chars,
         )
+
+    # ---------------------------------------------------------
+    # Experience Consolidation & Distillation (M14)
+    # ---------------------------------------------------------
+    def consolidate_episodes(self, limit: int = 10) -> Any:
+        """Consolidate recent episodic records into semantic reliability facts."""
+        from core.memory_consolidation import MemoryConsolidator
+
+        episodes = self.get_recent_episodes(limit=limit)
+        consolidator = MemoryConsolidator(memory_store=self.store, memory_manager=self)
+        return consolidator.consolidate_episodes(episodes)
+
+    def distill_research_report(self, report: Any, query: str = "") -> Any:
+        """Distill verified claims from a research report into semantic domain knowledge."""
+        from core.memory_consolidation import MemoryConsolidator
+
+        consolidator = MemoryConsolidator(memory_store=self.store, memory_manager=self)
+        return consolidator.distill_research_report(report, query=query)

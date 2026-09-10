@@ -68,7 +68,14 @@ class Settings(BaseSettings):
     aura_max_memory_fact_chars: int = 4000
     aura_memory_storage_dir: str = ""
 
-
+    # M14 Agent Self-Reflection & Memory Consolidation Configuration
+    aura_max_reflection_passes: int = 1
+    aura_max_reflection_chars: int = 2000
+    aura_max_consolidation_batch: int = 10
+    aura_max_distilled_facts_per_run: int = 5
+    aura_max_research_ingested_claims: int = 10
+    aura_consolidation_timeout_seconds: float = 15.0
+    aura_belief_revision_threshold: float = 0.85
 
     model_config = SettingsConfigDict(
         env_file=".env",
