@@ -57,6 +57,8 @@ from core.session_store import SessionStore, InMemorySessionStore, FileSessionSt
 from core.session_manager import SessionManager
 from core.streaming_gateway import StreamingGateway
 from core.operator_bridge import OperatorBridge
+from core.provider_health import ProviderHealthTracker
+from core.resilient_router import ResilientModelRouter
 
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
@@ -113,6 +115,8 @@ class AgenticRuntime:
         session_manager: SessionManager | None = None,
         streaming_gateway: StreamingGateway | None = None,
         operator_bridge: OperatorBridge | None = None,
+        health_tracker: ProviderHealthTracker | None = None,
+        resilient_router: ResilientModelRouter | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -156,6 +160,10 @@ class AgenticRuntime:
             raise TypeError("streaming_gateway must be an instance of StreamingGateway or None.")
         if operator_bridge is not None and not isinstance(operator_bridge, OperatorBridge):
             raise TypeError("operator_bridge must be an instance of OperatorBridge or None.")
+        if health_tracker is not None and not isinstance(health_tracker, ProviderHealthTracker):
+            raise TypeError("health_tracker must be an instance of ProviderHealthTracker or None.")
+        if resilient_router is not None and not isinstance(resilient_router, ResilientModelRouter):
+            raise TypeError("resilient_router must be an instance of ResilientModelRouter or None.")
         if not isinstance(max_replans, int) or max_replans < 0:
             raise ValueError("max_replans must be a non-negative integer.")
         if isinstance(default_mode, str):
@@ -223,6 +231,13 @@ class AgenticRuntime:
                 skill_registry = SkillRegistry()
 
         self.skill_registry = skill_registry
+        self.health_tracker = health_tracker if health_tracker is not None else ProviderHealthTracker()
+        self.resilient_router = resilient_router
+        if self.resilient_router is None and isinstance(model_router, ResilientModelRouter):
+            self.resilient_router = model_router
+        elif model_router is None and self.resilient_router is not None:
+            model_router = self.resilient_router
+
         self.model_router = model_router
         self.model = model
         self.tool_executor = tool_executor
@@ -1037,3 +1052,18 @@ class AgenticRuntime:
             )
             yield error_event
             raise
+
+    # ---------------------------------------------------------
+    # Model Provider Health & Resilient Routing (M20)
+    # ---------------------------------------------------------
+    def get_health_tracker(self) -> ProviderHealthTracker:
+        """Return the model provider health tracker instance."""
+        return self.health_tracker
+
+    def get_resilient_router(self) -> ResilientModelRouter | None:
+        """Return the resilient model router instance if configured."""
+        return self.resilient_router
+
+    def get_provider_health_telemetry(self) -> dict[str, Any]:
+        """Retrieve sanitized health telemetry for all tracked model providers."""
+        return self.health_tracker.get_all_telemetry()

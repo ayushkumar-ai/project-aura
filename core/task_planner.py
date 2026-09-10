@@ -425,21 +425,24 @@ class TaskPlanner:
         if not isinstance(task, str) or not task.strip():
             raise ValueError("Task description must be a non-empty string.")
 
-        # Resolve active model
+        prompt = self._build_planning_prompt(task)
+        request_id = uuid4()
         active_model: ModelInterface | None = self.model
         if active_model is None and self.model_router is not None:
             reqs = task_requirements or TaskRequirements(
                 required_capabilities=[ModelCapability.REASONING]
             )
-            route_res = self.model_router.route(reqs)
-            active_model = route_res.provider
-
-        if active_model is None:
+            if hasattr(self.model_router, "generate_with_fallback"):
+                response, _ = self.model_router.generate_with_fallback(
+                    prompt=prompt, request_id=request_id, requirements=reqs
+                )
+            else:
+                route_res = self.model_router.route(reqs)
+                response = route_res.provider.generate(prompt=prompt, request_id=request_id)
+        elif active_model is not None:
+            response = active_model.generate(prompt=prompt, request_id=request_id)
+        else:
             raise ValueError("ModelInterface or ModelRouter required for model-assisted planning.")
-
-        prompt = self._build_planning_prompt(task)
-        request_id = uuid4()
-        response = active_model.generate(prompt=prompt, request_id=request_id)
 
         if response is None or not hasattr(response, "content"):
             raise ValueError("Model response is invalid or missing.")
@@ -464,20 +467,24 @@ class TaskPlanner:
         if not isinstance(context, ReplanContext):
             raise TypeError("context must be an instance of ReplanContext.")
 
+        prompt = self._build_replanning_prompt(context)
+        request_id = uuid4()
         active_model: ModelInterface | None = self.model
         if active_model is None and self.model_router is not None:
             reqs = task_requirements or TaskRequirements(
                 required_capabilities=[ModelCapability.REASONING]
             )
-            route_res = self.model_router.route(reqs)
-            active_model = route_res.provider
-
-        if active_model is None:
+            if hasattr(self.model_router, "generate_with_fallback"):
+                response, _ = self.model_router.generate_with_fallback(
+                    prompt=prompt, request_id=request_id, requirements=reqs
+                )
+            else:
+                route_res = self.model_router.route(reqs)
+                response = route_res.provider.generate(prompt=prompt, request_id=request_id)
+        elif active_model is not None:
+            response = active_model.generate(prompt=prompt, request_id=request_id)
+        else:
             raise ValueError("ModelInterface or ModelRouter required for model-assisted replanning.")
-
-        prompt = self._build_replanning_prompt(context)
-        request_id = uuid4()
-        response = active_model.generate(prompt=prompt, request_id=request_id)
 
         if response is None or not hasattr(response, "content"):
             raise ValueError("Model response is invalid or missing.")

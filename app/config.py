@@ -125,6 +125,18 @@ class Settings(BaseSettings):
     aura_session_lock_timeout_seconds: float = 10.0
     aura_max_event_payload_chars: int = 50000
 
+    # M20 Distributed / Externalized Model & Provider Intelligence Configuration
+    aura_model_fallback_enabled: bool = True
+    aura_max_model_fallback_attempts: int = 2
+    aura_circuit_breaker_failure_threshold: int = 5
+    aura_circuit_breaker_recovery_timeout_seconds: float = 30.0
+    aura_model_request_timeout_seconds: float = 30.0
+    aura_generic_model_endpoint_url: str = ""
+    aura_generic_model_api_key: str = ""
+    aura_generic_model_name: str = ""
+    aura_local_model_endpoint_url: str = ""
+    aura_allow_local_model_endpoints: bool = True
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

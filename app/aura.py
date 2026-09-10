@@ -322,3 +322,12 @@ class AURA:
             event_types=event_types,
             last_event_id=last_event_id,
         )
+
+    # ---------------------------------------------------------
+    # M20 Model Provider Health & Intelligence
+    # ---------------------------------------------------------
+    def get_provider_health(self) -> dict[str, Any]:
+        """Retrieve sanitized provider health metrics and circuit breaker states."""
+        if self.agentic_runtime is None:
+            return {}
+        return self.agentic_runtime.get_provider_health_telemetry()
