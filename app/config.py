@@ -137,6 +137,12 @@ class Settings(BaseSettings):
     aura_local_model_endpoint_url: str = ""
     aura_allow_local_model_endpoints: bool = True
 
+    # M21 Distributed Multi-Agent Team Collaboration Configuration
+    aura_max_team_members: int = 20
+    aura_max_delegation_depth: int = 3
+    aura_message_bus_max_queue_size: int = 1000
+    aura_message_bus_max_history_size: int = 5000
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

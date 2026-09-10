@@ -331,3 +331,55 @@ class AURA:
         if self.agentic_runtime is None:
             return {}
         return self.agentic_runtime.get_provider_health_telemetry()
+
+    # ---------------------------------------------------------
+    # M21 Multi-Agent Team Collaboration & Delegation Protocol
+    # ---------------------------------------------------------
+    def execute_team(
+        self,
+        task: str,
+        team: Any = None,
+        session_id: str = "default",
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """Execute a multi-agent team collaborative task across a configured topology."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.execute_team(
+            task=task,
+            team=team,
+            session_id=session_id,
+            metadata=metadata,
+        )
+
+    def list_roles(self) -> list[dict[str, Any]]:
+        """List all registered agent roles in the role registry."""
+        if self.agentic_runtime is None:
+            return []
+        registry = self.agentic_runtime.get_role_registry()
+        return [
+            {
+                "role_id": r.role_id,
+                "name": r.name,
+                "description": r.description,
+                "system_prompt": r.system_prompt,
+                "required_capabilities": [c.value for c in r.required_capabilities],
+                "allowed_skills": list(r.allowed_skills),
+                "temperature": r.temperature,
+                "max_tokens": r.max_tokens,
+                "metadata": r.metadata,
+            }
+            for r in registry.list_roles()
+        ]
+
+    def get_team_orchestrator(self) -> Any:
+        """Return the multi-agent team orchestrator instance."""
+        if self.agentic_runtime is None:
+            return None
+        return self.agentic_runtime.get_team_orchestrator()
+
+    def get_role_registry(self) -> Any:
+        """Return the agent role registry instance."""
+        if self.agentic_runtime is None:
+            return None
+        return self.agentic_runtime.get_role_registry()

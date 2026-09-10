@@ -59,6 +59,14 @@ from core.streaming_gateway import StreamingGateway
 from core.operator_bridge import OperatorBridge
 from core.provider_health import ProviderHealthTracker
 from core.resilient_router import ResilientModelRouter
+from core.agent_role import AgentRole
+from core.role_registry import RoleRegistry
+from core.agent_message_types import AgentMessage, AgentMessageType
+from core.agent_message_bus import AgentMessageBus
+from core.agent_delegation import DelegationContract, DelegationResult, DelegationTree
+from core.consensus_engine import ConsensusEngine, ConsensusStrategy
+from core.team_types import TeamTopology, TeamMember, TeamDefinition, TeamExecutionResult
+from core.team_orchestrator import TeamOrchestrator
 
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
@@ -72,6 +80,7 @@ class ExecutionMode(str, Enum):
     STANDARD_WORKFLOW = "standard_workflow"
     AUTONOMOUS_AGENT = "autonomous_agent"
     GOAL_DRIVEN = "goal_driven"
+    MULTI_AGENT_TEAM = "multi_agent_team"
 
 
 class AgenticRuntime:
@@ -117,6 +126,10 @@ class AgenticRuntime:
         operator_bridge: OperatorBridge | None = None,
         health_tracker: ProviderHealthTracker | None = None,
         resilient_router: ResilientModelRouter | None = None,
+        role_registry: RoleRegistry | None = None,
+        team_orchestrator: TeamOrchestrator | None = None,
+        message_bus: AgentMessageBus | None = None,
+        consensus_engine: ConsensusEngine | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -164,6 +177,14 @@ class AgenticRuntime:
             raise TypeError("health_tracker must be an instance of ProviderHealthTracker or None.")
         if resilient_router is not None and not isinstance(resilient_router, ResilientModelRouter):
             raise TypeError("resilient_router must be an instance of ResilientModelRouter or None.")
+        if role_registry is not None and not isinstance(role_registry, RoleRegistry):
+            raise TypeError("role_registry must be an instance of RoleRegistry or None.")
+        if team_orchestrator is not None and not isinstance(team_orchestrator, TeamOrchestrator):
+            raise TypeError("team_orchestrator must be an instance of TeamOrchestrator or None.")
+        if message_bus is not None and not isinstance(message_bus, AgentMessageBus):
+            raise TypeError("message_bus must be an instance of AgentMessageBus or None.")
+        if consensus_engine is not None and not isinstance(consensus_engine, ConsensusEngine):
+            raise TypeError("consensus_engine must be an instance of ConsensusEngine or None.")
         if not isinstance(max_replans, int) or max_replans < 0:
             raise ValueError("max_replans must be a non-negative integer.")
         if isinstance(default_mode, str):
@@ -467,9 +488,42 @@ class AgenticRuntime:
             )
         )
 
+        # Multi-Agent Team Collaboration & Role Mesh (M21)
+        self.role_registry = role_registry if role_registry is not None else RoleRegistry()
+        self.message_bus = (
+            message_bus
+            if message_bus is not None
+            else AgentMessageBus(
+                max_queue_size=getattr(settings, "aura_message_bus_max_queue_size", 1000),
+                max_history_size=getattr(settings, "aura_message_bus_max_history_size", 5000),
+            )
+        )
+        self.consensus_engine = (
+            consensus_engine
+            if consensus_engine is not None
+            else ConsensusEngine()
+        )
+        self.team_orchestrator = (
+            team_orchestrator
+            if team_orchestrator is not None
+            else TeamOrchestrator(
+                role_registry=self.role_registry,
+                message_bus=self.message_bus,
+                consensus_engine=self.consensus_engine,
+                model=self.model,
+                model_router=self.model_router,
+                tool_executor=self.tool_executor,
+                approval_gateway=self.approval_gateway,
+                budget_manager=self.budget_manager,
+                streaming_gateway=self.streaming_gateway,
+                max_team_members=getattr(settings, "aura_max_team_members", 20),
+                max_delegation_depth=getattr(settings, "aura_max_delegation_depth", 3),
+            )
+        )
+
     def execute(
         self,
-        task: str | ExecutionPlan | AgentPlan | Goal | AURARequest,
+        task: str | ExecutionPlan | AgentPlan | Goal | AURARequest | TeamDefinition,
         mode: ExecutionMode | str | None = None,
         task_id: str | None = None,
         task_requirements: TaskRequirements | None = None,
@@ -479,11 +533,13 @@ class AgenticRuntime:
         trigger_id: str | None = None,
         parent_goal_id: str | None = None,
         depends_on_goal_ids: list[str] | tuple[str, ...] = (),
-    ) -> WorkflowResult | AutonomousAgentResult | GoalEvaluationResult:
-        """Execute a task in the specified ExecutionMode (STANDARD_WORKFLOW, AUTONOMOUS_AGENT, GOAL_DRIVEN)."""
+    ) -> WorkflowResult | AutonomousAgentResult | GoalEvaluationResult | TeamExecutionResult:
+        """Execute a task in the specified ExecutionMode (STANDARD_WORKFLOW, AUTONOMOUS_AGENT, GOAL_DRIVEN, MULTI_AGENT_TEAM)."""
         effective_mode = self.default_mode
         if mode is not None:
             effective_mode = ExecutionMode(mode) if isinstance(mode, str) else mode
+        elif isinstance(task, TeamDefinition):
+            effective_mode = ExecutionMode.MULTI_AGENT_TEAM
         elif isinstance(task, AgentPlan):
             effective_mode = ExecutionMode.AUTONOMOUS_AGENT
         elif isinstance(task, Goal):
@@ -515,6 +571,10 @@ class AgenticRuntime:
                 parent_goal_id=parent_goal_id,
                 depends_on_goal_ids=depends_on_goal_ids,
             )
+        elif effective_mode == ExecutionMode.MULTI_AGENT_TEAM:
+            if isinstance(task, TeamDefinition):
+                return self.execute_team(task=task.description or task.name, team=task, session_id="default", metadata=metadata)
+            return self.execute_team(task=str(task), session_id="default", metadata=metadata)
         else:
             raise ValueError(f"Unsupported execution mode: {effective_mode}")
 
@@ -1067,3 +1127,50 @@ class AgenticRuntime:
     def get_provider_health_telemetry(self) -> dict[str, Any]:
         """Retrieve sanitized health telemetry for all tracked model providers."""
         return self.health_tracker.get_all_telemetry()
+
+    # ---------------------------------------------------------
+    # Multi-Agent Team Collaboration & Delegation (M21)
+    # ---------------------------------------------------------
+    def get_role_registry(self) -> RoleRegistry:
+        """Return the active agent role registry."""
+        return self.role_registry
+
+    def get_agent_message_bus(self) -> AgentMessageBus:
+        """Return the inter-agent message bus."""
+        return self.message_bus
+
+    def get_consensus_engine(self) -> ConsensusEngine:
+        """Return the multi-agent consensus and artifact synthesis engine."""
+        return self.consensus_engine
+
+    def get_team_orchestrator(self) -> TeamOrchestrator:
+        """Return the multi-agent team orchestrator."""
+        return self.team_orchestrator
+
+    def execute_team(
+        self,
+        task: str,
+        team: TeamDefinition | None = None,
+        session_id: str = "default",
+        metadata: dict[str, Any] | None = None,
+    ) -> TeamExecutionResult:
+        """Execute a multi-agent collaborative task across a team topology."""
+        return self.team_orchestrator.execute_team(
+            task=task,
+            team=team,
+            session_id=session_id,
+            metadata=metadata,
+        )
+
+    def delegate_task(
+        self,
+        contract: DelegationContract,
+        session_id: str = "default",
+        team_id: str = "default_team",
+    ) -> DelegationResult:
+        """Execute a formal task delegation from one role to another."""
+        return self.team_orchestrator.delegate(
+            contract=contract,
+            session_id=session_id,
+            team_id=team_id,
+        )
