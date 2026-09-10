@@ -19,6 +19,9 @@ def _sanitize_metadata(meta: dict[str, Any]) -> dict[str, Any]:
         "auto_approve",
         "permission",
         "authorized",
+        "bypass_policy",
+        "role_override",
+        "system_override",
     })
 
     cleaned: dict[str, Any] = {}

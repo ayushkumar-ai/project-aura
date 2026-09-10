@@ -10,6 +10,12 @@ from core.agent_memory import (
     AgentMemoryStore,
     InMemoryAgentMemoryStore,
 )
+from core.lifecycle_types import (
+    CompactionRecord,
+    DecayConfig,
+    MemoryUtilityScore,
+)
+from core.memory_lifecycle import MemoryLifecycleManager
 from core.memory_types import (
     EpisodicRecord,
     MemoryEntry,
@@ -24,6 +30,7 @@ from core.provenance import (
     unwrap_tainted,
     wrap_tainted,
 )
+from core.temporal_decay import TemporalDecayEngine
 
 logger = logging.getLogger("aura.memory_manager")
 
@@ -39,6 +46,7 @@ class MemoryManager:
         max_episodic_records: int | None = None,
         max_search_results: int | None = None,
         max_fact_chars: int | None = None,
+        decay_config: DecayConfig | None = None,
     ):
         self.config = settings
         self.max_working_entries = (
@@ -78,6 +86,20 @@ class MemoryManager:
                 max_episodic_records=self.max_episodic_records,
             )
 
+        # M15: Temporal decay & lifecycle management engine
+        if decay_config is not None:
+            self.decay_config = decay_config
+        else:
+            decay_enabled = getattr(settings, "aura_memory_decay_enabled", True)
+            default_half_life = getattr(settings, "aura_memory_default_half_life_days", 30.0)
+            self.decay_config = DecayConfig(
+                enabled=decay_enabled,
+                default_half_life_days=default_half_life,
+            )
+
+        self.decay_engine = TemporalDecayEngine(config=self.decay_config)
+        self.lifecycle_manager = MemoryLifecycleManager(store=self.store, decay_engine=self.decay_engine)
+
     # ---------------------------------------------------------
     # Working Memory Operations (Task-Scoped Scratchpad)
     # ---------------------------------------------------------
@@ -98,7 +120,7 @@ class MemoryManager:
         entry = MemoryEntry(
             tier=MemoryTier.WORKING,
             namespace=f"task:{clean_task_id}",
-            key=key,
+            key=str(key).strip(),
             value=value,
             is_untrusted=is_untrusted,
             source_urls=tuple(source_urls),
@@ -106,98 +128,88 @@ class MemoryManager:
         )
         return self.store.store(entry)
 
-    def read_working_fact(self, task_id: str, key: str, default: Any = None) -> Any:
-        """Read a working fact from task-scoped scratchpad."""
+    def set_working(
+        self,
+        task_id: str,
+        key: str,
+        value: Any,
+        is_untrusted: bool = False,
+        source_urls: list[str] | tuple[str, ...] = (),
+        metadata: dict[str, Any] | None = None,
+    ) -> MemoryEntry:
+        """Alias for write_working_fact."""
+        return self.write_working_fact(
+            task_id=task_id,
+            key=key,
+            value=value,
+            is_untrusted=is_untrusted,
+            source_urls=source_urls,
+            metadata=metadata,
+        )
+
+    def read_working_fact(self, task_id: str, key: str, default: Any = None) -> Any | None:
+        """Read a working fact value from task-scoped scratchpad."""
         clean_task_id = str(task_id).strip()
-        if not clean_task_id:
-            return default
         entry = self.store.get_by_key(
             tier=MemoryTier.WORKING,
             namespace=f"task:{clean_task_id}",
-            key=key,
+            key=str(key).strip(),
         )
         if entry is None:
             return default
         return entry.value
 
+    def get_working(self, task_id: str, key: str, default: Any = None) -> Any | None:
+        """Alias for read_working_fact."""
+        return self.read_working_fact(task_id=task_id, key=key, default=default)
+
     def list_working_facts(self, task_id: str) -> dict[str, Any]:
-        """List all working facts stored for a given task ID."""
+        """List all working facts for a given task ID."""
         clean_task_id = str(task_id).strip()
-        if not clean_task_id:
-            return {}
         entries = self.store.list_entries(
             tier=MemoryTier.WORKING,
             namespace=f"task:{clean_task_id}",
         )
         return {e.key: e.value for e in entries}
 
+    def get_all_working(self, task_id: str) -> dict[str, Any]:
+        """Alias for list_working_facts."""
+        return self.list_working_facts(task_id=task_id)
+
     def clear_working_memory(self, task_id: str) -> None:
-        """Clear all working scratchpad memory for a task ID."""
+        """Clear all working scratchpad facts for a completed or aborted task."""
         clean_task_id = str(task_id).strip()
-        if clean_task_id:
-            self.store.clear_tier(
-                tier=MemoryTier.WORKING,
-                namespace=f"task:{clean_task_id}",
-            )
+        self.store.clear_tier(
+            tier=MemoryTier.WORKING,
+            namespace=f"task:{clean_task_id}",
+        )
 
-    # Working memory aliases
-    def set_working(self, scope: str, key: str, value: Any, is_untrusted: bool = False, **kwargs) -> MemoryEntry:
-        return self.write_working_fact(task_id=scope, key=key, value=value, is_untrusted=is_untrusted, **kwargs)
-
-    def get_working(self, scope: str, key: str, default: Any = None) -> Any:
-        return self.read_working_fact(task_id=scope, key=key, default=default)
-
-    def get_all_working(self, scope: str) -> dict[str, Any]:
-        return self.list_working_facts(task_id=scope)
-
-    def clear_working(self, scope: str) -> None:
-        self.clear_working_memory(task_id=scope)
+    def clear_working(self, task_id: str) -> None:
+        """Alias for clear_working_memory."""
+        self.clear_working_memory(task_id=task_id)
 
     # ---------------------------------------------------------
-    # Semantic Memory Operations (Durable Facts & Preferences)
+    # Semantic Memory Operations (Structured Domain & User Knowledge)
     # ---------------------------------------------------------
     def store_fact(
         self,
         subject: str,
         predicate: str,
-        object_value: Any,
-        confidence: float = 1.0,
-        is_untrusted: bool = False,
-        namespace: str | MemoryNamespace = MemoryNamespace.USER_PROFILE,
-        source_urls: list[str] | tuple[str, ...] = (),
-        metadata: dict[str, Any] | None = None,
-    ) -> MemoryEntry:
-        """Store a structured semantic fact."""
-        fact = SemanticFact(
-            subject=subject,
-            predicate=predicate,
-            object_value=object_value,
-            confidence=confidence,
-            is_untrusted=is_untrusted,
-            source_urls=tuple(source_urls),
-            metadata=dict(metadata or {}),
-        )
-        entry = fact.to_memory_entry(namespace=namespace)
-        return self.store.store(entry)
-
-    def add_fact(
-        self,
-        subject: str,
-        predicate: str,
         object_val: Any = None,
-        object_value: Any = None,
         confidence: float = 1.0,
         namespace: str | MemoryNamespace = MemoryNamespace.USER_PROFILE,
-        provenance: Any | None = None,
-        source_urls: list[str] | tuple[str, ...] = (),
-        metadata: dict[str, Any] | None = None,
         is_untrusted: bool = False,
+        source_urls: list[str] | tuple[str, ...] = (),
+        provenance: Any | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> SemanticFact:
-        """Convenience method to add a semantic fact returning SemanticFact model."""
-        actual_obj = object_value if object_value is not None else object_val
-        if is_tainted(actual_obj):
-            if not getattr(actual_obj, "is_trusted", True):
-                is_untrusted = True
+        """Store a structured semantic fact."""
+        actual_obj = object_val
+        if isinstance(object_val, TaintedValue):
+            is_untrusted = True
+            source_urls = tuple(set(list(source_urls) + list(object_val.source_urls)))
+        elif is_tainted(object_val):
+            is_untrusted = True
         if provenance is not None:
             if hasattr(provenance, "is_trusted") and not provenance.is_trusted:
                 is_untrusted = True
@@ -225,6 +237,31 @@ class MemoryManager:
         fact.id = stored_entry.entry_id
         return fact
 
+    def add_fact(
+        self,
+        subject: str,
+        predicate: str,
+        object_val: Any = None,
+        confidence: float = 1.0,
+        namespace: str | MemoryNamespace = MemoryNamespace.USER_PROFILE,
+        is_untrusted: bool = False,
+        source_urls: list[str] | tuple[str, ...] = (),
+        provenance: Any | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> SemanticFact:
+        """Alias for store_fact."""
+        return self.store_fact(
+            subject=subject,
+            predicate=predicate,
+            object_val=object_val,
+            confidence=confidence,
+            namespace=namespace,
+            is_untrusted=is_untrusted,
+            source_urls=source_urls,
+            provenance=provenance,
+            metadata=metadata,
+        )
+
     def get_fact(
         self,
         fact_id_or_subject: str,
@@ -233,7 +270,6 @@ class MemoryManager:
     ) -> SemanticFact | None:
         """Retrieve a semantic fact by ID or by (subject, predicate)."""
         if predicate is None:
-            # Look up by ID
             entry = self.store.get_by_id(fact_id_or_subject)
             if entry is None or entry.tier != MemoryTier.SEMANTIC:
                 return None
@@ -375,7 +411,6 @@ class MemoryManager:
             tier=MemoryTier.EPISODIC,
             namespace=MemoryNamespace.EXECUTION_HISTORY.value,
         )
-        # Sort by timestamp desc
         sorted_entries = sorted(entries, key=lambda x: x.created_at, reverse=True)[:limit]
         records: list[EpisodicRecord] = []
         for e in sorted_entries:
@@ -501,3 +536,52 @@ class MemoryManager:
 
         consolidator = MemoryConsolidator(memory_store=self.store, memory_manager=self)
         return consolidator.distill_research_report(report, query=query)
+
+    # ---------------------------------------------------------
+    # Memory Lifecycle, Temporal Decay & Compaction (M15)
+    # ---------------------------------------------------------
+    def evaluate_decay(
+        self,
+        tier: MemoryTier | None = None,
+        namespace: str | None = None,
+        current_time: float | None = None,
+    ) -> list[MemoryUtilityScore]:
+        """Evaluate temporal decay and utility scores across stored memory entries."""
+        return self.lifecycle_manager.evaluate_store(
+            tier=tier,
+            namespace=namespace,
+            current_time=current_time,
+        )
+
+    def compact_memory(
+        self,
+        tier: MemoryTier = MemoryTier.SEMANTIC,
+        namespace: str | None = None,
+        current_time: float | None = None,
+    ) -> CompactionRecord:
+        """Execute compaction and deduplication pass on a specific tier or namespace."""
+        return self.lifecycle_manager.compact_store(
+            tier=tier,
+            namespace=namespace,
+            current_time=current_time,
+        )
+
+    def prune_expired_and_low_utility(
+        self,
+        tier: MemoryTier | None = None,
+        namespace: str | None = None,
+        current_time: float | None = None,
+    ) -> tuple[list[MemoryEntry], list[MemoryEntry]]:
+        """Prune expired and low-utility entries from the memory store."""
+        return self.lifecycle_manager.prune_expired_and_low_utility(
+            tier=tier,
+            namespace=namespace,
+            current_time=current_time,
+        )
+
+    def run_lifecycle_pass(
+        self,
+        current_time: float | None = None,
+    ) -> dict[str, Any]:
+        """Execute a full lifecycle maintenance pass across all memory tiers."""
+        return self.lifecycle_manager.run_full_lifecycle_pass(current_time=current_time)

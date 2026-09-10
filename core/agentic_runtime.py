@@ -59,6 +59,7 @@ class AgenticRuntime:
         memory_manager: MemoryManager | None = None,
         reflector: Any | None = None,
         consolidator: Any | None = None,
+        calibrator: Any | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -99,8 +100,10 @@ class AgenticRuntime:
 
         from core.agent_reflection import AgentReflector
         from core.memory_consolidation import MemoryConsolidator
+        from core.heuristic_calibrator import HeuristicCalibrator
 
         self.reflector = reflector if reflector is not None else AgentReflector()
+        self.calibrator = calibrator if calibrator is not None else HeuristicCalibrator()
         self.consolidator = (
             consolidator
             if consolidator is not None
@@ -192,6 +195,8 @@ class AgenticRuntime:
                 self.autonomous_executor.reflector = self.reflector
             if getattr(self.autonomous_executor, "consolidator", None) is None:
                 self.autonomous_executor.consolidator = self.consolidator
+            if getattr(self.autonomous_executor, "calibrator", None) is None:
+                self.autonomous_executor.calibrator = self.calibrator
         else:
             self.autonomous_executor = AutonomousAgentExecutor(
                 runtime=self.runtime,
@@ -201,6 +206,7 @@ class AgenticRuntime:
                 memory_manager=self.memory_manager,
                 reflector=self.reflector,
                 consolidator=self.consolidator,
+                calibrator=self.calibrator,
             )
 
         # Resolve or create GoalStore & GoalEngine (M11 / M12)
@@ -485,3 +491,32 @@ class AgenticRuntime:
             timeout=timeout,
             metadata=metadata,
         )
+
+    # ---------------------------------------------------------
+    # Memory Lifecycle & Calibration Helpers (M15)
+    # ---------------------------------------------------------
+    def run_memory_lifecycle_pass(
+        self,
+        current_time: float | None = None,
+    ) -> dict[str, Any]:
+        """Execute a memory maintenance pass across all memory tiers."""
+        return self.memory_manager.run_lifecycle_pass(current_time=current_time)
+
+    def compact_memory(
+        self,
+        tier: Any = None,
+        namespace: str | None = None,
+        current_time: float | None = None,
+    ) -> Any:
+        """Execute compaction pass on a specific memory tier or namespace."""
+        from core.memory_types import MemoryTier
+        effective_tier = tier if tier is not None else MemoryTier.SEMANTIC
+        return self.memory_manager.compact_memory(
+            tier=effective_tier,
+            namespace=namespace,
+            current_time=current_time,
+        )
+
+    def get_heuristic_calibrator(self) -> Any:
+        """Return the runtime's heuristic calibrator instance."""
+        return self.calibrator

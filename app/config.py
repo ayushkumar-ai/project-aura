@@ -77,6 +77,15 @@ class Settings(BaseSettings):
     aura_consolidation_timeout_seconds: float = 15.0
     aura_belief_revision_threshold: float = 0.85
 
+    # M15 Long-Term Memory Lifecycle, Decay & Heuristic Calibration Configuration
+    aura_memory_decay_enabled: bool = True
+    aura_memory_default_half_life_days: float = 30.0
+    aura_memory_compaction_threshold: float = 0.85
+    aura_max_compaction_facts_per_run: int = 20
+    aura_rule_min_trials_for_promotion: int = 3
+    aura_rule_deprecation_failure_rate: float = 0.60
+    aura_lifecycle_batch_timeout_seconds: float = 10.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

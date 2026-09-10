@@ -123,6 +123,7 @@ class AutonomousAgentExecutor:
         memory_manager: Any | None = None,
         reflector: Any | None = None,
         consolidator: Any | None = None,
+        calibrator: Any | None = None,
     ):
         if not isinstance(runtime, AgentRuntime):
             raise TypeError("runtime must be an instance of AgentRuntime.")
@@ -143,6 +144,7 @@ class AutonomousAgentExecutor:
         self.memory_manager = memory_manager
         self.reflector = reflector
         self.consolidator = consolidator
+        self.calibrator = calibrator
         self.planner = (
             planner
             if planner is not None
@@ -167,7 +169,7 @@ class AutonomousAgentExecutor:
         start_time: float,
         task_desc: str,
     ) -> AutonomousAgentResult:
-        """Helper to record episodic trace, reflect on execution, and finalize result."""
+        """Helper to record episodic trace, reflect on execution, calibrate heuristics, and finalize result."""
         reflection_rec = None
         if self.reflector is not None and not result.is_paused:
             try:
@@ -178,6 +180,27 @@ class AutonomousAgentExecutor:
                 )
             except Exception as ex:
                 logger.warning("Failed to reflect on execution in AutonomousAgentExecutor: %s", ex)
+
+        # M15: Heuristic calibration outcome tracking
+        if self.calibrator is not None and not result.is_paused and reflection_rec is not None:
+            try:
+                assessment = getattr(reflection_rec, "assessment", None)
+                if assessment is not None and hasattr(assessment, "rules_distilled"):
+                    replan_happened = len(result.trace.replan_history) > 0
+                    for rule in assessment.rules_distilled:
+                        self.calibrator.register_rule(
+                            rule_id=rule.rule_id,
+                            trigger_condition=rule.trigger_condition,
+                            base_confidence=rule.confidence,
+                            metadata=rule.metadata,
+                        )
+                        self.calibrator.record_outcome(
+                            rule_id=rule.rule_id,
+                            success=result.success,
+                            replanned=replan_happened,
+                        )
+            except Exception as ex:
+                logger.warning("Failed to track heuristic calibration in AutonomousAgentExecutor: %s", ex)
 
         if (
             self.memory_manager is not None
