@@ -55,6 +55,8 @@ class TeamOrchestrator:
         max_team_members: int = 20,
         max_delegation_depth: int = 3,
         default_timeout: float = 300.0,
+        tracer: Any | None = None,
+        artifact_manager: Any | None = None,
     ):
         self.role_registry = role_registry if role_registry is not None else RoleRegistry()
         self.message_bus = message_bus if message_bus is not None else AgentMessageBus()
@@ -73,6 +75,8 @@ class TeamOrchestrator:
         self.max_team_members = max_team_members
         self.max_delegation_depth = max_delegation_depth
         self.default_timeout = default_timeout
+        self.tracer = tracer
+        self.artifact_manager = artifact_manager
 
     def execute_team(
         self,

@@ -70,6 +70,14 @@ from core.team_types import TeamTopology, TeamMember, TeamDefinition, TeamExecut
 from core.team_orchestrator import TeamOrchestrator
 from evaluation.engine import EvaluationEngine
 from evaluation.models import EvaluationReport, BenchmarkRunSummary
+from core.trace_types import TraceContext, SpanRecord, SpanKind, SpanStatus
+from core.tracing import Tracer
+from core.trace_exporter import InMemoryTraceExporter, JsonlTraceExporter, CausalExecutionGraph
+from core.artifact_types import Artifact, ArtifactType
+from core.artifact_store import ArtifactStore, InMemoryArtifactStore, FileWorkspaceArtifactStore
+from core.artifact_manager import ArtifactManager, ArtifactLineage
+from core.adaptive_optimizer import AdaptivePolicyOptimizer, OptimizationEvent, OptimizationHistory
+from core.feedback_bridge import FeedbackBridge
 
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
@@ -134,6 +142,12 @@ class AgenticRuntime:
         message_bus: AgentMessageBus | None = None,
         consensus_engine: ConsensusEngine | None = None,
         evaluation_engine: EvaluationEngine | None = None,
+        tracer: Tracer | None = None,
+        trace_exporter: InMemoryTraceExporter | None = None,
+        artifact_store: ArtifactStore | None = None,
+        artifact_manager: ArtifactManager | None = None,
+        adaptive_optimizer: AdaptivePolicyOptimizer | None = None,
+        feedback_bridge: FeedbackBridge | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -539,6 +553,48 @@ class AgenticRuntime:
             evaluation_engine
             if evaluation_engine is not None
             else EvaluationEngine()
+        )
+
+        # M24 Distributed Tracing
+        self.tracer = tracer if tracer is not None else Tracer()
+        self.trace_exporter = trace_exporter if trace_exporter is not None else InMemoryTraceExporter()
+        self.tracer.register_exporter(self.trace_exporter)
+
+        # M24 Versioned Artifact Lifecycle
+        if artifact_store is not None:
+            self.artifact_store = artifact_store
+        else:
+            art_dir = getattr(settings, "aura_artifact_storage_dir", "")
+            if art_dir:
+                self.artifact_store = FileWorkspaceArtifactStore(art_dir)
+            else:
+                self.artifact_store = InMemoryArtifactStore()
+
+        self.artifact_manager = (
+            artifact_manager
+            if artifact_manager is not None
+            else ArtifactManager(store=self.artifact_store, tracer=self.tracer)
+        )
+
+        # M24 Closed-Loop Adaptive Self-Tuning
+        self.adaptive_optimizer = (
+            adaptive_optimizer
+            if adaptive_optimizer is not None
+            else AdaptivePolicyOptimizer(
+                meta_policy=self.meta_policy,
+                calibrator=self.calibrator,
+                model_router=self.model_router,
+                team_orchestrator=self.team_orchestrator,
+                role_registry=self.role_registry,
+            )
+        )
+        self.feedback_bridge = (
+            feedback_bridge
+            if feedback_bridge is not None
+            else FeedbackBridge(
+                optimizer=self.adaptive_optimizer,
+                event_dispatcher=self.event_dispatcher,
+            )
         )
 
     def execute(
@@ -1332,4 +1388,105 @@ class AgenticRuntime:
             scenario_ids=scenario_ids,
             stop_on_failure=stop_on_failure,
         )
+
+    # ---------------------------------------------------------
+    # M24 Distributed Tracing, Artifacts & Adaptive Optimizer
+    # ---------------------------------------------------------
+    def get_tracer(self) -> Tracer:
+        """Return the active distributed Tracer (M24)."""
+        return self.tracer
+
+    def get_trace(self, trace_id: str) -> list[SpanRecord]:
+        """Retrieve all spans for a specific trace_id (M24)."""
+        return self.trace_exporter.get_spans(trace_id)
+
+    def get_causal_graph(self, trace_id: str) -> CausalExecutionGraph:
+        """Construct a CausalExecutionGraph for a trace (M24)."""
+        spans = self.get_trace(trace_id)
+        return CausalExecutionGraph(spans)
+
+    def get_artifact_manager(self) -> ArtifactManager:
+        """Return the active ArtifactManager instance (M24)."""
+        return self.artifact_manager
+
+    def create_artifact(
+        self,
+        name: str,
+        content: Any,
+        artifact_type: ArtifactType | str = ArtifactType.DOCUMENT,
+        session_id: str | None = None,
+        creator_role_id: str | None = None,
+        producer_goal_id: str | None = None,
+        producer_task_id: str | None = None,
+        parent_artifact_ids: Sequence[str] = (),
+        metadata: dict[str, Any] | None = None,
+        taint_status: bool | None = None,
+    ) -> Artifact:
+        """Store a new version 1 artifact deliverable (M24)."""
+        return self.artifact_manager.store_artifact(
+            name=name,
+            content=content,
+            artifact_type=artifact_type,
+            session_id=session_id,
+            creator_role_id=creator_role_id,
+            producer_goal_id=producer_goal_id,
+            producer_task_id=producer_task_id,
+            parent_artifact_ids=parent_artifact_ids,
+            metadata=metadata,
+            taint_status=taint_status,
+        )
+
+    def get_artifact(self, artifact_id: str, version: int | None = None) -> Artifact | None:
+        """Retrieve an artifact manifest by ID and optional version (M24)."""
+        return self.artifact_manager.get_artifact(artifact_id=artifact_id, version=version)
+
+    def get_artifact_content(self, artifact_id: str, version: int | None = None, decode_text: bool = True) -> Any:
+        """Retrieve content of an artifact by ID (M24)."""
+        return self.artifact_manager.get_artifact_content(
+            artifact_id=artifact_id,
+            version=version,
+            decode_text=decode_text,
+        )
+
+    def list_artifacts(
+        self,
+        session_id: str | None = None,
+        goal_id: str | None = None,
+        artifact_type: ArtifactType | str | None = None,
+    ) -> list[Artifact]:
+        """List registered artifacts (M24)."""
+        return self.artifact_manager.list_artifacts(
+            session_id=session_id,
+            goal_id=goal_id,
+            artifact_type=artifact_type,
+        )
+
+    def get_artifact_lineage(self, artifact_id: str) -> ArtifactLineage:
+        """Get derivation lineage DAG for an artifact (M24)."""
+        return self.artifact_manager.get_lineage(artifact_id)
+
+    def get_adaptive_optimizer(self) -> AdaptivePolicyOptimizer:
+        """Return the AdaptivePolicyOptimizer instance (M24)."""
+        return self.adaptive_optimizer
+
+    def get_feedback_bridge(self) -> FeedbackBridge:
+        """Return the FeedbackBridge instance (M24)."""
+        return self.feedback_bridge
+
+    def optimize_from_evaluation(
+        self,
+        report: EvaluationReport,
+        goal: Any | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> list[OptimizationEvent]:
+        """Perform closed-loop adaptive policy optimization from an evaluation report (M24)."""
+        return self.feedback_bridge.process_evaluation(
+            report=report,
+            goal=goal,
+            context=context,
+        )
+
+    def get_optimization_history(self) -> list[OptimizationEvent]:
+        """Retrieve all recorded optimization events (M24)."""
+        return self.adaptive_optimizer.history.list_events()
 

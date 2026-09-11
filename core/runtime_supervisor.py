@@ -55,6 +55,12 @@ class AutonomousSupervisor:
                 lock_manager=getattr(runtime, "lock_manager", None),
                 clarification_gateway=getattr(runtime, "clarification_gateway", None),
                 event_dispatcher=getattr(runtime, "event_dispatcher", None),
+                delegation_tree=getattr(runtime, "delegation_tree", None),
+                message_bus=getattr(runtime, "message_bus", None),
+                role_registry=getattr(runtime, "role_registry", None),
+                artifact_manager=getattr(runtime, "artifact_manager", None),
+                adaptive_optimizer=getattr(runtime, "adaptive_optimizer", None),
+                tracer=getattr(runtime, "tracer", None),
             )
 
         self._lock = threading.RLock()

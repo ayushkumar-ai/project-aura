@@ -71,6 +71,9 @@ class RuntimeCheckpointManager:
         delegation_tree: Any | None = None,
         message_bus: Any | None = None,
         role_registry: Any | None = None,
+        artifact_manager: Any | None = None,
+        adaptive_optimizer: Any | None = None,
+        tracer: Any | None = None,
     ) -> None:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.retention_count = max(1, int(retention_count))
@@ -82,6 +85,9 @@ class RuntimeCheckpointManager:
         self.delegation_tree = delegation_tree
         self.message_bus = message_bus
         self.role_registry = role_registry
+        self.artifact_manager = artifact_manager
+        self.adaptive_optimizer = adaptive_optimizer
+        self.tracer = tracer
         self._lock = threading.RLock()
 
     @property
@@ -350,6 +356,25 @@ class RuntimeCheckpointManager:
                             "metadata": sanitize_checkpoint_metadata(_canonical_value(r.metadata)),
                         })
 
+            # 9. Capture Artifact Manager State (M24)
+            artifacts_data: dict[str, Any] = {}
+            if self.artifact_manager is not None:
+                if hasattr(self.artifact_manager, "export_manifests"):
+                    artifacts_data = self.artifact_manager.export_manifests()
+
+            # 10. Capture Adaptive Policy Optimizer State (M24)
+            optimizer_data: dict[str, Any] = {}
+            if self.adaptive_optimizer is not None:
+                if hasattr(self.adaptive_optimizer, "export_history"):
+                    optimizer_data = self.adaptive_optimizer.export_history()
+
+            # 11. Capture Active Tracing Context (M24)
+            tracing_data: dict[str, Any] = {}
+            if self.tracer is not None and hasattr(self.tracer, "get_current_context"):
+                active_ctx = self.tracer.get_current_context()
+                if active_ctx is not None:
+                    tracing_data = {"active_context": active_ctx.to_dict()}
+
             # Build metadata record
             ckpt_meta = CheckpointMetadata(
                 checkpoint_id=cid,
@@ -385,6 +410,9 @@ class RuntimeCheckpointManager:
                 "delegation": delegation_data,
                 "message_bus": message_bus_data,
                 "roles": roles_data,
+                "artifacts": artifacts_data,
+                "optimizer": optimizer_data,
+                "tracing": tracing_data,
             }
 
             ckpt_path = self.checkpoint_dir / f"{cid}.json"
@@ -768,5 +796,15 @@ class RuntimeCheckpointManager:
                         metadata=clean_meta,
                     )
                     self.role_registry.register_role(role, overwrite=True)
+
+            # 9. Restore Artifacts (M24)
+            if self.artifact_manager is not None and "artifacts" in data:
+                if hasattr(self.artifact_manager, "import_manifests"):
+                    self.artifact_manager.import_manifests(data["artifacts"])
+
+            # 10. Restore Optimizer State (M24)
+            if self.adaptive_optimizer is not None and "optimizer" in data:
+                if hasattr(self.adaptive_optimizer, "import_history"):
+                    self.adaptive_optimizer.import_history(data["optimizer"])
 
         return ckpt_meta

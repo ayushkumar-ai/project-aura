@@ -1,3 +1,42 @@
+from core.trace_types import (
+    SpanKind,
+    SpanStatus,
+    TraceContext,
+    SpanEvent,
+    SpanLink,
+    SpanRecord,
+)
+from core.tracing import Tracer, Span
+from core.trace_exporter import (
+    TraceExporter,
+    InMemoryTraceExporter,
+    JsonlTraceExporter,
+    OpenTelemetryDictExporter,
+    CausalExecutionGraph,
+)
+from core.artifact_types import (
+    Artifact,
+    ArtifactType,
+    compute_content_hash,
+    infer_mime_type,
+)
+from core.artifact_store import (
+    ArtifactStore,
+    InMemoryArtifactStore,
+    FileWorkspaceArtifactStore,
+)
+from core.artifact_manager import (
+    ArtifactManager,
+    ArtifactLineage,
+)
+from core.adaptive_optimizer import (
+    TuningTarget,
+    OptimizationEvent,
+    OptimizationHistory,
+    AdaptivePolicyOptimizer,
+)
+from core.feedback_bridge import FeedbackBridge
+
 from core.agent_plan import (
     AgentPlan,
     AgentPlanStep,
@@ -49,6 +88,34 @@ from core.provenance import (
 
 __all__ = [
 
+    # M24 Causal Tracing, Artifact Lifecycle & Adaptive Tuning
+    "SpanKind",
+    "SpanStatus",
+    "TraceContext",
+    "SpanEvent",
+    "SpanLink",
+    "SpanRecord",
+    "Tracer",
+    "Span",
+    "TraceExporter",
+    "InMemoryTraceExporter",
+    "JsonlTraceExporter",
+    "OpenTelemetryDictExporter",
+    "CausalExecutionGraph",
+    "Artifact",
+    "ArtifactType",
+    "compute_content_hash",
+    "infer_mime_type",
+    "ArtifactStore",
+    "InMemoryArtifactStore",
+    "FileWorkspaceArtifactStore",
+    "ArtifactManager",
+    "ArtifactLineage",
+    "TuningTarget",
+    "OptimizationEvent",
+    "OptimizationHistory",
+    "AdaptivePolicyOptimizer",
+    "FeedbackBridge",
     # M8.9 Provenance
     "TaintedValue",
     "wrap_tainted",

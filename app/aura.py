@@ -467,3 +467,143 @@ class AURA:
             stop_on_failure=stop_on_failure,
         )
 
+    # ---------------------------------------------------------
+    # M24 Distributed Tracing, Artifacts & Adaptive Optimizer
+    # ---------------------------------------------------------
+    def get_tracer(self) -> Any:
+        """Return the active distributed Tracer (M24)."""
+        if self.agentic_runtime is None:
+            from core.tracing import Tracer
+            return Tracer()
+        return self.agentic_runtime.get_tracer()
+
+    def get_trace(self, trace_id: str) -> list[Any]:
+        """Retrieve all spans for a specific trace_id (M24)."""
+        if self.agentic_runtime is None:
+            return []
+        return self.agentic_runtime.get_trace(trace_id)
+
+    def get_causal_graph(self, trace_id: str) -> Any:
+        """Construct a CausalExecutionGraph for a trace (M24)."""
+        if self.agentic_runtime is None:
+            from core.trace_exporter import CausalExecutionGraph
+            return CausalExecutionGraph([])
+        return self.agentic_runtime.get_causal_graph(trace_id)
+
+    def create_artifact(
+        self,
+        name: str,
+        content: Any,
+        artifact_type: Any = "document",
+        session_id: str | None = None,
+        creator_role_id: str | None = None,
+        producer_goal_id: str | None = None,
+        producer_task_id: str | None = None,
+        parent_artifact_ids: Sequence[str] = (),
+        metadata: dict[str, Any] | None = None,
+        taint_status: bool | None = None,
+    ) -> Any:
+        """Store a new version 1 artifact deliverable (M24)."""
+        if self.agentic_runtime is None:
+            from core.artifact_manager import ArtifactManager
+            mgr = ArtifactManager()
+            return mgr.store_artifact(
+                name=name,
+                content=content,
+                artifact_type=artifact_type,
+                session_id=session_id,
+                creator_role_id=creator_role_id,
+                producer_goal_id=producer_goal_id,
+                producer_task_id=producer_task_id,
+                parent_artifact_ids=parent_artifact_ids,
+                metadata=metadata,
+                taint_status=taint_status,
+            )
+        return self.agentic_runtime.create_artifact(
+            name=name,
+            content=content,
+            artifact_type=artifact_type,
+            session_id=session_id,
+            creator_role_id=creator_role_id,
+            producer_goal_id=producer_goal_id,
+            producer_task_id=producer_task_id,
+            parent_artifact_ids=parent_artifact_ids,
+            metadata=metadata,
+            taint_status=taint_status,
+        )
+
+    def get_artifact(self, artifact_id: str, version: int | None = None) -> Any | None:
+        """Retrieve an artifact manifest by ID and optional version (M24)."""
+        if self.agentic_runtime is None:
+            return None
+        return self.agentic_runtime.get_artifact(artifact_id=artifact_id, version=version)
+
+    def get_artifact_content(self, artifact_id: str, version: int | None = None, decode_text: bool = True) -> Any:
+        """Retrieve content of an artifact by ID (M24)."""
+        if self.agentic_runtime is None:
+            return None
+        return self.agentic_runtime.get_artifact_content(
+            artifact_id=artifact_id,
+            version=version,
+            decode_text=decode_text,
+        )
+
+    def list_artifacts(
+        self,
+        session_id: str | None = None,
+        goal_id: str | None = None,
+        artifact_type: Any | None = None,
+    ) -> list[Any]:
+        """List registered artifacts (M24)."""
+        if self.agentic_runtime is None:
+            return []
+        return self.agentic_runtime.list_artifacts(
+            session_id=session_id,
+            goal_id=goal_id,
+            artifact_type=artifact_type,
+        )
+
+    def get_artifact_lineage(self, artifact_id: str) -> Any:
+        """Get derivation lineage DAG for an artifact (M24)."""
+        if self.agentic_runtime is None:
+            return None
+        return self.agentic_runtime.get_artifact_lineage(artifact_id)
+
+    def diff_artifacts(self, artifact_id: str, version_a: int, version_b: int) -> dict[str, Any]:
+        """Diff two versions of an artifact (M24)."""
+        if self.agentic_runtime is None:
+            return {}
+        return self.agentic_runtime.get_artifact_manager().diff_artifacts(
+            artifact_id=artifact_id,
+            version_a=version_a,
+            version_b=version_b,
+        )
+
+    def get_adaptive_optimizer(self) -> Any:
+        """Return the AdaptivePolicyOptimizer instance (M24)."""
+        if self.agentic_runtime is None:
+            return None
+        return self.agentic_runtime.get_adaptive_optimizer()
+
+    def optimize_from_evaluation(
+        self,
+        report: Any,
+        goal: Any | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> list[Any]:
+        """Perform closed-loop adaptive policy optimization from an evaluation report (M24)."""
+        if self.agentic_runtime is None:
+            from core.adaptive_optimizer import AdaptivePolicyOptimizer
+            opt = AdaptivePolicyOptimizer()
+            return opt.optimize_from_evaluation(report=report, goal=goal, context=context)
+        return self.agentic_runtime.optimize_from_evaluation(
+            report=report,
+            goal=goal,
+            context=context,
+        )
+
+    def get_optimization_history(self) -> list[Any]:
+        """Retrieve all recorded optimization events (M24)."""
+        if self.agentic_runtime is None:
+            return []
+        return self.agentic_runtime.get_optimization_history()
