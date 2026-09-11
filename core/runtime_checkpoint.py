@@ -75,6 +75,7 @@ class RuntimeCheckpointManager:
         adaptive_optimizer: Any | None = None,
         tracer: Any | None = None,
         campaign_engine: Any | None = None,
+        dynamic_skill_registry: Any | None = None,
     ) -> None:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.retention_count = max(1, int(retention_count))
@@ -90,6 +91,7 @@ class RuntimeCheckpointManager:
         self.adaptive_optimizer = adaptive_optimizer
         self.tracer = tracer
         self.campaign_engine = campaign_engine
+        self.dynamic_skill_registry = dynamic_skill_registry
         self._lock = threading.RLock()
 
     @property
@@ -387,6 +389,12 @@ class RuntimeCheckpointManager:
                     campaigns_data["sagas"] = {k: v.to_dict() for k, v in self.campaign_engine._sagas.items()}
                     campaigns_data["statuses"] = {k: v.value for k, v in self.campaign_engine._statuses.items()}
 
+            # 13. Capture Dynamic Skill Registry State (M26)
+            dynamic_skills_data: dict[str, Any] = {}
+            if self.dynamic_skill_registry is not None:
+                with getattr(self.dynamic_skill_registry, "_lock", threading.RLock()):
+                    dynamic_skills_data = self.dynamic_skill_registry.to_dict()
+
             # Build metadata record
             ckpt_meta = CheckpointMetadata(
                 checkpoint_id=cid,
@@ -426,6 +434,7 @@ class RuntimeCheckpointManager:
                 "optimizer": optimizer_data,
                 "tracing": tracing_data,
                 "campaigns": campaigns_data,
+                "dynamic_skills": dynamic_skills_data,
             }
 
             ckpt_path = self.checkpoint_dir / f"{cid}.json"
@@ -854,5 +863,23 @@ class RuntimeCheckpointManager:
                             self.campaign_engine._statuses[cid] = CampaignStatus(st_val)
                         except Exception as ex:
                             logger.debug("Error restoring campaign status: %s", ex)
+
+            # 12. Restore Dynamic Skill Registry State (M26)
+            dynamic_skills_data = data.get("dynamic_skills", {})
+            if self.dynamic_skill_registry is not None and dynamic_skills_data:
+                from core.dynamic_skill_registry import DynamicSkillRegistry
+                with getattr(self.dynamic_skill_registry, "_lock", threading.RLock()):
+                    try:
+                        restored_dyn = DynamicSkillRegistry.from_dict(
+                            dynamic_skills_data,
+                            validator=getattr(self.dynamic_skill_registry, "_validator", None),
+                            executor=getattr(self.dynamic_skill_registry, "_executor", None),
+                            tracer=self.tracer,
+                        )
+                        self.dynamic_skill_registry._skills.update(restored_dyn._skills)
+                        self.dynamic_skill_registry._composite_skills.update(restored_dyn._composite_skills)
+                        self.dynamic_skill_registry._dynamic_tools.update(restored_dyn._dynamic_tools)
+                    except Exception as ex:
+                        logger.debug("Error restoring dynamic skill registry: %s", ex)
 
         return ckpt_meta

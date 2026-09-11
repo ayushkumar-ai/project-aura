@@ -686,3 +686,128 @@ class AURA:
         if self.agentic_runtime is None:
             return []
         return self.agentic_runtime.rollback_campaign(campaign_id=campaign_id)
+
+    # ---------------------------------------------------------
+    # M26 Dynamic Skill Synthesis & Evolution Facade Operations
+    # ---------------------------------------------------------
+    def synthesize_skill(
+        self,
+        name: str,
+        description: str,
+        source_code: str,
+        entrypoint_function: str = "execute",
+        test_vectors: Sequence[Any] = (),
+        required_capabilities: Sequence[str] = (),
+        input_schema: dict[str, Any] | None = None,
+        output_schema: dict[str, Any] | None = None,
+        author_role_id: str = "coder",
+        originating_goal_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        verify_after_synthesis: bool = True,
+    ) -> Any:
+        """Synthesize a dynamic Python tool and optionally verify it (M26)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.synthesize_skill(
+            name=name,
+            description=description,
+            source_code=source_code,
+            entrypoint_function=entrypoint_function,
+            test_vectors=test_vectors,
+            required_capabilities=required_capabilities,
+            input_schema=input_schema,
+            output_schema=output_schema,
+            author_role_id=author_role_id,
+            originating_goal_id=originating_goal_id,
+            metadata=metadata,
+            verify_after_synthesis=verify_after_synthesis,
+        )
+
+    def synthesize_composite_skill(
+        self,
+        name: str,
+        description: str,
+        steps: Sequence[Any],
+        author_role_id: str = "architect",
+        originating_goal_id: str | None = None,
+        input_schema: dict[str, Any] | None = None,
+        output_schema: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """Synthesize a declarative composite skill pipeline (M26)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.synthesize_composite_skill(
+            name=name,
+            description=description,
+            steps=steps,
+            author_role_id=author_role_id,
+            originating_goal_id=originating_goal_id,
+            input_schema=input_schema,
+            output_schema=output_schema,
+            metadata=metadata,
+        )
+
+    def verify_skill(
+        self,
+        skill: Any,
+        additional_test_vectors: tuple[Any, ...] = (),
+    ) -> Any:
+        """Verify a synthesized skill against test vectors and trajectory invariants (M26)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.verify_skill(skill, additional_test_vectors=additional_test_vectors)
+
+    def register_dynamic_skill(
+        self,
+        skill: Any,
+        activate: bool = True,
+        verify_first: bool = False,
+    ) -> None:
+        """Register a synthesized skill into the dynamic catalog (M26)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        self.agentic_runtime.register_dynamic_skill(skill, activate=activate, verify_first=verify_first)
+
+    def get_dynamic_skill(self, name: str) -> Any | None:
+        """Retrieve a registered dynamic skill by name (M26)."""
+        if self.agentic_runtime is None:
+            return None
+        reg = getattr(self.agentic_runtime, "dynamic_skill_registry", None)
+        if reg is not None and hasattr(reg, "get_skill") and hasattr(reg, "has_skill"):
+            if reg.has_skill(name):
+                return reg.get_skill(name)
+        return None
+
+    def list_dynamic_skills(self, state: Any | None = None) -> list[Any]:
+        """List all registered dynamic skills, optionally filtered by lifecycle state (M26)."""
+        if self.agentic_runtime is None:
+            return []
+        reg = getattr(self.agentic_runtime, "dynamic_skill_registry", None)
+        if reg is not None and hasattr(reg, "list_skills"):
+            return reg.list_skills(state=state)
+        return []
+
+    def deprecate_dynamic_skill(self, name: str, reason: str = "Manual deprecation") -> bool:
+        """Transition a dynamic skill to DEPRECATED lifecycle state (M26)."""
+        if self.agentic_runtime is None:
+            return False
+        reg = getattr(self.agentic_runtime, "dynamic_skill_registry", None)
+        if reg is not None and hasattr(reg, "deprecate_skill"):
+            return reg.deprecate_skill(name, reason=reason)
+        return False
+
+    def execute_dynamic_skill(
+        self,
+        name: str,
+        input_data: str,
+        timeout: float | None = None,
+    ) -> str:
+        """Execute a registered dynamic skill inside the isolated sandbox (M26)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.execute_dynamic_skill(
+            name=name,
+            input_data=input_data,
+            timeout=timeout,
+        )

@@ -75,8 +75,20 @@ class Skill:
 class SkillRegistry:
     """Registry for discovering and managing skills in AURA."""
 
-    def __init__(self):
+    def __init__(self, dynamic_registry: Any | None = None):
         self._skills: dict[str, Skill] = {}
+        self._dynamic_registry = dynamic_registry
+
+    @property
+    def dynamic_registry(self) -> Any | None:
+        return self._dynamic_registry
+
+    @dynamic_registry.setter
+    def dynamic_registry(self, registry: Any | None) -> None:
+        self._dynamic_registry = registry
+
+    def set_dynamic_registry(self, registry: Any | None) -> None:
+        self._dynamic_registry = registry
 
     def register(self, skill: Skill) -> None:
         """Register a skill under its unique name."""
@@ -99,10 +111,23 @@ class SkillRegistry:
             raise KeyError(f"Unknown skill: {name}")
 
         key = name.strip().lower()
-        if key not in self._skills:
-            raise KeyError(f"Unknown skill: {name}")
+        if key in self._skills:
+            return self._skills[key]
 
-        return self._skills[key]
+        if self._dynamic_registry is not None and hasattr(self._dynamic_registry, "has_skill") and self._dynamic_registry.has_skill(key):
+            try:
+                dyn_skill = self._dynamic_registry.get_skill(key)
+                return Skill(
+                    name=dyn_skill.name,
+                    description=dyn_skill.description,
+                    required_capabilities=frozenset(dyn_skill.required_capabilities),
+                    input_schema=dyn_skill.input_schema,
+                    metadata=dyn_skill.metadata,
+                )
+            except Exception:
+                pass
+
+        raise KeyError(f"Unknown skill: {name}")
 
     def get_skill(self, name: str) -> Skill:
         """Alias for get."""
@@ -112,7 +137,12 @@ class SkillRegistry:
         """Check if a skill is registered by name."""
         if not isinstance(name, str) or not name.strip():
             return False
-        return name.strip().lower() in self._skills
+        key = name.strip().lower()
+        if key in self._skills:
+            return True
+        if self._dynamic_registry is not None and hasattr(self._dynamic_registry, "has_skill"):
+            return self._dynamic_registry.has_skill(key)
+        return False
 
     def has_skill(self, name: str) -> bool:
         """Alias for has."""
@@ -123,11 +153,27 @@ class SkillRegistry:
 
     def list_skills(self) -> list[Skill]:
         """Return all registered skill objects."""
-        return list(self._skills.values())
+        skills = list(self._skills.values())
+        if self._dynamic_registry is not None and hasattr(self._dynamic_registry, "list_skills"):
+            try:
+                for dyn_skill in self._dynamic_registry.list_skills():
+                    if dyn_skill.name.lower() not in self._skills:
+                        skills.append(
+                            Skill(
+                                name=dyn_skill.name,
+                                description=dyn_skill.description,
+                                required_capabilities=frozenset(dyn_skill.required_capabilities),
+                                input_schema=dyn_skill.input_schema,
+                                metadata=dyn_skill.metadata,
+                            )
+                        )
+            except Exception:
+                pass
+        return skills
 
     def list_skill_names(self) -> list[str]:
         """Return the names of all registered skills."""
-        return [s.name for s in self._skills.values()]
+        return [s.name for s in self.list_skills()]
 
     def find_skills_by_capability(
         self,
@@ -135,7 +181,7 @@ class SkillRegistry:
     ) -> list[Skill]:
         """Find all registered skills requiring the specified capability."""
         return [
-            s for s in self._skills.values()
+            s for s in self.list_skills()
             if s.requires_capability(capability)
         ]
 
@@ -145,6 +191,6 @@ class SkillRegistry:
     ) -> list[Skill]:
         """Find all registered skills requiring the specified tool."""
         return [
-            s for s in self._skills.values()
+            s for s in self.list_skills()
             if s.requires_tool(tool_name)
         ]

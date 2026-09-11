@@ -1,3 +1,27 @@
+from core.skill_types import (
+    SkillLifecycleState,
+    TestVector,
+    SecurityAuditReport,
+    SkillVerificationReport,
+    SynthesizedSkill,
+    DynamicTool,
+    SkillStep,
+    CompositeSkill,
+    sanitize_skill_metadata,
+    compute_code_hash,
+)
+from core.code_sandbox import (
+    ALLOWED_STDLIB_MODULES,
+    FORBIDDEN_MODULES,
+    FORBIDDEN_BUILTINS,
+    FORBIDDEN_DUNDER_ATTRS,
+    ASTSecurityPolicyVisitor,
+    CodeSandboxValidator,
+    SandboxedToolExecutor,
+)
+from core.skill_verification import SkillVerificationHarness
+from core.skill_synthesis import SkillSynthesizer
+from core.dynamic_skill_registry import DynamicSkillRegistry
 from core.campaign_types import (
     CampaignStatus,
     PhaseStatus,
@@ -115,6 +139,28 @@ from core.provenance import (
 )
 
 __all__ = [
+    # M26 Dynamic Skill Synthesis, Sandboxed Execution & Capability Evolution
+    "SkillLifecycleState",
+    "TestVector",
+    "SecurityAuditReport",
+    "SkillVerificationReport",
+    "SynthesizedSkill",
+    "DynamicTool",
+    "SkillStep",
+    "CompositeSkill",
+    "sanitize_skill_metadata",
+    "compute_code_hash",
+    "ALLOWED_STDLIB_MODULES",
+    "FORBIDDEN_MODULES",
+    "FORBIDDEN_BUILTINS",
+    "FORBIDDEN_DUNDER_ATTRS",
+    "ASTSecurityPolicyVisitor",
+    "CodeSandboxValidator",
+    "SandboxedToolExecutor",
+    "SkillVerificationHarness",
+    "SkillSynthesizer",
+    "DynamicSkillRegistry",
+
     # M25 Mission Campaign, Cross-Goal Artifact Dataflow & Saga Coordination
     "CampaignStatus",
     "PhaseStatus",

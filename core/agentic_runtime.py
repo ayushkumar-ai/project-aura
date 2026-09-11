@@ -92,6 +92,20 @@ from core.campaign_engine import CampaignEngine
 from core.mission_graph import MissionGraph
 from core.artifact_pipeline import ArtifactPipelineRouter
 from core.saga_coordinator import SagaCoordinator
+from core.skill_types import (
+    SkillLifecycleState,
+    SynthesizedSkill,
+    DynamicTool,
+    CompositeSkill,
+    SkillStep,
+    TestVector,
+    SecurityAuditReport,
+    SkillVerificationReport,
+)
+from core.code_sandbox import CodeSandboxValidator, SandboxedToolExecutor
+from core.skill_verification import SkillVerificationHarness
+from core.skill_synthesis import SkillSynthesizer
+from core.dynamic_skill_registry import DynamicSkillRegistry
 
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
@@ -163,6 +177,10 @@ class AgenticRuntime:
         adaptive_optimizer: AdaptivePolicyOptimizer | None = None,
         feedback_bridge: FeedbackBridge | None = None,
         campaign_engine: CampaignEngine | None = None,
+        dynamic_skill_registry: DynamicSkillRegistry | None = None,
+        skill_synthesizer: SkillSynthesizer | None = None,
+        sandbox_validator: CodeSandboxValidator | None = None,
+        verification_harness: SkillVerificationHarness | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -220,6 +238,14 @@ class AgenticRuntime:
             raise TypeError("consensus_engine must be an instance of ConsensusEngine or None.")
         if campaign_engine is not None and not isinstance(campaign_engine, CampaignEngine):
             raise TypeError("campaign_engine must be an instance of CampaignEngine or None.")
+        if dynamic_skill_registry is not None and not isinstance(dynamic_skill_registry, DynamicSkillRegistry):
+            raise TypeError("dynamic_skill_registry must be an instance of DynamicSkillRegistry or None.")
+        if skill_synthesizer is not None and not isinstance(skill_synthesizer, SkillSynthesizer):
+            raise TypeError("skill_synthesizer must be an instance of SkillSynthesizer or None.")
+        if sandbox_validator is not None and not isinstance(sandbox_validator, CodeSandboxValidator):
+            raise TypeError("sandbox_validator must be an instance of CodeSandboxValidator or None.")
+        if verification_harness is not None and not isinstance(verification_harness, SkillVerificationHarness):
+            raise TypeError("verification_harness must be an instance of SkillVerificationHarness or None.")
         if not isinstance(max_replans, int) or max_replans < 0:
             raise ValueError("max_replans must be a non-negative integer.")
         if isinstance(default_mode, str):
@@ -630,6 +656,43 @@ class AgenticRuntime:
         )
         if self.checkpoint_manager is not None and getattr(self.checkpoint_manager, "campaign_engine", None) is None:
             self.checkpoint_manager.campaign_engine = self.campaign_engine
+
+        # M26 Dynamic Skill Synthesis, Sandbox & Verification Wiring
+        self.sandbox_validator = sandbox_validator if sandbox_validator is not None else CodeSandboxValidator()
+        self.sandbox_executor = SandboxedToolExecutor(validator=self.sandbox_validator)
+        self.verification_harness = (
+            verification_harness
+            if verification_harness is not None
+            else SkillVerificationHarness(
+                validator=self.sandbox_validator,
+                executor=self.sandbox_executor,
+                trajectory_verifier=getattr(self.evaluation_engine, "trajectory_verifier", None),
+                tracer=self.tracer,
+            )
+        )
+        self.skill_synthesizer = (
+            skill_synthesizer
+            if skill_synthesizer is not None
+            else SkillSynthesizer(
+                validator=self.sandbox_validator,
+                artifact_manager=self.artifact_manager,
+                tracer=self.tracer,
+            )
+        )
+        self.dynamic_skill_registry = (
+            dynamic_skill_registry
+            if dynamic_skill_registry is not None
+            else DynamicSkillRegistry(
+                executor=self.sandbox_executor,
+                tool_registry=self.tool_executor.registry if (self.tool_executor and hasattr(self.tool_executor, "registry")) else None,
+                tracer=self.tracer,
+            )
+        )
+        if hasattr(self.skill_registry, "set_dynamic_registry"):
+            self.skill_registry.set_dynamic_registry(self.dynamic_skill_registry)
+
+        if self.checkpoint_manager is not None and getattr(self.checkpoint_manager, "dynamic_skill_registry", None) is None:
+            self.checkpoint_manager.dynamic_skill_registry = self.dynamic_skill_registry
 
     def execute(
         self,
@@ -1567,3 +1630,111 @@ class AgenticRuntime:
     def rollback_campaign(self, campaign_id: str) -> list[dict[str, Any]]:
         """Manually trigger a full saga rollback of all executed steps in a campaign (M25)."""
         return self.campaign_engine.rollback_campaign(campaign_id)
+
+    # ------------------------------------------------------------------
+    # M26 Dynamic Skill Synthesis, Verification & Registry Methods
+    # ------------------------------------------------------------------
+    def get_dynamic_skill_registry(self) -> DynamicSkillRegistry:
+        return self.dynamic_skill_registry
+
+    def get_skill_synthesizer(self) -> SkillSynthesizer:
+        return self.skill_synthesizer
+
+    def get_verification_harness(self) -> SkillVerificationHarness:
+        return self.verification_harness
+
+    def synthesize_skill(
+        self,
+        name: str,
+        description: str,
+        source_code: str,
+        entrypoint_function: str = "execute",
+        test_vectors: Sequence[TestVector | dict[str, Any]] = (),
+        required_capabilities: Sequence[str] = (),
+        input_schema: dict[str, Any] | None = None,
+        output_schema: dict[str, Any] | None = None,
+        author_role_id: str = "coder",
+        originating_goal_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        verify_after_synthesis: bool = True,
+    ) -> SynthesizedSkill:
+        """Synthesize a new programmatic Python tool and optionally verify it (M26)."""
+        skill = self.skill_synthesizer.synthesize_tool(
+            name=name,
+            description=description,
+            source_code=source_code,
+            entrypoint_function=entrypoint_function,
+            test_vectors=test_vectors,
+            required_capabilities=required_capabilities,
+            input_schema=input_schema,
+            output_schema=output_schema,
+            author_role_id=author_role_id,
+            originating_goal_id=originating_goal_id,
+            metadata=metadata,
+        )
+        if verify_after_synthesis:
+            self.verification_harness.verify_skill(skill)
+        return skill
+
+    def synthesize_composite_skill(
+        self,
+        name: str,
+        description: str,
+        steps: Sequence[SkillStep | dict[str, Any]],
+        author_role_id: str = "architect",
+        originating_goal_id: str | None = None,
+        input_schema: dict[str, Any] | None = None,
+        output_schema: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> CompositeSkill:
+        """Synthesize a declarative composite skill pipeline (M26)."""
+        return self.skill_synthesizer.synthesize_composite_skill(
+            name=name,
+            description=description,
+            steps=steps,
+            author_role_id=author_role_id,
+            originating_goal_id=originating_goal_id,
+            input_schema=input_schema,
+            output_schema=output_schema,
+            metadata=metadata,
+        )
+
+    def verify_skill(
+        self,
+        skill: SynthesizedSkill,
+        additional_test_vectors: tuple[TestVector, ...] = (),
+    ) -> SkillVerificationReport:
+        """Verify a synthesized skill against test vectors and trajectory invariants (M26)."""
+        return self.verification_harness.verify_skill(skill, additional_test_vectors=additional_test_vectors)
+
+    def register_dynamic_skill(
+        self,
+        skill: SynthesizedSkill,
+        activate: bool = True,
+        verify_first: bool = False,
+    ) -> None:
+        """Register a synthesized skill into the dynamic catalog (M26)."""
+        if verify_first and not skill.is_verified:
+            self.verification_harness.verify_skill(skill)
+        self.dynamic_skill_registry.register_skill(skill, activate=activate)
+
+    def register_composite_skill(
+        self,
+        skill: CompositeSkill,
+        activate: bool = True,
+    ) -> None:
+        """Register a composite skill pipeline into the dynamic catalog (M26)."""
+        self.dynamic_skill_registry.register_composite_skill(skill, activate=activate)
+
+    def execute_dynamic_skill(
+        self,
+        name: str,
+        input_data: str,
+        timeout: float | None = None,
+    ) -> str:
+        """Execute a dynamic skill inside the isolated sandbox (M26)."""
+        return self.dynamic_skill_registry.execute_skill(
+            name=name,
+            input_data=input_data,
+            timeout=timeout,
+        )
