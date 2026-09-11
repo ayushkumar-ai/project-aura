@@ -607,3 +607,82 @@ class AURA:
         if self.agentic_runtime is None:
             return []
         return self.agentic_runtime.get_optimization_history()
+
+    # ---------------------------------------------------------
+    # M25 Autonomous Mission Campaign Orchestration & Sagas
+    # ---------------------------------------------------------
+    def submit_campaign(
+        self,
+        definition_or_title: Any,
+        description: str = "",
+        phases: Sequence[Any] = (),
+        dataflows: Sequence[Any] = (),
+        campaign_id: str | None = None,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """Submit and schedule a multi-phase mission campaign (M25)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        from core.campaign_types import CampaignDefinition, CampaignPhase, DataflowBinding
+        from uuid import uuid4
+
+        if isinstance(definition_or_title, CampaignDefinition):
+            return self.agentic_runtime.submit_campaign(definition_or_title)
+
+        cid = campaign_id or f"camp_{uuid4().hex[:12]}"
+        defn = CampaignDefinition(
+            campaign_id=cid,
+            title=str(definition_or_title),
+            description=description,
+            phases=tuple(phases),
+            dataflows=tuple(dataflows),
+            session_id=session_id,
+            metadata=metadata or {},
+        )
+        return self.agentic_runtime.submit_campaign(defn)
+
+    def execute_campaign(
+        self,
+        campaign_id: str,
+        session_id: str | None = None,
+        max_iterations: int = 50,
+    ) -> Any:
+        """Execute a registered mission campaign DAG to completion (M25)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.execute_campaign(
+            campaign_id=campaign_id,
+            session_id=session_id,
+            max_iterations=max_iterations,
+        )
+
+    def get_campaign(self, campaign_id: str) -> Any | None:
+        """Retrieve campaign definition by ID (M25)."""
+        if self.agentic_runtime is None:
+            return None
+        return self.agentic_runtime.get_campaign(campaign_id=campaign_id)
+
+    def get_campaign_status(self, campaign_id: str) -> dict[str, Any]:
+        """Query real-time status and phase progress of a campaign (M25)."""
+        if self.agentic_runtime is None:
+            return {"status": "unconfigured", "campaign_id": campaign_id}
+        return self.agentic_runtime.get_campaign_status(campaign_id=campaign_id)
+
+    def list_campaigns(self) -> list[dict[str, Any]]:
+        """List all registered mission campaigns (M25)."""
+        if self.agentic_runtime is None:
+            return []
+        return self.agentic_runtime.list_campaigns()
+
+    def cancel_campaign(self, campaign_id: str, reason: str = "User cancelled") -> bool:
+        """Cancel a running or scheduled campaign (M25)."""
+        if self.agentic_runtime is None:
+            return False
+        return self.agentic_runtime.cancel_campaign(campaign_id=campaign_id, reason=reason)
+
+    def rollback_campaign(self, campaign_id: str) -> list[dict[str, Any]]:
+        """Manually trigger a full saga rollback of all executed steps in a campaign (M25)."""
+        if self.agentic_runtime is None:
+            return []
+        return self.agentic_runtime.rollback_campaign(campaign_id=campaign_id)

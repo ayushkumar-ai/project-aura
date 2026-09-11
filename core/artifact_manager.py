@@ -292,6 +292,9 @@ class ArtifactManager:
         """Retrieve artifact metadata by ID and optional version."""
         return self.store.get_manifest(artifact_id, version=version)
 
+    def read_artifact_content(self, artifact_id: str, version: int | None = None, decode_text: bool = True) -> Any:
+        return self.get_artifact_content(artifact_id=artifact_id, version=version, decode_text=decode_text)
+
     def get_artifact_content(
         self,
         artifact_id: str,

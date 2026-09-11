@@ -1,3 +1,31 @@
+from core.campaign_types import (
+    CampaignStatus,
+    PhaseStatus,
+    DataflowChannelType,
+    CompensatingActionType,
+    SagaStepStatus,
+    ArtifactContract,
+    DataflowBinding,
+    CompensatingAction,
+    SagaStep,
+    CampaignMilestone,
+    CampaignPhase,
+    CampaignDefinition,
+    CampaignExecutionResult,
+)
+from core.mission_graph import MissionGraph
+from core.artifact_pipeline import (
+    ArtifactSchemaValidator,
+    DataflowChannel,
+    ArtifactPipelineRouter,
+)
+from core.saga_coordinator import (
+    SagaRollbackLog,
+    CompensatingActionEngine,
+    SagaCoordinator,
+)
+from core.campaign_engine import CampaignEngine
+
 from core.trace_types import (
     SpanKind,
     SpanStatus,
@@ -87,6 +115,28 @@ from core.provenance import (
 )
 
 __all__ = [
+    # M25 Mission Campaign, Cross-Goal Artifact Dataflow & Saga Coordination
+    "CampaignStatus",
+    "PhaseStatus",
+    "DataflowChannelType",
+    "CompensatingActionType",
+    "SagaStepStatus",
+    "ArtifactContract",
+    "DataflowBinding",
+    "CompensatingAction",
+    "SagaStep",
+    "CampaignMilestone",
+    "CampaignPhase",
+    "CampaignDefinition",
+    "CampaignExecutionResult",
+    "MissionGraph",
+    "ArtifactSchemaValidator",
+    "DataflowChannel",
+    "ArtifactPipelineRouter",
+    "SagaRollbackLog",
+    "CompensatingActionEngine",
+    "SagaCoordinator",
+    "CampaignEngine",
 
     # M24 Causal Tracing, Artifact Lifecycle & Adaptive Tuning
     "SpanKind",

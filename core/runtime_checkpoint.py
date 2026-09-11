@@ -74,6 +74,7 @@ class RuntimeCheckpointManager:
         artifact_manager: Any | None = None,
         adaptive_optimizer: Any | None = None,
         tracer: Any | None = None,
+        campaign_engine: Any | None = None,
     ) -> None:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.retention_count = max(1, int(retention_count))
@@ -88,6 +89,7 @@ class RuntimeCheckpointManager:
         self.artifact_manager = artifact_manager
         self.adaptive_optimizer = adaptive_optimizer
         self.tracer = tracer
+        self.campaign_engine = campaign_engine
         self._lock = threading.RLock()
 
     @property
@@ -375,6 +377,16 @@ class RuntimeCheckpointManager:
                 if active_ctx is not None:
                     tracing_data = {"active_context": active_ctx.to_dict()}
 
+            # 12. Capture Campaign Engine State (M25)
+            campaigns_data: dict[str, Any] = {"definitions": [], "graphs": {}, "routers": {}, "sagas": {}, "statuses": {}}
+            if self.campaign_engine is not None:
+                with getattr(self.campaign_engine, "_lock", threading.RLock()):
+                    campaigns_data["definitions"] = [d.to_dict() for d in self.campaign_engine._definitions.values()]
+                    campaigns_data["graphs"] = {k: v.to_dict() for k, v in self.campaign_engine._graphs.items()}
+                    campaigns_data["routers"] = {k: v.to_dict() for k, v in self.campaign_engine._routers.items()}
+                    campaigns_data["sagas"] = {k: v.to_dict() for k, v in self.campaign_engine._sagas.items()}
+                    campaigns_data["statuses"] = {k: v.value for k, v in self.campaign_engine._statuses.items()}
+
             # Build metadata record
             ckpt_meta = CheckpointMetadata(
                 checkpoint_id=cid,
@@ -413,6 +425,7 @@ class RuntimeCheckpointManager:
                 "artifacts": artifacts_data,
                 "optimizer": optimizer_data,
                 "tracing": tracing_data,
+                "campaigns": campaigns_data,
             }
 
             ckpt_path = self.checkpoint_dir / f"{cid}.json"
@@ -806,5 +819,40 @@ class RuntimeCheckpointManager:
             if self.adaptive_optimizer is not None and "optimizer" in data:
                 if hasattr(self.adaptive_optimizer, "import_history"):
                     self.adaptive_optimizer.import_history(data["optimizer"])
+
+            # 11. Restore Campaign Engine State (M25)
+            campaigns_data = data.get("campaigns", {})
+            if self.campaign_engine is not None and campaigns_data:
+                from core.campaign_types import CampaignDefinition, CampaignStatus
+                from core.mission_graph import MissionGraph
+                from core.artifact_pipeline import ArtifactPipelineRouter
+                from core.saga_coordinator import SagaCoordinator
+                with getattr(self.campaign_engine, "_lock", threading.RLock()):
+                    for d in campaigns_data.get("definitions", []):
+                        try:
+                            defn = CampaignDefinition.from_dict(d)
+                            self.campaign_engine._definitions[defn.campaign_id] = defn
+                        except Exception as ex:
+                            logger.debug("Error restoring campaign definition: %s", ex)
+                    for cid, g_data in campaigns_data.get("graphs", {}).items():
+                        try:
+                            self.campaign_engine._graphs[cid] = MissionGraph.from_dict(g_data)
+                        except Exception as ex:
+                            logger.debug("Error restoring mission graph: %s", ex)
+                    for cid, r_data in campaigns_data.get("routers", {}).items():
+                        try:
+                            self.campaign_engine._routers[cid] = ArtifactPipelineRouter.from_dict(r_data)
+                        except Exception as ex:
+                            logger.debug("Error restoring artifact router: %s", ex)
+                    for cid, s_data in campaigns_data.get("sagas", {}).items():
+                        try:
+                            self.campaign_engine._sagas[cid] = SagaCoordinator.from_dict(s_data, engine=self.campaign_engine._default_compensating_engine)
+                        except Exception as ex:
+                            logger.debug("Error restoring saga coordinator: %s", ex)
+                    for cid, st_val in campaigns_data.get("statuses", {}).items():
+                        try:
+                            self.campaign_engine._statuses[cid] = CampaignStatus(st_val)
+                        except Exception as ex:
+                            logger.debug("Error restoring campaign status: %s", ex)
 
         return ckpt_meta

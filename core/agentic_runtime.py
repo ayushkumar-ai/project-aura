@@ -78,6 +78,20 @@ from core.artifact_store import ArtifactStore, InMemoryArtifactStore, FileWorksp
 from core.artifact_manager import ArtifactManager, ArtifactLineage
 from core.adaptive_optimizer import AdaptivePolicyOptimizer, OptimizationEvent, OptimizationHistory
 from core.feedback_bridge import FeedbackBridge
+from core.campaign_types import (
+    CampaignDefinition,
+    CampaignPhase,
+    CampaignMilestone,
+    CampaignExecutionResult,
+    CampaignStatus,
+    PhaseStatus,
+    DataflowBinding,
+    ArtifactContract,
+)
+from core.campaign_engine import CampaignEngine
+from core.mission_graph import MissionGraph
+from core.artifact_pipeline import ArtifactPipelineRouter
+from core.saga_coordinator import SagaCoordinator
 
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
@@ -148,6 +162,7 @@ class AgenticRuntime:
         artifact_manager: ArtifactManager | None = None,
         adaptive_optimizer: AdaptivePolicyOptimizer | None = None,
         feedback_bridge: FeedbackBridge | None = None,
+        campaign_engine: CampaignEngine | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -203,6 +218,8 @@ class AgenticRuntime:
             raise TypeError("message_bus must be an instance of AgentMessageBus or None.")
         if consensus_engine is not None and not isinstance(consensus_engine, ConsensusEngine):
             raise TypeError("consensus_engine must be an instance of ConsensusEngine or None.")
+        if campaign_engine is not None and not isinstance(campaign_engine, CampaignEngine):
+            raise TypeError("campaign_engine must be an instance of CampaignEngine or None.")
         if not isinstance(max_replans, int) or max_replans < 0:
             raise ValueError("max_replans must be a non-negative integer.")
         if isinstance(default_mode, str):
@@ -596,6 +613,23 @@ class AgenticRuntime:
                 event_dispatcher=self.event_dispatcher,
             )
         )
+
+        # M25 Autonomous Mission Campaign Engine
+        self.campaign_engine = (
+            campaign_engine
+            if campaign_engine is not None
+            else CampaignEngine(
+                goal_engine=self.goal_engine,
+                scheduler=self.scheduler,
+                team_orchestrator=self.team_orchestrator,
+                artifact_manager=self.artifact_manager,
+                evaluation_engine=self.evaluation_engine,
+                tracer=self.tracer,
+                streaming_gateway=self.streaming_gateway,
+            )
+        )
+        if self.checkpoint_manager is not None and getattr(self.checkpoint_manager, "campaign_engine", None) is None:
+            self.checkpoint_manager.campaign_engine = self.campaign_engine
 
     def execute(
         self,
@@ -1490,3 +1524,46 @@ class AgenticRuntime:
         """Retrieve all recorded optimization events (M24)."""
         return self.adaptive_optimizer.history.list_events()
 
+    # ------------------------------------------------------------------
+    # M25 Autonomous Mission Campaign Orchestration & Distributed Sagas
+    # ------------------------------------------------------------------
+    def get_campaign_engine(self) -> CampaignEngine:
+        """Return the master CampaignEngine instance (M25)."""
+        return self.campaign_engine
+
+    def submit_campaign(self, definition: CampaignDefinition) -> CampaignDefinition:
+        """Submit and validate a new multi-phase mission campaign (M25)."""
+        return self.campaign_engine.submit_campaign(definition)
+
+    def execute_campaign(
+        self,
+        campaign_id: str,
+        session_id: str | None = None,
+        max_iterations: int = 50,
+    ) -> CampaignExecutionResult:
+        """Execute a multi-phase mission campaign DAG to completion (M25)."""
+        return self.campaign_engine.execute_campaign(
+            campaign_id=campaign_id,
+            session_id=session_id,
+            max_iterations=max_iterations,
+        )
+
+    def get_campaign(self, campaign_id: str) -> CampaignDefinition | None:
+        """Retrieve campaign definition by ID (M25)."""
+        return self.campaign_engine.get_campaign(campaign_id)
+
+    def get_campaign_status(self, campaign_id: str) -> dict[str, Any]:
+        """Query real-time status and phase progress of a campaign (M25)."""
+        return self.campaign_engine.get_campaign_status(campaign_id)
+
+    def list_campaigns(self) -> list[dict[str, Any]]:
+        """List all registered campaigns (M25)."""
+        return self.campaign_engine.list_campaigns()
+
+    def cancel_campaign(self, campaign_id: str, reason: str = "User cancelled") -> bool:
+        """Cancel a running or scheduled campaign (M25)."""
+        return self.campaign_engine.cancel_campaign(campaign_id, reason=reason)
+
+    def rollback_campaign(self, campaign_id: str) -> list[dict[str, Any]]:
+        """Manually trigger a full saga rollback of all executed steps in a campaign (M25)."""
+        return self.campaign_engine.rollback_campaign(campaign_id)

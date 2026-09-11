@@ -61,6 +61,7 @@ class AutonomousSupervisor:
                 artifact_manager=getattr(runtime, "artifact_manager", None),
                 adaptive_optimizer=getattr(runtime, "adaptive_optimizer", None),
                 tracer=getattr(runtime, "tracer", None),
+                campaign_engine=getattr(runtime, "campaign_engine", None),
             )
 
         self._lock = threading.RLock()
