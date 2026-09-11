@@ -272,37 +272,6 @@ class AURA:
             depends_on_goal_ids=depends_on_goal_ids,
         )
 
-    def submit_team_goal(
-        self,
-        title: str,
-        description: str = "",
-        team_id: str | None = None,
-        role_id: str | None = None,
-        topology: Any = None,
-        success_criteria: Sequence[str] = (),
-        constraints: Sequence[str] = (),
-        priority: Any = None,
-        metadata: dict[str, Any] | None = None,
-        parent_goal_id: str | None = None,
-        depends_on_goal_ids: Sequence[str] = (),
-    ) -> Any:
-        """Submit and schedule a multi-agent team bound goal (M22)."""
-        if self.agentic_runtime is None:
-            raise RuntimeError("Agentic runtime is not configured.")
-        return self.agentic_runtime.submit_team_goal(
-            title=title,
-            description=description,
-            team_id=team_id,
-            role_id=role_id,
-            topology=topology,
-            success_criteria=list(success_criteria),
-            constraints=list(constraints),
-            priority=priority,
-            metadata=metadata,
-            parent_goal_id=parent_goal_id,
-            depends_on_goal_ids=depends_on_goal_ids,
-        )
-
     def approve_action(
         self,
         approval_id: str,
@@ -421,13 +390,18 @@ class AURA:
     def submit_team_goal(
         self,
         title: str,
-        description: str,
+        description: str = "",
         team: Any = None,
         topology: Any = None,
+        team_id: str | None = None,
+        role_id: str | None = None,
         priority: Any = None,
         success_criteria: tuple[str, ...] | list[str] = (),
+        constraints: tuple[str, ...] | list[str] = (),
         session_id: str = "default",
         metadata: dict[str, Any] | None = None,
+        parent_goal_id: str | None = None,
+        depends_on_goal_ids: Sequence[str] = (),
     ) -> Any:
         """Submit a multi-agent team-bound goal for autonomous convergence (M22)."""
         if self.agentic_runtime is None:
@@ -442,3 +416,54 @@ class AURA:
             session_id=session_id,
             metadata=metadata,
         )
+
+    # ---------------------------------------------------------
+    # M23 Autonomous Convergence Evaluation & Benchmark Framework
+    # ---------------------------------------------------------
+    def evaluate(
+        self,
+        target: Any,
+        target_id: str | None = None,
+        target_type: str | None = None,
+        expected_criteria: tuple[str, ...] | list[str] = (),
+        context: dict[str, Any] | None = None,
+    ) -> Any:
+        """Evaluate an execution result, trajectory, or goal using the EvaluationEngine (M23)."""
+        if self.agentic_runtime is None:
+            from evaluation.engine import EvaluationEngine
+            return EvaluationEngine().evaluate(
+                target=target,
+                target_id=target_id,
+                target_type=target_type,
+                expected_criteria=expected_criteria,
+                context=context,
+            )
+        return self.agentic_runtime.evaluate_execution(
+            target=target,
+            target_id=target_id,
+            target_type=target_type,
+            expected_criteria=expected_criteria,
+            context=context,
+        )
+
+    def run_benchmark(
+        self,
+        suite: Any | None = None,
+        scenario_ids: list[str] | tuple[str, ...] | None = None,
+        stop_on_failure: bool = False,
+    ) -> Any:
+        """Run a benchmark suite against this AURA instance (M23)."""
+        if self.agentic_runtime is None:
+            from evaluation.benchmark_suite import BenchmarkSuite
+            eff_suite = suite or BenchmarkSuite()
+            return eff_suite.run(
+                runtime_or_aura=self,
+                scenario_ids=scenario_ids,
+                stop_on_failure=stop_on_failure,
+            )
+        return self.agentic_runtime.run_benchmark(
+            suite=suite,
+            scenario_ids=scenario_ids,
+            stop_on_failure=stop_on_failure,
+        )
+

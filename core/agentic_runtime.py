@@ -68,6 +68,8 @@ from core.agent_delegation import DelegationContract, DelegationResult, Delegati
 from core.consensus_engine import ConsensusEngine, ConsensusStrategy
 from core.team_types import TeamTopology, TeamMember, TeamDefinition, TeamExecutionResult
 from core.team_orchestrator import TeamOrchestrator
+from evaluation.engine import EvaluationEngine
+from evaluation.models import EvaluationReport, BenchmarkRunSummary
 
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
@@ -131,6 +133,7 @@ class AgenticRuntime:
         team_orchestrator: TeamOrchestrator | None = None,
         message_bus: AgentMessageBus | None = None,
         consensus_engine: ConsensusEngine | None = None,
+        evaluation_engine: EvaluationEngine | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -531,6 +534,11 @@ class AgenticRuntime:
                 supervisor=self.supervisor,
                 default_operator_timeout=getattr(settings, "aura_operator_timeout_seconds", 300.0),
             )
+        )
+        self.evaluation_engine = (
+            evaluation_engine
+            if evaluation_engine is not None
+            else EvaluationEngine()
         )
 
     def execute(
@@ -1288,3 +1296,40 @@ class AgenticRuntime:
                 metadata=clean_meta,
             )
         return goal
+
+    def get_evaluation_engine(self) -> EvaluationEngine:
+        """Return the EvaluationEngine instance (M23)."""
+        return self.evaluation_engine
+
+    def evaluate_execution(
+        self,
+        target: Any,
+        target_id: str | None = None,
+        target_type: str | None = None,
+        expected_criteria: tuple[str, ...] | list[str] = (),
+        context: dict[str, Any] | None = None,
+    ) -> EvaluationReport:
+        """Evaluate an execution result, trajectory, or goal using the EvaluationEngine (M23)."""
+        return self.evaluation_engine.evaluate(
+            target=target,
+            target_id=target_id,
+            target_type=target_type,
+            expected_criteria=expected_criteria,
+            context=context,
+        )
+
+    def run_benchmark(
+        self,
+        suite: Any | None = None,
+        scenario_ids: list[str] | tuple[str, ...] | None = None,
+        stop_on_failure: bool = False,
+    ) -> BenchmarkRunSummary:
+        """Run a benchmark suite against this runtime instance (M23)."""
+        from evaluation.benchmark_suite import BenchmarkSuite
+        eff_suite = suite or BenchmarkSuite(evaluation_engine=self.evaluation_engine)
+        return eff_suite.run(
+            runtime_or_aura=self,
+            scenario_ids=scenario_ids,
+            stop_on_failure=stop_on_failure,
+        )
+
