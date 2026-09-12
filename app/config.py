@@ -143,6 +143,25 @@ class Settings(BaseSettings):
     aura_message_bus_max_queue_size: int = 1000
     aura_message_bus_max_history_size: int = 5000
 
+    # Production Server & HTTP Deployment Configuration
+    aura_server_host: str = "0.0.0.0"
+    aura_server_port: int = 8000
+    aura_server_api_key: str = ""
+    aura_api_key_auth_enabled: bool = False
+    aura_cors_allowed_origins: str = "*"
+    aura_max_request_body_bytes: int = 1048576
+    aura_shutdown_grace_period_seconds: float = 10.0
+
+    # Persistent Storage Root Directories
+    aura_artifact_storage_dir: str = ".aura_artifacts"
+    aura_trace_storage_dir: str = ".aura_traces"
+    aura_skills_storage_dir: str = ".aura_skills"
+    aura_knowledge_storage_dir: str = ".aura_knowledge"
+
+    # Self-Healing & Epistemic Distillation Defaults
+    aura_auto_heal_on_failure: bool = True
+    aura_max_healing_attempts_per_phase: int = 3
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -152,3 +171,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+

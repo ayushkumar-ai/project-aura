@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+
+# Python bytecode & environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+*.env.local
+
+# IDE & editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test & coverage data
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+
+# Documentation source artifacts
+docs/
+
+# Local persistence storage
+.aura_checkpoints/
+.aura_artifacts/
+.aura_traces/
+.aura_skills/
+.aura_knowledge/
+.aura_sessions/
+.aura_state/

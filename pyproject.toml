@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=65.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aura"
+version = "0.28.0"
+description = "Project AURA — Autonomous Personal Intelligence & Execution Platform"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Project AURA Team" }
+]
+keywords = [
+    "autonomous-agents",
+    "personal-intelligence",
+    "goal-planning",
+    "orchestration",
+    "epistemic-memory",
+    "self-healing",
+    "tracing"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
+dependencies = [
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "openai>=1.0.0",
+    "colorama>=0.4.6",
+    "typing-extensions>=4.8.0",
+    "typing-inspection>=0.4.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "anyio>=4.0.0"
+]
+
+[project.scripts]
+aura = "app.main:main"
+aura-server = "app.server:main"
+
+[tool.setuptools.packages.find]
+include = ["app*", "core*", "evaluation*", "interfaces*", "knowledge*", "memory*", "providers*", "research*", "tools*"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-ra --strict-markers"

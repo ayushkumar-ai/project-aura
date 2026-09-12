@@ -1,0 +1,41 @@
+version: "3.8"
+
+services:
+  aura:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: project-aura:0.28.0
+    container_name: aura-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - AURA_ENV=production
+      - AURA_LOG_LEVEL=INFO
+      - AURA_SERVER_HOST=0.0.0.0
+      - AURA_SERVER_PORT=8000
+      - AURA_MODEL_PROVIDER=${AURA_MODEL_PROVIDER:-fake}
+      - AURA_MODEL_NAME=${AURA_MODEL_NAME:-fake-model-v1}
+      - AURA_API_KEY=${AURA_API_KEY:-}
+      - AURA_SERVER_API_KEY=${AURA_SERVER_API_KEY:-}
+      - AURA_API_KEY_AUTH_ENABLED=${AURA_API_KEY_AUTH_ENABLED:-false}
+    volumes:
+      - aura_checkpoints:/app/.aura_checkpoints
+      - aura_artifacts:/app/.aura_artifacts
+      - aura_traces:/app/.aura_traces
+      - aura_skills:/app/.aura_skills
+      - aura_knowledge:/app/.aura_knowledge
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').getcode() == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  aura_checkpoints:
+  aura_artifacts:
+  aura_traces:
+  aura_skills:
+  aura_knowledge:

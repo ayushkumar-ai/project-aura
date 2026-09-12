@@ -180,3 +180,36 @@ def test_create_orchestrator_configures_log_level(monkeypatch):
     create_orchestrator()
 
     assert logging.getLogger("aura").level == logging.DEBUG
+
+
+def test_create_aura_agentic():
+    aura = create_aura(agentic=True)
+    assert isinstance(aura, AURA)
+    assert aura.agentic_runtime is not None
+    assert aura.agentic_runtime.goal_engine is not None
+    assert aura.agentic_runtime.epistemic_graph is not None
+
+
+def test_main_cli_health(monkeypatch, capsys):
+    from app.main import main
+    monkeypatch.setattr("sys.argv", ["aura", "--health"])
+    main()
+    captured = capsys.readouterr()
+    assert "System Health Diagnostics" in captured.out
+
+
+def test_main_cli_list_skills(monkeypatch, capsys):
+    from app.main import main
+    monkeypatch.setattr("sys.argv", ["aura", "--list-skills"])
+    main()
+    captured = capsys.readouterr()
+    assert "Dynamic Skills Catalog" in captured.out
+
+
+def test_main_cli_prompt(monkeypatch, capsys):
+    from app.main import main
+    monkeypatch.setattr("sys.argv", ["aura", "Hello test prompt"])
+    main()
+    captured = capsys.readouterr()
+    assert "Fake response to: Hello test prompt" in captured.out
+
