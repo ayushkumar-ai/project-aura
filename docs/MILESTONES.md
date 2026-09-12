@@ -118,10 +118,52 @@ Future: Multi-Device Distributed Presence & Hybrid Local/Cloud Intelligence
 - Continuous experience distiller (`ExperienceDistiller`) auto-extracting insights from completed campaigns, verified skills, and self-healing events.
 - Epistemic query engine (`EpistemicQueryEngine`) providing semantic recommendations for remediation recipes, dynamic skills, role allocations, and proven mission patterns.
 
----
+### Milestone 29: Production Deployment & Release Validation
+- Production packaging metadata (PEP 517/518/621), `pyproject.toml`, dev/runtime dependency separation.
+- Automated release preflight validator (`ReleaseValidator`) inspecting configurations, storage directory permissions, and critical modules.
+- Multi-stage Docker containerization, health probes (`GET /health`, `GET /ready`), and GitHub Actions CI matrix.
 
-## Future Roadmap
+### Milestone 30: Durable Personal State Architecture
+- Unified personal state types (`UserPreferences`, `UnifiedMemoryRecord`, `EpisodicExperienceRecord`, `PersonalStateSnapshot`).
+- Atomic, checksum-verified (`SHA-256`), schema-versioned durable state store (`DurablePersonalStateStore`) with automatic backup and recovery.
 
-- **Distributed Multi-Device Presence**: Synchronizing runtime checkpoints, working memory, and active sessions across phone, desktop, laptop, and local edge devices.
-- **Hybrid Local/Cloud Intelligence**: Privacy-aware model routing dynamically directing sensitive tasks to local on-device SLMs while querying cloud LLMs for massive compute tasks.
-- **Proactive Social Intelligence**: User-permissioned context awareness (calendar, environmental context, project states) triggering helpful background assistance under strict privacy boundaries.
+### Milestone 31: Advanced Multi-Source Retrieval / RAG Pipeline
+- Multi-source RAG engine (`AdvancedRetrievalPipeline`) federating knowledge base documents, personal memory, epistemic graphs, and experiences.
+- Token-based semantic relevance scoring, exact phrase matching, authority tiers (`AuthorityTier`), and quantitative metrics evaluation (`Precision@K`, `Recall@K`, `MRR`).
+
+### Milestone 32: Context & Personalization Engine
+- Unified context intelligence layer (`ContextPersonalizationEngine`) combining user requests, persona profiles, task state, RAG results, and conversation history.
+- Priority-ordered bounded context window construction (`ContextPriority`, `ContextBudget`) with privacy & secret scrubbing.
+
+### Milestone 33: Structured Planning Engine
+- Autonomous hierarchical planning framework (`StructuredPlanningEngine`, `StructuredPlan`, `PlanStepNode`).
+- Topological dependency resolution, cycle detection (Kahn's algorithm), step retry strategies, policy boundary checks, and cancellation support.
+
+### Milestone 34: Tool & Action Ecosystem
+- Standardized tool specifications (`ToolSpec`, `ToolParameterSchema`, `ToolPermissionTier`).
+- Extensible registry (`ToolEcosystemRegistry`) with schema validation, permission checks, timeout enforcement, audit logs (`ToolAuditRecord`), and safe reference tools (`SafeCalculatorTool`, `TextTransformTool`, `JsonQueryTool`, `SystemInfoTool`, `HttpMockTool`).
+
+### Milestone 35: Proactive Assistance
+- Event and condition-driven proactive trigger engine (`ProactiveAssistanceEngine`, `TriggerDefinition`, `ProactiveProposal`).
+- Anti-spam cooldown controls, rate limits, and human-in-the-loop approval workflows for consequential actions.
+
+### Milestone 36: Experience & Learning Loop
+- Closed-loop behavioral learning without self-modifying code (`ExperienceLearningEngine`, `InteractionOutcome`, `DistilledHeuristic`).
+- Heuristic confidence scoring, automated promotion from `CANDIDATE` to `PROVEN`, and decay/deprecation of ineffective strategies.
+
+### Milestone 37: Multimodal Foundation
+- Modality-neutral representation (`MultimodalProcessor`, `ModalityContentBlock`, `MultimodalRequest`) supporting Text, Images, and Audio.
+- Format detection via magic bytes (PNG, JPEG, GIF, WebP, WAV, MP3, OGG, FLAC) and pluggable multimodal adapters (`MockMultimodalAdapter`).
+
+### Milestone 38: Device & Environment Integration
+- External environment interaction architecture (`DeviceIntegrationEngine`, `DeviceDescriptor`, `DeviceActionRequest`).
+- Capability contracts for Desktop, Mobile, and Smart Home environments under policy-governed authorization.
+
+### Milestone 39: Cross-Device AURA State Synchronization
+- Distributed synchronization engine (`CrossDeviceSyncEngine`, `VectorClock`, `SyncDelta`).
+- Idempotent delta replay, offline buffering, and conflict resolution via Last-Write-Wins (LWW) and semantic merge.
+
+### Milestone 40: Integrated Personal Intelligence
+- Master coordinator (`IntegratedPersonalIntelligenceEngine`, `UnifiedCycleResult`, `LifecycleStage`) orchestrating the complete autonomous cycle:
+  `User/Event -> Ingestion -> RAG -> Context -> Planning -> Policy -> Tools/Device -> Evaluation -> Distillation -> State Sync`.
+- Complete application facade integration in `AURA` class.

@@ -982,4 +982,263 @@ class AURA:
             max_depth=max_depth,
         )
 
+    # ---------------------------------------------------------
+    # M29 Release & Preflight Validation
+    # ---------------------------------------------------------
+    def validate_release(self, config: Any | None = None) -> Any:
+        """Execute automated preflight and release readiness validation (M29)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.validate_release(config=config)
+
+    # ---------------------------------------------------------
+    # M30 Durable Personal State
+    # ---------------------------------------------------------
+    def get_user_preferences(self) -> Any:
+        """Retrieve current durable user preferences (M30)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.get_user_preferences()
+
+    def update_user_preferences(self, preferences: Any) -> Any:
+        """Update and persist durable user preferences (M30)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.update_user_preferences(preferences)
+
+    def record_durable_memory(
+        self,
+        category: str,
+        content: str,
+        confidence: float = 1.0,
+        tags: list[str] | None = None,
+    ) -> Any:
+        """Record a unified durable memory entry (M30)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.record_durable_memory(
+            category=category,
+            content=content,
+            confidence=confidence,
+            tags=tags,
+        )
+
+    def query_durable_memories(
+        self,
+        category: str | None = None,
+        query: str = "",
+        tag: str | None = None,
+        limit: int = 50,
+    ) -> list[Any]:
+        """Query unified durable memory records (M30)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.query_durable_memories(
+            category=category,
+            query=query,
+            tag=tag,
+            limit=limit,
+        )
+
+    # ---------------------------------------------------------
+    # M31 Advanced Multi-Source Retrieval / RAG
+    # ---------------------------------------------------------
+    def retrieve_rag_context(self, query: str, max_chars: int = 4000) -> Any:
+        """Execute multi-source RAG retrieval across memory, knowledge, experiences (M31)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.retrieve_rag_context(query, max_chars=max_chars)
+
+    def add_knowledge_document(
+        self,
+        doc_id: str,
+        title: str,
+        content: str,
+        tags: list[str] | None = None,
+    ) -> None:
+        """Add a controlled knowledge document to retrieval pipeline (M31)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        self.agentic_runtime.add_knowledge_document(
+            doc_id=doc_id,
+            title=title,
+            content=content,
+            tags=tags,
+        )
+
+    # ---------------------------------------------------------
+    # M32 Context & Personalization Engine
+    # ---------------------------------------------------------
+    def build_personalized_context(
+        self,
+        user_prompt: str,
+        task_state: dict[str, Any] | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> Any:
+        """Build bounded, prioritized, and personalized context window (M32)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.build_personalized_context(
+            user_prompt=user_prompt,
+            task_state=task_state,
+            history=history,
+        )
+
+    # ---------------------------------------------------------
+    # M33 Structured Planning Engine
+    # ---------------------------------------------------------
+    def create_structured_plan(self, goal: str, steps: list[Any] | None = None) -> Any:
+        """Create and validate a structured hierarchical plan (M33)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.create_structured_plan(goal=goal, steps=steps)
+
+    def execute_structured_plan(self, plan: Any, timeout_seconds: float = 60.0) -> Any:
+        """Execute a structured plan with dependency resolution and policy boundaries (M33)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.execute_structured_plan(
+            plan=plan,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def cancel_structured_plan(self, plan_id: str) -> bool:
+        """Cancel a running or pending structured plan (M33)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.cancel_structured_plan(plan_id)
+
+    # ---------------------------------------------------------
+    # M34 Tool & Action Ecosystem
+    # ---------------------------------------------------------
+    def execute_ecosystem_tool(
+        self,
+        tool_name: str,
+        parameters: dict[str, Any],
+        caller: str = "agent",
+    ) -> Any:
+        """Execute an ecosystem tool within permission boundaries and audit log (M34)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.execute_ecosystem_tool(
+            tool_name=tool_name,
+            parameters=parameters,
+            caller=caller,
+        )
+
+    def list_ecosystem_tools(self) -> list[Any]:
+        """List all available tools in the action ecosystem (M34)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.list_ecosystem_tools()
+
+    # ---------------------------------------------------------
+    # M35 Proactive Assistance
+    # ---------------------------------------------------------
+    def evaluate_proactive_triggers(self, current_state: dict[str, Any] | None = None) -> list[Any]:
+        """Evaluate system state against proactive triggers (M35)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.evaluate_proactive_triggers(current_state=current_state)
+
+    def approve_proactive_proposal(self, proposal_id: str) -> Any:
+        """Approve a pending proactive proposal (M35)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.approve_proactive_proposal(proposal_id)
+
+    def reject_proactive_proposal(self, proposal_id: str, reason: str = "") -> Any:
+        """Reject a pending proactive proposal (M35)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.reject_proactive_proposal(proposal_id, reason=reason)
+
+    # ---------------------------------------------------------
+    # M36 Experience & Learning Loop
+    # ---------------------------------------------------------
+    def record_interaction_outcome(self, outcome: Any) -> Any:
+        """Record an execution outcome and distill learned heuristics (M36)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.record_interaction_outcome(outcome)
+
+    def query_learned_heuristics(self, task_pattern: str = "") -> list[Any]:
+        """Query distilled behavioral heuristics (M36)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.query_learned_heuristics(task_pattern=task_pattern)
+
+    def get_learning_report(self) -> Any:
+        """Generate quantitative learning loop evaluation report (M36)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.get_learning_report()
+
+    # ---------------------------------------------------------
+    # M37 Multimodal Foundation
+    # ---------------------------------------------------------
+    def process_multimodal_request(self, request: Any) -> Any:
+        """Process multimodal content blocks across text, image, and audio (M37)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.process_multimodal_request(request)
+
+    # ---------------------------------------------------------
+    # M38 Device & Environment Integration
+    # ---------------------------------------------------------
+    def execute_device_action(
+        self,
+        device_id: str,
+        capability: Any,
+        parameters: dict[str, Any] | None = None,
+    ) -> Any:
+        """Execute a capability on a target device environment (M38)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.execute_device_action(
+            device_id=device_id,
+            capability=capability,
+            parameters=parameters,
+        )
+
+    def list_devices(self) -> list[Any]:
+        """List registered external devices and environments (M38)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.list_devices()
+
+    # ---------------------------------------------------------
+    # M39 Cross-Device State Sync
+    # ---------------------------------------------------------
+    def sync_cross_device_state(self, peer_engine: Any = None) -> int:
+        """Synchronize state deltas with peer device node (M39)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.sync_cross_device_state(peer_engine=peer_engine)
+
+    def get_cross_device_sync_status(self) -> Any:
+        """Inspect vector clock and cross-device sync status (M39)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.get_cross_device_sync_status()
+
+    # ---------------------------------------------------------
+    # M40 Integrated Personal Intelligence
+    # ---------------------------------------------------------
+    def execute_integrated_cycle(
+        self,
+        user_input: str | Any,
+        task_id: str | None = None,
+        auto_sync: bool = True,
+    ) -> Any:
+        """Execute complete end-to-end integrated personal intelligence cycle (M40)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.execute_integrated_cycle(
+            user_input=user_input,
+            task_id=task_id,
+            auto_sync=auto_sync,
+        )
+
+
 

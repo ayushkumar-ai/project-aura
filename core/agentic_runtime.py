@@ -1,4 +1,5 @@
 import logging
+import time
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
@@ -132,6 +133,19 @@ from core.epistemic_graph import EpistemicKnowledgeGraph
 from core.experience_distiller import ExperienceDistiller
 from core.epistemic_query_engine import EpistemicQueryEngine
 
+from core.release_validator import ReleaseValidator
+from core.durable_state_store import DurablePersonalStateStore
+from core.retrieval_pipeline import AdvancedRetrievalPipeline
+from core.context_personalization_engine import ContextPersonalizationEngine
+from core.structured_planner import StructuredPlanningEngine
+from core.tool_ecosystem import ToolEcosystemRegistry
+from core.proactive_engine import ProactiveAssistanceEngine
+from core.learning_loop_engine import ExperienceLearningEngine
+from core.multimodal_engine import MultimodalProcessor
+from core.device_integration_engine import DeviceIntegrationEngine
+from core.cross_device_sync_engine import CrossDeviceSyncEngine
+from core.integrated_intelligence_engine import IntegratedPersonalIntelligenceEngine
+
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
 
@@ -212,6 +226,18 @@ class AgenticRuntime:
         epistemic_graph: EpistemicKnowledgeGraph | None = None,
         experience_distiller: ExperienceDistiller | None = None,
         epistemic_query_engine: EpistemicQueryEngine | None = None,
+        durable_state_store: DurablePersonalStateStore | None = None,
+        retrieval_pipeline: AdvancedRetrievalPipeline | None = None,
+        context_engine: ContextPersonalizationEngine | None = None,
+        structured_planner: StructuredPlanningEngine | None = None,
+        tool_ecosystem: ToolEcosystemRegistry | None = None,
+        proactive_engine: ProactiveAssistanceEngine | None = None,
+        learning_engine: ExperienceLearningEngine | None = None,
+        multimodal_processor: MultimodalProcessor | None = None,
+        device_engine: DeviceIntegrationEngine | None = None,
+        cross_device_sync: CrossDeviceSyncEngine | None = None,
+        integrated_intelligence_engine: IntegratedPersonalIntelligenceEngine | None = None,
+        release_validator: ReleaseValidator | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -787,6 +813,115 @@ class AgenticRuntime:
 
         if self.checkpoint_manager is not None and getattr(self.checkpoint_manager, "epistemic_graph", None) is None:
             self.checkpoint_manager.epistemic_graph = self.epistemic_graph
+
+        # M29 Release & Preflight Validator
+        self.release_validator = (
+            release_validator
+            if release_validator is not None
+            else ReleaseValidator()
+        )
+
+        # M30 Durable Personal State Store
+        self.durable_state_store = (
+            durable_state_store
+            if durable_state_store is not None
+            else DurablePersonalStateStore()
+        )
+
+        # M31 Advanced Multi-Source Retrieval / RAG Pipeline
+        self.retrieval_pipeline = (
+            retrieval_pipeline
+            if retrieval_pipeline is not None
+            else AdvancedRetrievalPipeline(
+                durable_state_store=self.durable_state_store,
+                epistemic_graph=self.epistemic_graph,
+                artifact_manager=self.artifact_manager,
+            )
+        )
+
+        # M32 Context & Personalization Engine
+        self.context_engine = (
+            context_engine
+            if context_engine is not None
+            else ContextPersonalizationEngine()
+        )
+
+        # M34 Tool & Action Ecosystem Registry
+        self.tool_ecosystem = (
+            tool_ecosystem
+            if tool_ecosystem is not None
+            else ToolEcosystemRegistry(policy_engine=self.policy)
+        )
+
+        # M33 Structured Planning Engine
+        self.structured_planner = (
+            structured_planner
+            if structured_planner is not None
+            else StructuredPlanningEngine(
+                default_tool_executor=self.tool_ecosystem,
+                policy_engine=self.policy,
+            )
+        )
+
+        # M35 Proactive Assistance Engine
+        self.proactive_engine = (
+            proactive_engine
+            if proactive_engine is not None
+            else ProactiveAssistanceEngine(policy_engine=self.policy)
+        )
+
+        # M36 Experience & Learning Loop Engine
+        self.learning_engine = (
+            learning_engine
+            if learning_engine is not None
+            else ExperienceLearningEngine(
+                durable_state_store=self.durable_state_store,
+                epistemic_graph=self.epistemic_graph,
+            )
+        )
+
+        # M37 Multimodal Foundation Processor
+        self.multimodal_processor = (
+            multimodal_processor
+            if multimodal_processor is not None
+            else MultimodalProcessor()
+        )
+
+        # M38 Device & Environment Integration Engine
+        self.device_engine = (
+            device_engine
+            if device_engine is not None
+            else DeviceIntegrationEngine(policy_engine=self.policy)
+        )
+
+        # M39 Cross-Device AURA State Sync Engine
+        self.cross_device_sync = (
+            cross_device_sync
+            if cross_device_sync is not None
+            else CrossDeviceSyncEngine(
+                durable_state_store=self.durable_state_store,
+            )
+        )
+
+        # M40 Integrated Personal Intelligence Engine
+        self.integrated_intelligence_engine = (
+            integrated_intelligence_engine
+            if integrated_intelligence_engine is not None
+            else IntegratedPersonalIntelligenceEngine(
+                durable_state_store=self.durable_state_store,
+                retrieval_pipeline=self.retrieval_pipeline,
+                context_engine=self.context_engine,
+                structured_planner=self.structured_planner,
+                tool_ecosystem=self.tool_ecosystem,
+                proactive_engine=self.proactive_engine,
+                learning_engine=self.learning_engine,
+                multimodal_processor=self.multimodal_processor,
+                device_engine=self.device_engine,
+                cross_device_sync=self.cross_device_sync,
+                policy_engine=self.policy,
+                model_router=self.model_router,
+            )
+        )
 
     def execute(
         self,
@@ -1985,5 +2120,228 @@ class AgenticRuntime:
             root_entity_id=root_entity_id,
             max_depth=max_depth,
         )
+
+    # ---------------------------------------------------------
+    # M29 Release Preflight & Validation
+    # ---------------------------------------------------------
+    def validate_release(self, config: Any | None = None) -> Any:
+        """Execute automated preflight and release readiness validation (M29)."""
+        return self.release_validator.run_preflight_checks(aura_instance=self, config=config)
+
+    # ---------------------------------------------------------
+    # M30 Durable Personal State
+    # ---------------------------------------------------------
+    def get_user_preferences(self) -> Any:
+        """Retrieve current durable user preferences (M30)."""
+        return self.durable_state_store.get_preferences()
+
+    def update_user_preferences(self, preferences: Any) -> Any:
+        """Update and persist durable user preferences (M30)."""
+        return self.durable_state_store.update_preferences(preferences)
+
+    def record_durable_memory(
+        self,
+        category: str,
+        content: str,
+        confidence: float = 1.0,
+        tags: list[str] | None = None,
+    ) -> Any:
+        """Record a unified durable memory entry (M30)."""
+        return self.durable_state_store.record_memory(
+            category=category,
+            content=content,
+            confidence=confidence,
+            tags=tags,
+        )
+
+    def query_durable_memories(
+        self,
+        category: str | None = None,
+        query: str = "",
+        tag: str | None = None,
+        limit: int = 50,
+    ) -> list[Any]:
+        """Query unified durable memory records (M30)."""
+        return self.durable_state_store.query_memories(
+            category=category,
+            query=query,
+            tag=tag,
+            limit=limit,
+        )
+
+    # ---------------------------------------------------------
+    # M31 Multi-Source Retrieval / Advanced RAG
+    # ---------------------------------------------------------
+    def retrieve_rag_context(self, query: str, max_chars: int = 4000) -> Any:
+        """Execute multi-source RAG retrieval across memory, knowledge, experiences (M31)."""
+        return self.retrieval_pipeline.execute_rag(query, max_context_chars=max_chars)
+
+    def add_knowledge_document(
+        self,
+        doc_id: str,
+        title: str,
+        content: str,
+        tags: list[str] | None = None,
+    ) -> None:
+        """Add a controlled knowledge document to retrieval pipeline (M31)."""
+        self.retrieval_pipeline.add_knowledge_document(
+            doc_id=doc_id,
+            title=title,
+            content=content,
+            tags=tags,
+        )
+
+    # ---------------------------------------------------------
+    # M32 Context & Personalization Engine
+    # ---------------------------------------------------------
+    def build_personalized_context(
+        self,
+        user_prompt: str,
+        task_state: dict[str, Any] | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> Any:
+        """Build bounded, prioritized, and personalized context window (M32)."""
+        prefs = self.durable_state_store.get_preferences()
+        rag_bundle = self.retrieval_pipeline.execute_rag(user_prompt)
+        return self.context_engine.build_context_bundle(
+            user_prompt=user_prompt,
+            user_preferences=prefs,
+            retrieval_bundle=rag_bundle,
+            conversation_history=history,
+            task_state=task_state,
+        )
+
+    # ---------------------------------------------------------
+    # M33 Structured Planning Engine
+    # ---------------------------------------------------------
+    def create_structured_plan(self, goal: str, steps: list[Any] | None = None) -> Any:
+        """Create and validate a structured hierarchical plan (M33)."""
+        return self.structured_planner.create_plan(goal=goal, steps=steps)
+
+    def execute_structured_plan(self, plan: Any, timeout_seconds: float = 60.0) -> Any:
+        """Execute a structured plan with dependency resolution and policy boundaries (M33)."""
+        return self.structured_planner.execute_plan(
+            plan=plan,
+            tool_executor=self.tool_ecosystem,
+            policy=self.policy,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def cancel_structured_plan(self, plan_id: str) -> bool:
+        """Cancel a running or pending structured plan (M33)."""
+        return self.structured_planner.cancel_plan(plan_id)
+
+    # ---------------------------------------------------------
+    # M34 Tool & Action Ecosystem
+    # ---------------------------------------------------------
+    def execute_ecosystem_tool(
+        self,
+        tool_name: str,
+        parameters: dict[str, Any],
+        caller: str = "agent",
+    ) -> Any:
+        """Execute an ecosystem tool within permission boundaries and audit log (M34)."""
+        from core.tool_ecosystem_types import ToolExecutionRequest
+        req = ToolExecutionRequest(
+            tool_name=tool_name,
+            parameters=parameters,
+            caller_role=caller,
+        )
+        return self.tool_ecosystem.execute_tool(req, policy_engine=self.policy)
+
+    def list_ecosystem_tools(self) -> list[Any]:
+        """List all available tools in the action ecosystem (M34)."""
+        return self.tool_ecosystem.list_tools()
+
+    # ---------------------------------------------------------
+    # M35 Proactive Assistance
+    # ---------------------------------------------------------
+    def evaluate_proactive_triggers(self, current_state: dict[str, Any] | None = None) -> list[Any]:
+        """Evaluate system state against proactive triggers (M35)."""
+        return self.proactive_engine.evaluate_triggers(current_state=current_state)
+
+    def approve_proactive_proposal(self, proposal_id: str) -> Any:
+        """Approve a pending proactive proposal (M35)."""
+        return self.proactive_engine.approve_proposal(proposal_id)
+
+    def reject_proactive_proposal(self, proposal_id: str, reason: str = "") -> Any:
+        """Reject a pending proactive proposal (M35)."""
+        return self.proactive_engine.reject_proposal(proposal_id, reason=reason)
+
+    # ---------------------------------------------------------
+    # M36 Experience & Learning Loop
+    # ---------------------------------------------------------
+    def record_interaction_outcome(self, outcome: Any) -> Any:
+        """Record an execution outcome and distill learned heuristics (M36)."""
+        return self.learning_engine.record_interaction(outcome)
+
+    def query_learned_heuristics(self, task_pattern: str = "") -> list[Any]:
+        """Query distilled behavioral heuristics (M36)."""
+        return self.learning_engine.query_heuristics(task_pattern=task_pattern)
+
+    def get_learning_report(self) -> Any:
+        """Generate quantitative learning loop evaluation report (M36)."""
+        return self.learning_engine.generate_report()
+
+    # ---------------------------------------------------------
+    # M37 Multimodal Foundation
+    # ---------------------------------------------------------
+    def process_multimodal_request(self, request: Any) -> Any:
+        """Process multimodal content blocks across text, image, and audio (M37)."""
+        return self.multimodal_processor.process_request(request)
+
+    # ---------------------------------------------------------
+    # M38 Device & Environment Integration
+    # ---------------------------------------------------------
+    def execute_device_action(
+        self,
+        device_id: str,
+        capability: Any,
+        parameters: dict[str, Any] | None = None,
+    ) -> Any:
+        """Execute a capability on a target device environment (M38)."""
+        from core.device_integration_types import DeviceActionRequest, DeviceCapability
+        cap_enum = DeviceCapability(capability) if isinstance(capability, str) else capability
+        req = DeviceActionRequest(
+            action_id=f"act_{int(time.time())}",
+            device_id=device_id,
+            capability=cap_enum,
+            parameters=parameters or {},
+        )
+        return self.device_engine.execute_action(req, policy_engine=self.policy)
+
+    def list_devices(self) -> list[Any]:
+        """List registered external devices and environments (M38)."""
+        return self.device_engine.list_devices()
+
+    # ---------------------------------------------------------
+    # M39 Cross-Device State Sync
+    # ---------------------------------------------------------
+    def sync_cross_device_state(self, peer_engine: Any = None) -> int:
+        """Synchronize state deltas with peer device node (M39)."""
+        if peer_engine is not None:
+            return self.cross_device_sync.sync_with_peer(peer_engine)
+        return 0
+
+    def get_cross_device_sync_status(self) -> Any:
+        """Inspect vector clock and cross-device sync status (M39)."""
+        return self.cross_device_sync.get_status()
+
+    # ---------------------------------------------------------
+    # M40 Integrated Personal Intelligence
+    # ---------------------------------------------------------
+    def execute_integrated_cycle(
+        self,
+        user_input: str | Any,
+        task_id: str | None = None,
+        auto_sync: bool = True,
+    ) -> Any:
+        """Execute complete end-to-end integrated personal intelligence cycle (M40)."""
+        return self.integrated_intelligence_engine.execute_autonomous_cycle(
+            input_request=user_input,
+            task_id=task_id,
+            auto_sync=auto_sync,
+        )
+
 
 
