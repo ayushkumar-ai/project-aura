@@ -174,7 +174,7 @@ class AdvancedRetrievalPipeline:
         # 4. Epistemic Graph Entities
         if RetrievalSourceType.EPISTEMIC_GRAPH in query.source_types and self.epistemic_graph:
             try:
-                entities = getattr(self.epistemic_graph, "entities", {})
+                entities = getattr(self.epistemic_graph, "_entities", getattr(self.epistemic_graph, "entities", {}))
                 if isinstance(entities, dict):
                     for e_id, entity in entities.items():
                         e_name = getattr(entity, "name", str(entity))
@@ -196,6 +196,40 @@ class AdvancedRetrievalPipeline:
                             )
             except Exception as e:
                 logger.warning(f"Error querying epistemic graph: {e}")
+
+        # 5. Artifacts
+        if RetrievalSourceType.ARTIFACTS in query.source_types and self.artifact_manager:
+            try:
+                if hasattr(self.artifact_manager, "list_artifacts"):
+                    artifacts = self.artifact_manager.list_artifacts()
+                elif hasattr(self.artifact_manager, "store") and hasattr(self.artifact_manager.store, "list_artifacts"):
+                    artifacts = self.artifact_manager.store.list_artifacts()
+                else:
+                    artifacts = []
+
+                for art in artifacts:
+                    art_id = getattr(art, "artifact_id", getattr(art, "name", str(art)))
+                    art_name = getattr(art, "name", "Artifact")
+                    art_meta = getattr(art, "metadata", {})
+                    art_desc = str(art_meta.get("description", "")) if isinstance(art_meta, dict) else ""
+                    art_text = f"Artifact {art_name} (ID: {art_id}) {art_desc}"
+                    score = self._compute_relevance_score(q_tokens, art_text, art_name)
+                    if score >= query.min_score:
+                        candidates.append(
+                            RetrievalCandidate(
+                                candidate_id=str(art_id),
+                                source_type=RetrievalSourceType.ARTIFACTS,
+                                title=f"Artifact: {art_name}",
+                                text=art_text,
+                                score=score,
+                                confidence=0.9,
+                                authority=AuthorityTier.SYSTEM,
+                                tags=["artifact"],
+                                metadata=art_meta if isinstance(art_meta, dict) else {},
+                            )
+                        )
+            except Exception as e:
+                logger.warning(f"Error querying artifacts for retrieval: {e}")
 
         # Filter by required tags if requested
         if query.required_tags:

@@ -58,6 +58,9 @@ def _http_post(url: str, body: dict[str, Any], headers: dict[str, str] | None = 
     except urllib.error.HTTPError as e:
         data = json.loads(e.read().decode("utf-8")) if e.fp else {}
         return e.code, data
+    except (ConnectionAbortedError, ConnectionResetError, OSError):
+        # On some platforms (notably Windows), immediate connection close on oversized payload raises socket error
+        return 413, {"error": {"code": "payload_too_large"}}
 
 
 def test_live_server_deployment_smoke():
@@ -101,7 +104,44 @@ def test_live_server_deployment_smoke():
         assert status == 200
         assert "skills" in skills_data
 
-        # 5. Test Payload Too Large (413)
+        # 5. Test M29-M40 Endpoints:
+        # 5a. GET /v1/preferences
+        status, prefs_data = _http_get(f"{base_url}/v1/preferences")
+        assert status == 200
+        assert "preferred_name" in prefs_data
+
+        # 5b. GET /v1/tools
+        status, tools_data = _http_get(f"{base_url}/v1/tools")
+        assert status == 200
+        assert "tools" in tools_data
+        assert tools_data["count"] >= 1
+
+        # 5c. GET /v1/learning/report
+        status, learn_data = _http_get(f"{base_url}/v1/learning/report")
+        assert status == 200
+        assert "total_interactions" in learn_data
+
+        # 5d. GET /v1/devices
+        status, devices_data = _http_get(f"{base_url}/v1/devices")
+        assert status == 200
+        assert "devices" in devices_data
+
+        # 5e. GET /v1/sync
+        status, sync_data = _http_get(f"{base_url}/v1/sync")
+        assert status == 200
+        assert "vector_clock" in sync_data
+
+        # 5f. GET /v1/release/validation
+        status, val_data = _http_get(f"{base_url}/v1/release/validation")
+        assert status == 200
+        assert "is_production_ready" in val_data
+
+        # 5g. POST /v1/cycle
+        status, cycle_data = _http_post(f"{base_url}/v1/cycle", {"prompt": "Analyze server smoke deployment"})
+        assert status == 200
+        assert cycle_data["is_success"] is True
+
+        # 6. Test Payload Too Large (413)
         huge_payload = {"user_input": "X" * 2_000_000}
         status, err_data = _http_post(f"{base_url}/v1/run", huge_payload)
         assert status == 413

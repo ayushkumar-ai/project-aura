@@ -126,6 +126,8 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         details: dict[str, Any] | None = None,
     ) -> None:
         """Send structured JSON error response."""
+        if status == HTTPStatus.REQUEST_ENTITY_TOO_LARGE:
+            self.close_connection = True
         is_prod = self.config.aura_env.lower() == "production"
         safe_message = sanitize_error_message(message, is_production=is_prod)
         payload = {
@@ -310,6 +312,50 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response({"message": "Provide ?capability=... or ?domain=... to query knowledge graph"})
             return
 
+        if path == "/v1/preferences":
+            prefs = self.aura.get_user_preferences()
+            self._send_json_response(prefs.to_dict() if hasattr(prefs, "to_dict") else prefs)
+            return
+
+        if path == "/v1/tools":
+            tools = self.aura.list_ecosystem_tools()
+            self._send_json_response({
+                "tools": [t.to_dict() if hasattr(t, "to_dict") else t.__dict__ for t in tools],
+                "count": len(tools),
+            })
+            return
+
+        if path == "/v1/proactive/proposals":
+            proposals = self.aura.evaluate_proactive_triggers()
+            self._send_json_response({
+                "proposals": [p.to_dict() if hasattr(p, "to_dict") else p.__dict__ for p in proposals],
+                "count": len(proposals),
+            })
+            return
+
+        if path == "/v1/learning/report":
+            report = self.aura.get_learning_report()
+            self._send_json_response(report.to_dict() if hasattr(report, "to_dict") else report)
+            return
+
+        if path == "/v1/devices":
+            devices = self.aura.list_devices()
+            self._send_json_response({
+                "devices": [d.to_dict() if hasattr(d, "to_dict") else d.__dict__ for d in devices],
+                "count": len(devices),
+            })
+            return
+
+        if path == "/v1/sync":
+            status_report = self.aura.get_cross_device_sync_status()
+            self._send_json_response(status_report.to_dict() if hasattr(status_report, "to_dict") else status_report)
+            return
+
+        if path == "/v1/release/validation":
+            validation_report = self.aura.validate_release(self.config)
+            self._send_json_response(validation_report.to_dict() if hasattr(validation_report, "to_dict") else validation_report)
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_POST(self) -> None:
@@ -367,6 +413,95 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 logger.error(f"Error executing task: {e}", exc_info=True)
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "task_execution_error", str(e))
+            return
+
+        if path == "/v1/preferences":
+            try:
+                updated = self.aura.update_user_preferences(body)
+                self._send_json_response(updated.to_dict() if hasattr(updated, "to_dict") else updated)
+            except Exception as e:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "preference_update_error", str(e))
+            return
+
+        if path == "/v1/rag":
+            query = body.get("query", "")
+            max_chars = int(body.get("max_chars", 4000))
+            try:
+                bundle = self.aura.retrieve_rag_context(query=query, max_chars=max_chars)
+                self._send_json_response(bundle.to_dict() if hasattr(bundle, "to_dict") else bundle)
+            except Exception as e:
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "rag_error", str(e))
+            return
+
+        if path == "/v1/plan":
+            goal = body.get("goal", "")
+            try:
+                plan = self.aura.create_structured_plan(goal=goal)
+                self._send_json_response(plan.to_dict() if hasattr(plan, "to_dict") else plan)
+            except Exception as e:
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "planning_error", str(e))
+            return
+
+        if path == "/v1/tools/execute":
+            tool_name = body.get("tool_name", "")
+            parameters = body.get("parameters", {})
+            caller = body.get("caller", "agent")
+            try:
+                result = self.aura.execute_ecosystem_tool(tool_name=tool_name, parameters=parameters, caller=caller)
+                self._send_json_response(result.to_dict() if hasattr(result, "to_dict") else result)
+            except Exception as e:
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "tool_execution_error", str(e))
+            return
+
+        if path == "/v1/proactive/approve":
+            proposal_id = body.get("proposal_id", "")
+            try:
+                prop = self.aura.approve_proactive_proposal(proposal_id)
+                self._send_json_response(prop.to_dict() if hasattr(prop, "to_dict") else prop)
+            except Exception as e:
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "approval_error", str(e))
+            return
+
+        if path == "/v1/proactive/reject":
+            proposal_id = body.get("proposal_id", "")
+            reason = body.get("reason", "")
+            try:
+                prop = self.aura.reject_proactive_proposal(proposal_id, reason=reason)
+                self._send_json_response(prop.to_dict() if hasattr(prop, "to_dict") else prop)
+            except Exception as e:
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "rejection_error", str(e))
+            return
+
+        if path == "/v1/devices/action":
+            device_id = body.get("device_id", "")
+            capability = body.get("capability", "")
+            parameters = body.get("parameters", {})
+            try:
+                from core.device_integration_types import DeviceCapability
+                cap_enum = DeviceCapability(capability) if isinstance(capability, str) else capability
+                act_res = self.aura.execute_device_action(device_id=device_id, capability=cap_enum, parameters=parameters)
+                self._send_json_response(act_res.to_dict() if hasattr(act_res, "to_dict") else act_res)
+            except Exception as e:
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "device_action_error", str(e))
+            return
+
+        if path == "/v1/sync":
+            try:
+                count = self.aura.sync_cross_device_state()
+                self._send_json_response({"status": "synced", "synced_deltas_count": count})
+            except Exception as e:
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "sync_error", str(e))
+            return
+
+        if path == "/v1/cycle":
+            user_input = body.get("user_input") or body.get("prompt") or body.get("goal", "")
+            task_id = body.get("task_id")
+            auto_sync = body.get("auto_sync", True)
+            try:
+                cycle_res = self.aura.execute_integrated_cycle(user_input=user_input, task_id=task_id, auto_sync=auto_sync)
+                self._send_json_response(cycle_res.to_dict() if hasattr(cycle_res, "to_dict") else cycle_res)
+            except Exception as e:
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "cycle_execution_error", str(e))
             return
 
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")

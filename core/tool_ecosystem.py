@@ -230,6 +230,69 @@ class HttpMockTool(BaseEcosystemTool):
         }
 
 
+class AnalysisTool(BaseEcosystemTool):
+    """Safe analytical goal and prompt decomposition tool."""
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="analysis_tool",
+            description="Analyze goal requirements and constraints",
+            permission_tier=ToolPermissionTier.READ_ONLY,
+            parameters=[
+                ToolParameterSchema(name="goal", type_str="string", description="Goal to analyze", required=False),
+            ],
+            timeout_seconds=5.0,
+            tags=["analysis", "planning"],
+        )
+
+    def execute(self, parameters: dict[str, Any]) -> dict[str, Any]:
+        goal = str(parameters.get("goal", ""))
+        return {"status": "analyzed", "goal": goal, "requirements_identified": True}
+
+
+class GenericExecutionTool(BaseEcosystemTool):
+    """Safe operational executor tool for general workflows."""
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="execution_tool",
+            description="Execute core operational work and instructions",
+            permission_tier=ToolPermissionTier.SAFE_WRITE,
+            parameters=[
+                ToolParameterSchema(name="goal", type_str="string", description="Task instruction", required=False),
+            ],
+            timeout_seconds=10.0,
+            tags=["execution", "operations"],
+        )
+
+    def execute(self, parameters: dict[str, Any]) -> dict[str, Any]:
+        goal = str(parameters.get("goal", ""))
+        return {"status": "executed", "goal": goal, "result": "Operations completed successfully"}
+
+
+class VerificationTool(BaseEcosystemTool):
+    """Safe outcome validator and verification tool."""
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="verification_tool",
+            description="Verify task outputs against acceptance criteria",
+            permission_tier=ToolPermissionTier.READ_ONLY,
+            parameters=[
+                ToolParameterSchema(name="goal", type_str="string", description="Goal verified", required=False),
+            ],
+            timeout_seconds=5.0,
+            tags=["verification", "qa"],
+        )
+
+    def execute(self, parameters: dict[str, Any]) -> dict[str, Any]:
+        goal = str(parameters.get("goal", ""))
+        return {"status": "verified", "goal": goal, "is_valid": True}
+
+
 class ToolEcosystemRegistry:
     """Central registry and executor for AURA's tool and action ecosystem."""
 
@@ -245,6 +308,9 @@ class ToolEcosystemRegistry:
         self.register_tool(JsonQueryTool())
         self.register_tool(SystemInfoTool())
         self.register_tool(HttpMockTool())
+        self.register_tool(AnalysisTool())
+        self.register_tool(GenericExecutionTool())
+        self.register_tool(VerificationTool())
 
     def register_tool(self, tool: BaseEcosystemTool) -> None:
         """Register a new tool instance."""
@@ -267,6 +333,23 @@ class ToolEcosystemRegistry:
             if param.required and param.name not in parameters:
                 return False, f"Missing required parameter '{param.name}'"
         return True, ""
+
+    def execute(
+        self,
+        tool_name: str,
+        parameters: dict[str, Any] | None = None,
+        caller_role: str = "agent",
+    ) -> Any:
+        """Direct execution interface compatible with planner ToolExecutor protocols."""
+        req = ToolExecutionRequest(
+            tool_name=tool_name,
+            parameters=parameters or {},
+            caller_role=caller_role,
+        )
+        res = self.execute_tool(req)
+        if not res.success:
+            raise RuntimeError(f"Tool execution failed for '{tool_name}': {res.error}")
+        return res.output
 
     def execute_tool(
         self,

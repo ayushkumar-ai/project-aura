@@ -27,9 +27,15 @@ logger = logging.getLogger("aura.structured_planner")
 class StructuredPlanningEngine:
     """Autonomous hierarchical planning engine with policy and resource boundary checks."""
 
-    def __init__(self, default_tool_executor: Any | None = None, policy_engine: Any | None = None):
+    def __init__(
+        self,
+        default_tool_executor: Any | None = None,
+        policy_engine: Any | None = None,
+        learning_engine: Any | None = None,
+    ):
         self.default_tool_executor = default_tool_executor
         self.policy_engine = policy_engine
+        self.learning_engine = learning_engine
         self._plans: dict[str, StructuredPlan] = {}
         self._cancelled_plans: set[str] = set()
         self._lock = threading.RLock()
@@ -59,7 +65,32 @@ class StructuredPlanningEngine:
             return plan
 
     def decompose_goal_heuristically(self, goal: str) -> list[PlanStepNode]:
-        """Decompose a goal into default sequential stages if not explicitly provided."""
+        """Decompose a goal into sequential stages, utilizing learned heuristics when available."""
+        # Consult learning engine for proven tool sequence
+        if self.learning_engine is not None and hasattr(self.learning_engine, "query_heuristics"):
+            try:
+                heuristics = self.learning_engine.query_heuristics(task_pattern=goal, only_proven=True)
+                if heuristics and heuristics[0].recommended_tools:
+                    custom_steps = []
+                    prev_id = None
+                    for idx, tool_name in enumerate(heuristics[0].recommended_tools, 1):
+                        sid = f"step_{idx}_{tool_name}"
+                        custom_steps.append(
+                            PlanStepNode(
+                                step_id=sid,
+                                title=f"Execute {tool_name}",
+                                description=f"Execute proven action '{tool_name}' for goal: '{goal}'",
+                                tool_name=tool_name,
+                                parameters={"goal": goal},
+                                depends_on=[prev_id] if prev_id else [],
+                            )
+                        )
+                        prev_id = sid
+                    if custom_steps:
+                        return custom_steps
+            except Exception as e:
+                logger.debug(f"Learning engine lookup skipped: {e}")
+
         step_1 = PlanStepNode(
             step_id="step_1_analyze",
             title="Analyze Goal Requirements",
@@ -203,6 +234,11 @@ class StructuredPlanningEngine:
                             step.error = f"Policy denied execution of tool '{step.tool_name}'"
                             failed_steps.add(step.step_id)
                             target_plan.status = PlanStatus.FAILED
+                            execution_trace.append({
+                                "step_id": step.step_id,
+                                "status": "failed",
+                                "error": step.error,
+                            })
                             break
                     elif hasattr(pol, "evaluate"):
                         from core.models import AURARequest
@@ -212,6 +248,11 @@ class StructuredPlanningEngine:
                             step.error = f"Policy denied execution of tool '{step.tool_name}'"
                             failed_steps.add(step.step_id)
                             target_plan.status = PlanStatus.FAILED
+                            execution_trace.append({
+                                "step_id": step.step_id,
+                                "status": "failed",
+                                "error": step.error,
+                            })
                             break
                 except Exception as e:
                     logger.warning(f"Policy evaluation check failed: {e}")

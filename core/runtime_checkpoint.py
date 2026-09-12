@@ -78,6 +78,9 @@ class RuntimeCheckpointManager:
         dynamic_skill_registry: Any | None = None,
         self_healing_orchestrator: Any | None = None,
         epistemic_graph: Any | None = None,
+        durable_state_store: Any | None = None,
+        learning_engine: Any | None = None,
+        cross_device_sync: Any | None = None,
     ) -> None:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.retention_count = max(1, int(retention_count))
@@ -96,6 +99,9 @@ class RuntimeCheckpointManager:
         self.dynamic_skill_registry = dynamic_skill_registry
         self.self_healing_orchestrator = self_healing_orchestrator
         self.epistemic_graph = epistemic_graph
+        self.durable_state_store = durable_state_store
+        self.learning_engine = learning_engine
+        self.cross_device_sync = cross_device_sync
         self._lock = threading.RLock()
 
     @property
@@ -415,6 +421,35 @@ class RuntimeCheckpointManager:
                 except Exception as ex:
                     logger.debug("Checkpoint: skipping epistemic graph state capture: %s", ex)
 
+            # 16. Capture Durable Personal State (M30)
+            durable_state_data: dict[str, Any] = {}
+            if getattr(self, "durable_state_store", None) is not None:
+                try:
+                    if hasattr(self.durable_state_store, "create_snapshot"):
+                        durable_state_data = self.durable_state_store.create_snapshot().to_dict()
+                except Exception as ex:
+                    logger.debug("Checkpoint: skipping durable state capture: %s", ex)
+
+            # 17. Capture Learning Loop Heuristics (M36)
+            learning_data: dict[str, Any] = {}
+            if getattr(self, "learning_engine", None) is not None:
+                try:
+                    with getattr(self.learning_engine, "_lock", threading.RLock()):
+                        learning_data = {
+                            "heuristics": [h.to_dict() for h in self.learning_engine._heuristics.values()]
+                        }
+                except Exception as ex:
+                    logger.debug("Checkpoint: skipping learning engine capture: %s", ex)
+
+            # 18. Capture Cross-Device Sync State (M39)
+            sync_data: dict[str, Any] = {}
+            if getattr(self, "cross_device_sync", None) is not None:
+                try:
+                    with getattr(self.cross_device_sync, "_lock", threading.RLock()):
+                        sync_data = self.cross_device_sync.get_status().to_dict()
+                except Exception as ex:
+                    logger.debug("Checkpoint: skipping sync state capture: %s", ex)
+
             # Build metadata record
             ckpt_meta = CheckpointMetadata(
                 checkpoint_id=cid,
@@ -457,6 +492,9 @@ class RuntimeCheckpointManager:
                 "dynamic_skills": dynamic_skills_data,
                 "self_healing": self_healing_data,  # M27
                 "epistemic_graph": epistemic_graph_data,  # M28
+                "durable_state": durable_state_data,  # M30
+                "learning": learning_data,  # M36
+                "cross_device_sync": sync_data,  # M39
             }
 
 
@@ -935,6 +973,46 @@ class RuntimeCheckpointManager:
                     logger.debug("Restored epistemic knowledge graph state from checkpoint.")
                 except Exception as ex:
                     logger.debug("Error restoring epistemic knowledge graph state: %s", ex)
+
+            # 15. Restore Durable Personal State (M30)
+            durable_data = data.get("durable_state", {})
+            _dss = getattr(self, "durable_state_store", None)
+            if _dss is not None and durable_data:
+                try:
+                    from core.personal_state_types import PersonalStateSnapshot
+                    snap = PersonalStateSnapshot.from_dict(durable_data)
+                    _dss._apply_snapshot(snap)
+                    logger.debug("Restored durable personal state from checkpoint.")
+                except Exception as ex:
+                    logger.debug("Error restoring durable personal state: %s", ex)
+
+            # 16. Restore Learning Heuristics (M36)
+            learning_data = data.get("learning", {})
+            _le = getattr(self, "learning_engine", None)
+            if _le is not None and learning_data:
+                try:
+                    from core.learning_loop_types import DistilledHeuristic
+                    with _le._lock:
+                        for hd in learning_data.get("heuristics", []):
+                            h = DistilledHeuristic.from_dict(hd)
+                            _le._heuristics[h.task_pattern] = h
+                    logger.debug("Restored learning heuristics from checkpoint.")
+                except Exception as ex:
+                    logger.debug("Error restoring learning heuristics: %s", ex)
+
+            # 17. Restore Cross-Device Sync State (M39)
+            sync_data = data.get("cross_device_sync", {})
+            _sync = getattr(self, "cross_device_sync", None)
+            if _sync is not None and sync_data:
+                try:
+                    with _sync._lock:
+                        if "vector_clock" in sync_data and hasattr(_sync, "_vector_clock"):
+                            _sync._vector_clock.merge(sync_data["vector_clock"])
+                        if "applied_deltas_count" in sync_data:
+                            _sync._applied_deltas_count = int(sync_data["applied_deltas_count"])
+                    logger.debug("Restored cross-device sync state from checkpoint.")
+                except Exception as ex:
+                    logger.debug("Error restoring cross-device sync state: %s", ex)
 
         return ckpt_meta
 
