@@ -1,3 +1,29 @@
+from core.epistemic_types import (
+    EntityType,
+    RelationType,
+    KnowledgeEntity,
+    KnowledgeRelation,
+    KnowledgeGraphQuery,
+    KnowledgeGraphSubgraph,
+    _sanitize_graph_metadata,
+)
+from core.epistemic_graph import EpistemicKnowledgeGraph
+from core.experience_distiller import ExperienceDistiller
+from core.epistemic_query_engine import EpistemicQueryEngine
+from core.fault_types import (
+    FaultCategory,
+    RemediationActionType,
+    HealingStatus,
+    ConfidenceLevel,
+    HealingBudget,
+    FaultDiagnosticReport,
+    RemediationAction,
+    RemediationPlan,
+    SelfHealingResult,
+)
+from core.causal_fault_analyzer import CausalFaultAnalyzer
+from core.remediation_planner import RemediationPlanner
+from core.self_healing_orchestrator import SelfHealingOrchestrator
 from core.skill_types import (
     SkillLifecycleState,
     TestVector,
@@ -139,6 +165,32 @@ from core.provenance import (
 )
 
 __all__ = [
+    # M28 Epistemic Knowledge Graph, Experience Distillation & Semantic Memory Mesh
+    "EntityType",
+    "RelationType",
+    "KnowledgeEntity",
+    "KnowledgeRelation",
+    "KnowledgeGraphQuery",
+    "KnowledgeGraphSubgraph",
+    "_sanitize_graph_metadata",
+    "EpistemicKnowledgeGraph",
+    "ExperienceDistiller",
+    "EpistemicQueryEngine",
+
+    # M27 Causal Fault Diagnosis, Multi-Tier Self-Healing & Closed-Loop Remediation
+    "FaultCategory",
+    "RemediationActionType",
+    "HealingStatus",
+    "ConfidenceLevel",
+    "HealingBudget",
+    "FaultDiagnosticReport",
+    "RemediationAction",
+    "RemediationPlan",
+    "SelfHealingResult",
+    "CausalFaultAnalyzer",
+    "RemediationPlanner",
+    "SelfHealingOrchestrator",
+
     # M26 Dynamic Skill Synthesis, Sandboxed Execution & Capability Evolution
     "SkillLifecycleState",
     "TestVector",

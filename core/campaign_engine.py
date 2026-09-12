@@ -2,6 +2,9 @@
 
 Orchestrates multi-phase mission DAGs, cross-goal artifact dataflow routing,
 milestone evaluation gates, team allocation, distributed sagas, and rollback.
+
+M27 extension: integrates SelfHealingOrchestrator into the failure path when
+auto_heal_on_failure is enabled on a CampaignDefinition.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from evaluation.engine import EvaluationEngine
 logger = logging.getLogger("aura.campaign_engine")
 
 
+
 class CampaignEngine:
     """Master coordinator executing multi-goal mission campaigns across teams and pipelines."""
 
@@ -55,6 +59,7 @@ class CampaignEngine:
         tracer: Tracer | None = None,
         streaming_gateway: StreamingGateway | None = None,
         compensating_engine: CompensatingActionEngine | None = None,
+        self_healing_orchestrator: Any | None = None,
     ):
         self._lock = threading.RLock()
         self.goal_engine = goal_engine if goal_engine is not None else GoalEngine()
@@ -64,6 +69,8 @@ class CampaignEngine:
         self.evaluation_engine = evaluation_engine if evaluation_engine is not None else EvaluationEngine()
         self.tracer = tracer
         self.streaming_gateway = streaming_gateway
+        # M27: self-healing orchestrator (may be None if M27 is not wired)
+        self.self_healing_orchestrator = self_healing_orchestrator
 
         # Active state registries: campaign_id -> component
         self._definitions: dict[str, CampaignDefinition] = {}
@@ -82,6 +89,7 @@ class CampaignEngine:
                 goal_engine=self.goal_engine,
             )
         )
+
 
     def submit_campaign(self, definition: CampaignDefinition) -> CampaignDefinition:
         """Register and validate a new mission campaign."""
@@ -238,16 +246,27 @@ class CampaignEngine:
                         )
 
                         # 2. Ensure goal exists in GoalEngine
-                        if self.goal_engine.goal_store.exists(gid):
+                        goal_obj = None
+                        if hasattr(self.goal_engine, "goal_store") and self.goal_engine.goal_store is not None:
+                            if self.goal_engine.goal_store.exists(gid):
+                                goal_obj = self.goal_engine.get_goal(gid)
+                            else:
+                                # Create goal with dataflow input context
+                                goal_obj = Goal(
+                                    goal_id=gid,
+                                    title=f"Goal for Phase {phase.name}",
+                                    metadata={"pipeline_inputs": input_artifacts},
+                                )
+                                self.goal_engine.goal_store.create(goal_obj)
+                        elif hasattr(self.goal_engine, "get_goal"):
                             goal_obj = self.goal_engine.get_goal(gid)
-                        else:
-                            # Create goal with dataflow input context
+
+                        if goal_obj is None:
                             goal_obj = Goal(
                                 goal_id=gid,
                                 title=f"Goal for Phase {phase.name}",
                                 metadata={"pipeline_inputs": input_artifacts},
                             )
-                            self.goal_engine.goal_store.create(goal_obj)
 
                         # 3. Execute via TeamOrchestrator if assigned, else evaluate via GoalEngine
                         goal_output_artifacts: list[str] = []
@@ -369,16 +388,63 @@ class CampaignEngine:
                         graph.update_phase_status(pid, PhaseStatus.COMPLETED, completed_at=time.time())
                         completed_phases.append(pid)
                     else:
-                        graph.update_phase_status(pid, PhaseStatus.FAILED, completed_at=time.time(), error=phase_error)
-                        failed_phases.append(pid)
-                        execution_error = phase_error
+                        # M27 Self-Healing Path (opt-in via auto_heal_on_failure)
+                        healing_succeeded = False
+                        if (
+                            defn.auto_heal_on_failure
+                            and self.self_healing_orchestrator is not None
+                        ):
+                            from core.fault_types import HealingBudget, HealingStatus
+                            graph.update_phase_status(pid, PhaseStatus.HEALING, error=phase_error)
+                            with self._lock:
+                                self._statuses[clean_cid] = CampaignStatus.RECOVERING
 
-                        # Check auto-compensation
-                        if defn.auto_compensate_on_failure:
-                            logger.warning("Phase '%s' failed; initiating saga compensation", pid)
-                            saga.compensate_phase(pid, session_id=eff_session_id)
-                            compensated_phases.append(pid)
-                        break  # Stop processing further ready phases on failure
+                            heal_budget = HealingBudget(
+                                max_attempts=defn.max_healing_attempts_per_phase,
+                                max_total_seconds=defn.healing_budget_seconds,
+                                max_actions_per_attempt=4,
+                                max_retries=1,
+                            )
+                            heal_result = self.self_healing_orchestrator.heal_campaign_phase(
+                                campaign_id=clean_cid,
+                                phase_id=pid,
+                                goal_id=str(phase.goal_ids[0]) if phase.goal_ids else pid,
+                                error_message=phase_error or "Phase execution failed.",
+                                saga_coordinator=saga,
+                                context={
+                                    "phase_id": pid,
+                                    "phase_error": phase_error,
+                                    "session_id": eff_session_id,
+                                },
+                                budget=heal_budget,
+                            )
+                            if heal_result.status == HealingStatus.RECOVERED:
+                                logger.info(
+                                    "SelfHealingOrchestrator recovered phase '%s' — retrying.", pid
+                                )
+                                healing_succeeded = True
+                                # Resume: clear HEALING state; retry will pick up on next iteration
+                                graph.update_phase_status(pid, PhaseStatus.PENDING)
+                                with self._lock:
+                                    self._statuses[clean_cid] = CampaignStatus.RUNNING
+                            else:
+                                logger.warning(
+                                    "Self-healing for phase '%s' ended with status '%s' — falling back.",
+                                    pid, heal_result.status.value,
+                                )
+
+                        if not healing_succeeded:
+                            graph.update_phase_status(pid, PhaseStatus.FAILED, completed_at=time.time(), error=phase_error)
+                            failed_phases.append(pid)
+                            execution_error = phase_error
+
+                            # Check auto-compensation
+                            if defn.auto_compensate_on_failure:
+                                logger.warning("Phase '%s' failed; initiating saga compensation", pid)
+                                saga.compensate_phase(pid, session_id=eff_session_id)
+                                compensated_phases.append(pid)
+                            break  # Stop processing further ready phases on failure
+
 
             # Final Campaign Status Determination
             with self._lock:

@@ -91,6 +91,7 @@ class CampaignStatus(str, Enum):
     RUNNING = "running"
     PAUSED = "paused"
     COMPENSATING = "compensating"
+    RECOVERING = "recovering"  # M27: actively in self-healing cycle
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -109,6 +110,7 @@ class PhaseStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     VERIFYING = "verifying"
+    HEALING = "healing"    # M27: self-healing in progress for this phase
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
@@ -762,6 +764,10 @@ class CampaignDefinition:
     max_total_time_seconds: float = 86400.0
     auto_compensate_on_failure: bool = True
     allow_contingency_branches: bool = True
+    # M27 self-healing fields — default False preserves all M25 behavior
+    auto_heal_on_failure: bool = False
+    max_healing_attempts_per_phase: int = 2
+    healing_budget_seconds: float = 60.0
     created_at: float = field(default_factory=time.time)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -816,6 +822,18 @@ class CampaignDefinition:
 
         object.__setattr__(self, "auto_compensate_on_failure", bool(self.auto_compensate_on_failure))
         object.__setattr__(self, "allow_contingency_branches", bool(self.allow_contingency_branches))
+
+        # M27 healing field validation
+        object.__setattr__(self, "auto_heal_on_failure", bool(self.auto_heal_on_failure))
+        mha = int(self.max_healing_attempts_per_phase)
+        if mha < 1:
+            raise ValueError("max_healing_attempts_per_phase must be at least 1.")
+        object.__setattr__(self, "max_healing_attempts_per_phase", mha)
+        hbs = float(self.healing_budget_seconds)
+        if hbs <= 0.0:
+            raise ValueError("healing_budget_seconds must be positive.")
+        object.__setattr__(self, "healing_budget_seconds", hbs)
+
         object.__setattr__(self, "created_at", float(self.created_at))
         object.__setattr__(self, "metadata", _sanitize_campaign_metadata(self.metadata))
 
@@ -839,6 +857,9 @@ class CampaignDefinition:
             "max_total_time_seconds": self.max_total_time_seconds,
             "auto_compensate_on_failure": self.auto_compensate_on_failure,
             "allow_contingency_branches": self.allow_contingency_branches,
+            "auto_heal_on_failure": self.auto_heal_on_failure,
+            "max_healing_attempts_per_phase": self.max_healing_attempts_per_phase,
+            "healing_budget_seconds": self.healing_budget_seconds,
             "created_at": self.created_at,
             "metadata": dict(self.metadata),
         }
@@ -861,6 +882,9 @@ class CampaignDefinition:
             max_total_time_seconds=float(data.get("max_total_time_seconds", 86400.0)),
             auto_compensate_on_failure=bool(data.get("auto_compensate_on_failure", True)),
             allow_contingency_branches=bool(data.get("allow_contingency_branches", True)),
+            auto_heal_on_failure=bool(data.get("auto_heal_on_failure", False)),
+            max_healing_attempts_per_phase=int(data.get("max_healing_attempts_per_phase", 2)),
+            healing_budget_seconds=float(data.get("healing_budget_seconds", 60.0)),
             created_at=float(data.get("created_at", time.time())),
             metadata=dict(data.get("metadata", {})),
         )

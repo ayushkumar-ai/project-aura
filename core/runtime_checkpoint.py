@@ -76,6 +76,8 @@ class RuntimeCheckpointManager:
         tracer: Any | None = None,
         campaign_engine: Any | None = None,
         dynamic_skill_registry: Any | None = None,
+        self_healing_orchestrator: Any | None = None,
+        epistemic_graph: Any | None = None,
     ) -> None:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.retention_count = max(1, int(retention_count))
@@ -92,6 +94,8 @@ class RuntimeCheckpointManager:
         self.tracer = tracer
         self.campaign_engine = campaign_engine
         self.dynamic_skill_registry = dynamic_skill_registry
+        self.self_healing_orchestrator = self_healing_orchestrator
+        self.epistemic_graph = epistemic_graph
         self._lock = threading.RLock()
 
     @property
@@ -395,6 +399,22 @@ class RuntimeCheckpointManager:
                 with getattr(self.dynamic_skill_registry, "_lock", threading.RLock()):
                     dynamic_skills_data = self.dynamic_skill_registry.to_dict()
 
+            # 14. Capture Self-Healing Orchestrator State (M27)
+            self_healing_data: dict[str, Any] = {}
+            if getattr(self, "self_healing_orchestrator", None) is not None:
+                try:
+                    self_healing_data = self.self_healing_orchestrator.to_dict()
+                except Exception as ex:
+                    logger.debug("Checkpoint: skipping self-healing state capture: %s", ex)
+
+            # 15. Capture Epistemic Knowledge Graph State (M28)
+            epistemic_graph_data: dict[str, Any] = {}
+            if getattr(self, "epistemic_graph", None) is not None:
+                try:
+                    epistemic_graph_data = self.epistemic_graph.to_dict()
+                except Exception as ex:
+                    logger.debug("Checkpoint: skipping epistemic graph state capture: %s", ex)
+
             # Build metadata record
             ckpt_meta = CheckpointMetadata(
                 checkpoint_id=cid,
@@ -435,7 +455,10 @@ class RuntimeCheckpointManager:
                 "tracing": tracing_data,
                 "campaigns": campaigns_data,
                 "dynamic_skills": dynamic_skills_data,
+                "self_healing": self_healing_data,  # M27
+                "epistemic_graph": epistemic_graph_data,  # M28
             }
+
 
             ckpt_path = self.checkpoint_dir / f"{cid}.json"
             self._write_json_atomic(ckpt_path, payload)
@@ -882,4 +905,36 @@ class RuntimeCheckpointManager:
                     except Exception as ex:
                         logger.debug("Error restoring dynamic skill registry: %s", ex)
 
+            # 13. Restore Self-Healing Orchestrator State (M27)
+            self_healing_data = data.get("self_healing", {})
+            _sho = getattr(self, "self_healing_orchestrator", None)
+            if _sho is not None and self_healing_data:
+                try:
+                    _sho.restore_from_dict(self_healing_data)
+                    logger.debug("Restored self-healing orchestrator state from checkpoint.")
+                except Exception as ex:
+                    logger.debug("Error restoring self-healing orchestrator state: %s", ex)
+
+            # 14. Restore Epistemic Knowledge Graph State (M28)
+            epistemic_graph_data = data.get("epistemic_graph", {})
+            _ekg = getattr(self, "epistemic_graph", None)
+            if _ekg is not None and epistemic_graph_data:
+                try:
+                    from core.epistemic_graph import EpistemicKnowledgeGraph
+                    restored_ekg = EpistemicKnowledgeGraph.from_dict(
+                        epistemic_graph_data,
+                        max_entities=_ekg.max_entities,
+                        max_relations=_ekg.max_relations,
+                    )
+                    with _ekg._lock:
+                        for ent in restored_ekg._entities.values():
+                            _ekg.add_entity(ent, overwrite=True)
+                        for rel in restored_ekg._relations.values():
+                            if _ekg.has_entity(rel.source_id) and _ekg.has_entity(rel.target_id):
+                                _ekg.add_relation(rel, reinforce_if_exists=False)
+                    logger.debug("Restored epistemic knowledge graph state from checkpoint.")
+                except Exception as ex:
+                    logger.debug("Error restoring epistemic knowledge graph state: %s", ex)
+
         return ckpt_meta
+

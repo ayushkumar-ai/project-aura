@@ -811,3 +811,175 @@ class AURA:
             input_data=input_data,
             timeout=timeout,
         )
+
+    # ---------------------------------------------------------
+    # M27 Causal Fault Diagnosis & Autonomous Self-Healing
+    # ---------------------------------------------------------
+    def diagnose_failure(
+        self,
+        campaign_id: str,
+        phase_id: str,
+        goal_id: str,
+        error_message: str,
+        error_traceback: str = "",
+        causal_graph: Any | None = None,
+        failing_input: str = "",
+        affected_artifact_ids: list[str] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> Any:
+        """Diagnose a campaign phase failure using evidence-based trace analysis (M27)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.diagnose_failure(
+            campaign_id=campaign_id,
+            phase_id=phase_id,
+            goal_id=goal_id,
+            error_message=error_message,
+            error_traceback=error_traceback,
+            causal_graph=causal_graph,
+            failing_input=failing_input,
+            affected_artifact_ids=affected_artifact_ids,
+            context=context,
+        )
+
+    def plan_remediation(
+        self,
+        fault_report: Any,
+        budget: Any | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> Any:
+        """Synthesize a bounded multi-tier remediation plan for a diagnosed fault (M27)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.plan_remediation(
+            fault_report=fault_report,
+            budget=budget,
+            context=context,
+        )
+
+    def remediate_phase(
+        self,
+        campaign_id: str,
+        phase_id: str,
+        goal_id: str,
+        error_message: str,
+        error_traceback: str = "",
+        causal_graph: Any | None = None,
+        failing_input: str = "",
+        affected_artifact_ids: list[str] | None = None,
+        saga_coordinator: Any | None = None,
+        context: dict[str, Any] | None = None,
+        budget: Any | None = None,
+    ) -> Any:
+        """Execute a closed-loop healing cycle for a failed campaign phase (M27)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.heal_campaign_phase(
+            campaign_id=campaign_id,
+            phase_id=phase_id,
+            goal_id=goal_id,
+            error_message=error_message,
+            error_traceback=error_traceback,
+            causal_graph=causal_graph,
+            failing_input=failing_input,
+            affected_artifact_ids=affected_artifact_ids,
+            saga_coordinator=saga_coordinator,
+            context=context,
+            budget=budget,
+        )
+
+    def get_healing_history(self, campaign_id: str) -> list[Any]:
+        """Retrieve self-healing attempt history for a mission campaign (M27)."""
+        if self.agentic_runtime is None:
+            return []
+        return self.agentic_runtime.get_healing_history(campaign_id)
+
+    def get_healing_attempt_count(self, campaign_id: str, phase_id: str) -> int:
+        """Retrieve the number of healing attempts executed for a specific campaign phase (M27)."""
+        if self.agentic_runtime is None:
+            return 0
+        return self.agentic_runtime.get_healing_attempt_count(campaign_id, phase_id)
+
+    # ---------------------------------------------------------
+    # M28 Epistemic Knowledge Graph & Semantic Queries
+    # ---------------------------------------------------------
+    def query_knowledge_graph(self, query: Any) -> list[Any]:
+        """Query the Epistemic Knowledge Graph (M28)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.query_knowledge_graph(query)
+
+    def recommend_remediation(
+        self,
+        fault_category: Any,
+        error_message: str = "",
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Retrieve and rank proven remediation recipes from the knowledge graph (M28)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.recommend_remediation(
+            fault_category=fault_category,
+            error_message=error_message,
+            limit=limit,
+        )
+
+    def recommend_skills(
+        self,
+        task_description: str = "",
+        required_capabilities: tuple[str, ...] = (),
+        min_confidence: float = 0.5,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Retrieve and rank dynamic skills matching requested capabilities (M28)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.recommend_skills(
+            task_description=task_description,
+            required_capabilities=required_capabilities,
+            min_confidence=min_confidence,
+            limit=limit,
+        )
+
+    def recommend_role_allocation(
+        self,
+        goal_title: str,
+        required_capabilities: tuple[str, ...] = (),
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Recommend multi-agent roles with proven capability alignment (M28)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.recommend_role_allocation(
+            goal_title=goal_title,
+            required_capabilities=required_capabilities,
+            limit=limit,
+        )
+
+    def find_proven_goal_patterns(
+        self,
+        goal_domain: str = "",
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Retrieve successful multi-phase mission execution patterns (M28)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.find_proven_goal_patterns(
+            goal_domain=goal_domain,
+            limit=limit,
+        )
+
+    def query_knowledge_subgraph(
+        self,
+        root_entity_id: str,
+        max_depth: int = 2,
+    ) -> Any:
+        """Extract a connected neighborhood subgraph around a root entity (M28)."""
+        if self.agentic_runtime is None:
+            raise RuntimeError("Agentic runtime is not configured.")
+        return self.agentic_runtime.query_knowledge_subgraph(
+            root_entity_id=root_entity_id,
+            max_depth=max_depth,
+        )
+
+

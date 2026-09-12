@@ -106,6 +106,31 @@ from core.code_sandbox import CodeSandboxValidator, SandboxedToolExecutor
 from core.skill_verification import SkillVerificationHarness
 from core.skill_synthesis import SkillSynthesizer
 from core.dynamic_skill_registry import DynamicSkillRegistry
+from core.fault_types import (
+    FaultCategory,
+    RemediationActionType,
+    HealingStatus,
+    ConfidenceLevel,
+    HealingBudget,
+    FaultDiagnosticReport,
+    RemediationAction,
+    RemediationPlan,
+    SelfHealingResult,
+)
+from core.causal_fault_analyzer import CausalFaultAnalyzer
+from core.remediation_planner import RemediationPlanner
+from core.self_healing_orchestrator import SelfHealingOrchestrator
+from core.epistemic_types import (
+    EntityType,
+    RelationType,
+    KnowledgeEntity,
+    KnowledgeRelation,
+    KnowledgeGraphQuery,
+    KnowledgeGraphSubgraph,
+)
+from core.epistemic_graph import EpistemicKnowledgeGraph
+from core.experience_distiller import ExperienceDistiller
+from core.epistemic_query_engine import EpistemicQueryEngine
 
 from interfaces.model import ModelInterface
 from interfaces.tool_executor import ToolExecutor
@@ -181,6 +206,12 @@ class AgenticRuntime:
         skill_synthesizer: SkillSynthesizer | None = None,
         sandbox_validator: CodeSandboxValidator | None = None,
         verification_harness: SkillVerificationHarness | None = None,
+        causal_fault_analyzer: CausalFaultAnalyzer | None = None,
+        remediation_planner: RemediationPlanner | None = None,
+        self_healing_orchestrator: SelfHealingOrchestrator | None = None,
+        epistemic_graph: EpistemicKnowledgeGraph | None = None,
+        experience_distiller: ExperienceDistiller | None = None,
+        epistemic_query_engine: EpistemicQueryEngine | None = None,
     ):
         if skill_registry is not None and not isinstance(skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be an instance of SkillRegistry or None.")
@@ -246,6 +277,18 @@ class AgenticRuntime:
             raise TypeError("sandbox_validator must be an instance of CodeSandboxValidator or None.")
         if verification_harness is not None and not isinstance(verification_harness, SkillVerificationHarness):
             raise TypeError("verification_harness must be an instance of SkillVerificationHarness or None.")
+        if causal_fault_analyzer is not None and not isinstance(causal_fault_analyzer, CausalFaultAnalyzer):
+            raise TypeError("causal_fault_analyzer must be an instance of CausalFaultAnalyzer or None.")
+        if remediation_planner is not None and not isinstance(remediation_planner, RemediationPlanner):
+            raise TypeError("remediation_planner must be an instance of RemediationPlanner or None.")
+        if self_healing_orchestrator is not None and not isinstance(self_healing_orchestrator, SelfHealingOrchestrator):
+            raise TypeError("self_healing_orchestrator must be an instance of SelfHealingOrchestrator or None.")
+        if epistemic_graph is not None and not isinstance(epistemic_graph, EpistemicKnowledgeGraph):
+            raise TypeError("epistemic_graph must be an instance of EpistemicKnowledgeGraph or None.")
+        if experience_distiller is not None and not isinstance(experience_distiller, ExperienceDistiller):
+            raise TypeError("experience_distiller must be an instance of ExperienceDistiller or None.")
+        if epistemic_query_engine is not None and not isinstance(epistemic_query_engine, EpistemicQueryEngine):
+            raise TypeError("epistemic_query_engine must be an instance of EpistemicQueryEngine or None.")
         if not isinstance(max_replans, int) or max_replans < 0:
             raise ValueError("max_replans must be a non-negative integer.")
         if isinstance(default_mode, str):
@@ -693,6 +736,57 @@ class AgenticRuntime:
 
         if self.checkpoint_manager is not None and getattr(self.checkpoint_manager, "dynamic_skill_registry", None) is None:
             self.checkpoint_manager.dynamic_skill_registry = self.dynamic_skill_registry
+
+        # M27 Causal Fault Diagnosis, Remediation Planning & Self-Healing Orchestration
+        self.causal_fault_analyzer = (
+            causal_fault_analyzer
+            if causal_fault_analyzer is not None
+            else CausalFaultAnalyzer(tracer=self.tracer)
+        )
+        self.remediation_planner = (
+            remediation_planner
+            if remediation_planner is not None
+            else RemediationPlanner()
+        )
+        self.self_healing_orchestrator = (
+            self_healing_orchestrator
+            if self_healing_orchestrator is not None
+            else SelfHealingOrchestrator(
+                analyzer=self.causal_fault_analyzer,
+                planner=self.remediation_planner,
+                dynamic_skill_registry=self.dynamic_skill_registry,
+                skill_synthesizer=self.skill_synthesizer,
+                skill_verification_harness=self.verification_harness,
+                clarification_gateway=self.clarification_gateway,
+                streaming_gateway=self.streaming_gateway,
+                tracer=self.tracer,
+            )
+        )
+        if hasattr(self.campaign_engine, "self_healing_orchestrator") and self.campaign_engine.self_healing_orchestrator is None:
+            self.campaign_engine.self_healing_orchestrator = self.self_healing_orchestrator
+
+        if self.checkpoint_manager is not None and getattr(self.checkpoint_manager, "self_healing_orchestrator", None) is None:
+            self.checkpoint_manager.self_healing_orchestrator = self.self_healing_orchestrator
+
+        # M28 Epistemic Knowledge Graph, Experience Distillation & Semantic Query Engine
+        self.epistemic_graph = (
+            epistemic_graph
+            if epistemic_graph is not None
+            else EpistemicKnowledgeGraph()
+        )
+        self.experience_distiller = (
+            experience_distiller
+            if experience_distiller is not None
+            else ExperienceDistiller(knowledge_graph=self.epistemic_graph)
+        )
+        self.epistemic_query_engine = (
+            epistemic_query_engine
+            if epistemic_query_engine is not None
+            else EpistemicQueryEngine(knowledge_graph=self.epistemic_graph)
+        )
+
+        if self.checkpoint_manager is not None and getattr(self.checkpoint_manager, "epistemic_graph", None) is None:
+            self.checkpoint_manager.epistemic_graph = self.epistemic_graph
 
     def execute(
         self,
@@ -1713,10 +1807,15 @@ class AgenticRuntime:
         activate: bool = True,
         verify_first: bool = False,
     ) -> None:
-        """Register a synthesized skill into the dynamic catalog (M26)."""
+        """Register a synthesized skill into the dynamic catalog and distill into knowledge graph (M26/M28)."""
         if verify_first and not skill.is_verified:
             self.verification_harness.verify_skill(skill)
         self.dynamic_skill_registry.register_skill(skill, activate=activate)
+        if getattr(self, "experience_distiller", None) is not None:
+            try:
+                self.experience_distiller.distill_dynamic_skill(skill)
+            except Exception as ex:
+                logger.debug("AgenticRuntime: skill distillation skipped: %s", ex)
 
     def register_composite_skill(
         self,
@@ -1738,3 +1837,153 @@ class AgenticRuntime:
             input_data=input_data,
             timeout=timeout,
         )
+
+    # ---------------------------------------------------------
+    # M27 Causal Fault Diagnosis & Autonomous Self-Healing
+    # ---------------------------------------------------------
+    def diagnose_failure(
+        self,
+        campaign_id: str,
+        phase_id: str,
+        goal_id: str,
+        error_message: str,
+        error_traceback: str = "",
+        causal_graph: Any | None = None,
+        failing_input: str = "",
+        affected_artifact_ids: list[str] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> FaultDiagnosticReport:
+        """Diagnose a campaign phase failure using causal trace analysis (M27)."""
+        return self.causal_fault_analyzer.analyze(
+            campaign_id=campaign_id,
+            phase_id=phase_id,
+            goal_id=goal_id,
+            error_message=error_message,
+            error_traceback=error_traceback,
+            causal_graph=causal_graph,
+            failing_input=failing_input,
+            affected_artifact_ids=affected_artifact_ids,
+            context=context,
+        )
+
+    def plan_remediation(
+        self,
+        fault_report: FaultDiagnosticReport,
+        budget: HealingBudget | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> RemediationPlan:
+        """Synthesize a bounded multi-tier remediation plan for a diagnosed fault (M27)."""
+        return self.remediation_planner.plan(
+            fault_report=fault_report,
+            budget=budget,
+            context=context,
+        )
+
+    def heal_campaign_phase(
+        self,
+        campaign_id: str,
+        phase_id: str,
+        goal_id: str,
+        error_message: str,
+        error_traceback: str = "",
+        causal_graph: Any | None = None,
+        failing_input: str = "",
+        affected_artifact_ids: list[str] | None = None,
+        saga_coordinator: Any | None = None,
+        context: dict[str, Any] | None = None,
+        budget: HealingBudget | None = None,
+    ) -> SelfHealingResult:
+        """Execute a closed-loop diagnosis, remediation, and recovery cycle for a failed phase (M27)."""
+        return self.self_healing_orchestrator.heal_campaign_phase(
+            campaign_id=campaign_id,
+            phase_id=phase_id,
+            goal_id=goal_id,
+            error_message=error_message,
+            error_traceback=error_traceback,
+            causal_graph=causal_graph,
+            failing_input=failing_input,
+            affected_artifact_ids=affected_artifact_ids,
+            saga_coordinator=saga_coordinator,
+            context=context,
+            budget=budget,
+        )
+
+    def get_healing_history(self, campaign_id: str) -> list[SelfHealingResult]:
+        """Retrieve self-healing attempt history for a mission campaign (M27)."""
+        return self.self_healing_orchestrator.get_healing_history(campaign_id)
+
+    def get_healing_attempt_count(self, campaign_id: str, phase_id: str) -> int:
+        """Retrieve the number of healing attempts executed for a specific campaign phase (M27)."""
+        return self.self_healing_orchestrator.get_attempt_count(campaign_id, phase_id)
+
+    # ---------------------------------------------------------
+    # M28 Epistemic Knowledge Graph & Semantic Queries
+    # ---------------------------------------------------------
+    def query_knowledge_graph(self, query: KnowledgeGraphQuery) -> list[KnowledgeEntity]:
+        """Execute a multi-criteria search query over the Epistemic Knowledge Graph (M28)."""
+        return self.epistemic_graph.query(query)
+
+    def recommend_remediation(
+        self,
+        fault_category: str | FaultCategory,
+        error_message: str = "",
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Retrieve and rank proven remediation recipes from the knowledge graph (M28)."""
+        return self.epistemic_query_engine.recommend_remediation(
+            fault_category=fault_category,
+            error_message=error_message,
+            limit=limit,
+        )
+
+    def recommend_skills(
+        self,
+        task_description: str = "",
+        required_capabilities: tuple[str, ...] = (),
+        min_confidence: float = 0.5,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Retrieve and rank dynamic skills matching requested capabilities (M28)."""
+        return self.epistemic_query_engine.recommend_skills(
+            task_description=task_description,
+            required_capabilities=required_capabilities,
+            min_confidence=min_confidence,
+            limit=limit,
+        )
+
+    def recommend_role_allocation(
+        self,
+        goal_title: str,
+        required_capabilities: tuple[str, ...] = (),
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Recommend multi-agent roles with proven capability alignment (M28)."""
+        return self.epistemic_query_engine.recommend_role_allocation(
+            goal_title=goal_title,
+            required_capabilities=required_capabilities,
+            limit=limit,
+        )
+
+    def find_proven_goal_patterns(
+        self,
+        goal_domain: str = "",
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Retrieve successful multi-phase mission execution patterns (M28)."""
+        return self.epistemic_query_engine.find_proven_goal_patterns(
+            goal_domain=goal_domain,
+            limit=limit,
+        )
+
+    def query_knowledge_subgraph(
+        self,
+        root_entity_id: str,
+        max_depth: int = 2,
+    ) -> KnowledgeGraphSubgraph:
+        """Extract a connected neighborhood subgraph around a root entity (M28)."""
+        return self.epistemic_query_engine.query_subgraph(
+            root_entity_id=root_entity_id,
+            max_depth=max_depth,
+        )
+
+
