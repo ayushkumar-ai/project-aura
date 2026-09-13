@@ -176,8 +176,15 @@ def test_production_server_authenticated_lifecycle():
     )
     server = AURAHTTPServer(config=config, host="127.0.0.1", port=port)
     server.start(block=False)
-    time.sleep(0.3)
     base_url = f"http://127.0.0.1:{port}"
+    for _ in range(30):
+        try:
+            status, _ = _http_get(f"{base_url}/health")
+            if status == 200:
+                break
+        except Exception:
+            pass
+        time.sleep(0.1)
 
     try:
         # 1. Health & readiness (unauthenticated permitted for liveness probes)
