@@ -60,7 +60,9 @@ def _http_post(url: str, body: dict[str, Any], headers: dict[str, str] | None = 
         return e.code, data
     except (ConnectionAbortedError, ConnectionResetError, OSError):
         # On some platforms (notably Windows), immediate connection close on oversized payload raises socket error
-        return 413, {"error": {"code": "payload_too_large"}}
+        if len(encoded_body) > 1_000_000:
+            return 413, {"error": {"code": "payload_too_large"}}
+        raise
 
 
 def test_live_server_deployment_smoke():

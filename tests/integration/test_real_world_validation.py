@@ -81,7 +81,9 @@ def _http_post(url: str, body: Any, headers: dict[str, str] | None = None) -> tu
             data = {}
         return e.code, data
     except (ConnectionAbortedError, ConnectionResetError, urllib.error.URLError, OSError):
-        return 413, {"error": {"code": "payload_too_large"}}
+        if len(encoded_body) > 1_000_000:
+            return 413, {"error": {"code": "payload_too_large"}}
+        raise
 
 
 # --------------------------------------------------------------------------

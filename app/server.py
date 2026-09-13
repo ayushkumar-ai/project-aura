@@ -118,6 +118,21 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+    def _drain_body(self) -> None:
+        """Safely drain bounded unread request body from socket to prevent TCP RST on early error."""
+        if getattr(self, "_body_read", False):
+            return
+        self._body_read = True
+        try:
+            cl = self.headers.get("Content-Length")
+            if cl:
+                length = int(cl)
+                max_bytes = self.config.aura_max_request_body_bytes
+                if 0 < length <= max_bytes:
+                    self.rfile.read(length)
+        except Exception:
+            pass
+
     def _send_error_response(
         self,
         status: HTTPStatus,
@@ -128,6 +143,8 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         """Send structured JSON error response."""
         if status == HTTPStatus.REQUEST_ENTITY_TOO_LARGE:
             self.close_connection = True
+        else:
+            self._drain_body()
         is_prod = self.config.aura_env.lower() == "production"
         safe_message = sanitize_error_message(message, is_production=is_prod)
         payload = {
@@ -191,6 +208,7 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
 
         try:
             raw_data = self.rfile.read(length)
+            self._body_read = True
             return json.loads(raw_data.decode("utf-8"))
         except json.JSONDecodeError as e:
             self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_json", f"Malformed JSON: {e.msg}")
