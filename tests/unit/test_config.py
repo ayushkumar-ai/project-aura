@@ -2,12 +2,13 @@ from app.config import Settings, settings
 
 
 def test_settings_defaults():
-    assert settings.aura_env == "development"
-    assert settings.aura_app_name == "AURA"
-    assert settings.aura_log_level == "INFO"
-    assert settings.aura_model_provider == ""
-    assert settings.aura_model_name == ""
-    assert settings.aura_api_key == ""
+    test_settings = Settings(_env_file=None)
+    assert test_settings.aura_env == "development"
+    assert test_settings.aura_app_name == "AURA"
+    assert test_settings.aura_log_level == "INFO"
+    assert test_settings.aura_model_provider == ""
+    assert test_settings.aura_model_name == ""
+    assert test_settings.aura_api_key == ""
 
 
 def test_settings_environment_override(monkeypatch):
