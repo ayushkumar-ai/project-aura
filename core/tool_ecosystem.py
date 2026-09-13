@@ -378,9 +378,9 @@ class ToolEcosystemRegistry:
         pol = policy_engine or self.policy_engine
         if pol is not None:
             try:
-                if hasattr(pol, "authorize_tool") and spec.name in getattr(pol, "authorized_tools", set()):
+                if hasattr(pol, "authorize_tool"):
                     decision = pol.authorize_tool(spec.name)
-                    if getattr(decision, "value", str(decision)) == "deny":
+                    if getattr(decision, "value", str(decision)).lower() != "allow":
                         err = f"Policy denied execution of tool '{spec.name}'"
                         self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, 0.0, err)
                         return ToolExecutionResult(execution_id=exec_id, tool_name=spec.name, success=False, error=err)
@@ -392,7 +392,10 @@ class ToolEcosystemRegistry:
                         self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, 0.0, err)
                         return ToolExecutionResult(execution_id=exec_id, tool_name=spec.name, success=False, error=err)
             except Exception as e:
-                logger.warning(f"Policy evaluation check failed: {e}")
+                err = f"Policy evaluation error for tool '{spec.name}': {type(e).__name__}"
+                logger.warning(f"Policy evaluation error for tool '{spec.name}': {type(e).__name__}")
+                self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, 0.0, err)
+                return ToolExecutionResult(execution_id=exec_id, tool_name=spec.name, success=False, error=err)
 
         # 3. Execution with Timeout & Error Boundary
         timeout = request.timeout_seconds or spec.timeout_seconds

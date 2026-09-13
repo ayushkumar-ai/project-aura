@@ -33,7 +33,10 @@ class ToolExecutor:
         tool = self.registry.get(tool_name)
 
         if self.policy is not None:
-            decision = self.policy.authorize_tool(tool_name)
+            try:
+                decision = self.policy.authorize_tool(tool_name)
+            except Exception as e:
+                raise PermissionError(f"Policy evaluation error for tool '{tool_name}': {type(e).__name__}") from e
             if decision != PolicyDecision.ALLOW:
                 raise PermissionError(
                     f"Tool '{tool_name}' is not authorized."

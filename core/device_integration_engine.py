@@ -198,13 +198,19 @@ class DeviceIntegrationEngine:
         pol = policy_engine or self.policy_engine
         if pol is not None and hasattr(pol, "evaluate"):
             try:
-                decision = pol.evaluate({"action": request.capability.value, "device": descriptor.device_id, "parameters": request.parameters})
-                if getattr(decision, "decision", None) == "deny" or getattr(decision, "is_allowed", True) is False:
+                from core.models import AURARequest
+                req_obj = AURARequest(user_input=f"Device action {request.capability.value} on {descriptor.device_id}")
+                decision = pol.evaluate(req_obj)
+                decision_val = getattr(decision, "value", str(decision)).lower()
+                if decision_val != "allow" or getattr(decision, "is_allowed", True) is False:
                     err = f"Policy denied device action '{request.capability.value}' on '{descriptor.name}'"
                     self._record_audit(act_id, descriptor.device_id, request.capability.value, request.caller, False, err)
                     return DeviceActionResult(action_id=act_id, device_id=descriptor.device_id, capability=request.capability.value, success=False, error=err)
             except Exception as e:
-                logger.warning(f"Device policy check exception: {e}")
+                err = f"Policy evaluation error for device action '{request.capability.value}' on '{descriptor.name}': {type(e).__name__}"
+                logger.warning(f"Device policy check exception: {type(e).__name__}")
+                self._record_audit(act_id, descriptor.device_id, request.capability.value, request.caller, False, err)
+                return DeviceActionResult(action_id=act_id, device_id=descriptor.device_id, capability=request.capability.value, success=False, error=err)
 
         # 5. Execution
         try:

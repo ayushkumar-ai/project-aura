@@ -155,7 +155,13 @@ class CrossDeviceSyncEngine:
             return 0
 
         synced_count = 0
-        with self._lock, peer._lock:
+        # Deterministic global lock ordering to eliminate cyclic AB/BA deadlocks
+        first_lock, second_lock = (
+            (self._lock, peer._lock)
+            if id(self._lock) < id(peer._lock)
+            else (peer._lock, self._lock)
+        )
+        with first_lock, second_lock:
             # Send local outgoing deltas to peer
             for d in list(self._outgoing_buffer):
                 applied, _ = peer.receive_delta(d)

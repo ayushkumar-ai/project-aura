@@ -88,6 +88,10 @@ class MockMultimodalAdapter(BaseMultimodalAdapter):
         return AudioFormat.UNKNOWN
 
 
+# Canonical foundation reference adapter alias
+ReferenceMultimodalAdapter = MockMultimodalAdapter
+
+
 class MultimodalProcessor:
     """Unified processor for multimodal requests across text, image, and audio."""
 

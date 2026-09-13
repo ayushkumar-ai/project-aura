@@ -24,18 +24,25 @@ from core.structured_plan_types import (
 logger = logging.getLogger("aura.structured_planner")
 
 
+_DEFAULT_EXECUTOR = object()
+
+
 class StructuredPlanningEngine:
     """Autonomous hierarchical planning engine with policy and resource boundary checks."""
 
     def __init__(
         self,
-        default_tool_executor: Any | None = None,
+        default_tool_executor: Any = _DEFAULT_EXECUTOR,
         policy_engine: Any | None = None,
         learning_engine: Any | None = None,
     ):
-        self.default_tool_executor = default_tool_executor
         self.policy_engine = policy_engine
         self.learning_engine = learning_engine
+        if default_tool_executor is _DEFAULT_EXECUTOR:
+            from core.tool_ecosystem import ToolEcosystemRegistry
+            self.default_tool_executor = ToolEcosystemRegistry(policy_engine=policy_engine)
+        else:
+            self.default_tool_executor = default_tool_executor
         self._plans: dict[str, StructuredPlan] = {}
         self._cancelled_plans: set[str] = set()
         self._lock = threading.RLock()
@@ -227,9 +234,9 @@ class StructuredPlanningEngine:
             # Policy Check
             if pol is not None:
                 try:
-                    if hasattr(pol, "authorize_tool") and step.tool_name in getattr(pol, "authorized_tools", set()):
+                    if hasattr(pol, "authorize_tool"):
                         decision = pol.authorize_tool(step.tool_name)
-                        if getattr(decision, "value", str(decision)) == "deny":
+                        if getattr(decision, "value", str(decision)).lower() != "allow":
                             step.status = PlanStepStatus.FAILED
                             step.error = f"Policy denied execution of tool '{step.tool_name}'"
                             failed_steps.add(step.step_id)
@@ -255,7 +262,18 @@ class StructuredPlanningEngine:
                             })
                             break
                 except Exception as e:
-                    logger.warning(f"Policy evaluation check failed: {e}")
+                    err_msg = f"Policy evaluation error for tool '{step.tool_name}': {type(e).__name__}"
+                    logger.warning(f"Policy evaluation error for tool '{step.tool_name}': {type(e).__name__}")
+                    step.status = PlanStepStatus.FAILED
+                    step.error = err_msg
+                    failed_steps.add(step.step_id)
+                    target_plan.status = PlanStatus.FAILED
+                    execution_trace.append({
+                        "step_id": step.step_id,
+                        "status": "failed",
+                        "error": step.error,
+                    })
+                    break
 
             # Step Execution with Retries
             step.status = PlanStepStatus.RUNNING
@@ -266,16 +284,11 @@ class StructuredPlanningEngine:
             for attempt in range(1, step.max_retries + 2):
                 step.retry_count = attempt - 1
                 try:
-                    if executor is not None and hasattr(executor, "execute"):
-                        result = executor.execute(step.tool_name, step.parameters)
-                    else:
-                        # Deterministic simulated reference execution
-                        result = {
-                            "status": "success",
-                            "step_id": step.step_id,
-                            "tool": step.tool_name,
-                            "output": f"Executed {step.title}",
-                        }
+                    if executor is None or not hasattr(executor, "execute"):
+                        raise RuntimeError(
+                            f"No tool executor configured to execute step '{step.step_id}' (tool: '{step.tool_name}')"
+                        )
+                    result = executor.execute(step.tool_name, step.parameters)
                     step.result = result
                     step.status = PlanStepStatus.COMPLETED
                     step_results[step.step_id] = result

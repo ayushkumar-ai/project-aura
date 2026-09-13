@@ -268,14 +268,22 @@ class Orchestrator:
 
         logger.info("Received request %s", request.request_id)
 
-        decision = self.policy.evaluate(request)
+        try:
+            decision = self.policy.evaluate(request)
+        except Exception as e:
+            logger.warning("Policy evaluation error for request %s: %s", request.request_id, type(e).__name__)
+            return AURAResponse(
+                request_id=request.request_id,
+                content="Request denied by policy due to evaluation error.",
+                metadata={"policy": "deny", "error": "policy_evaluation_error"},
+            )
 
-        if decision == PolicyDecision.DENY:
+        if getattr(decision, "value", str(decision)).lower() != "allow":
             logger.warning("Request %s denied by policy", request.request_id)
             return AURAResponse(
                 request_id=request.request_id,
                 content="Request denied by policy.",
-                metadata={"policy": decision.value},
+                metadata={"policy": getattr(decision, "value", "deny")},
             )
 
         logger.info("Request %s allowed by policy", request.request_id)

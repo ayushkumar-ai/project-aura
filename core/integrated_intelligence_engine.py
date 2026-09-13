@@ -295,6 +295,19 @@ class IntegratedPersonalIntelligenceEngine:
             f"Executed {plan_audit.steps_completed} steps across tools: {', '.join(tools_used) if tools_used else 'none'}."
         )
 
+        if self.model_router is not None and hasattr(self.model_router, "generate_with_fallback") and plan_audit.is_success:
+            try:
+                from uuid import UUID
+                req_uuid = UUID(hex=cycle_id[6:]) if (cycle_id.startswith("cycle_") and len(cycle_id) == 18) else uuid4()
+                model_resp, _ = self.model_router.generate_with_fallback(
+                    prompt=f"Summarize completion of goal '{effective_prompt}' for user '{user_prefs.preferred_name}'.",
+                    request_id=req_uuid,
+                )
+                if hasattr(model_resp, "content") and model_resp.content:
+                    response_msg = model_resp.content
+            except Exception as e:
+                logger.debug(f"Model router cycle synthesis skipped: {e}")
+
         return UnifiedCycleResult(
             cycle_id=cycle_id,
             user_prompt=effective_prompt,

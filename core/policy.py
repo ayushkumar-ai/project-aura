@@ -17,7 +17,17 @@ class Policy:
         self.authorized_tools = (
             authorized_tools
             if authorized_tools is not None
-            else {"calculator", "echo"}
+            else {
+                "calculator",
+                "echo",
+                "text_transform",
+                "json_query",
+                "system_info",
+                "http_mock",
+                "analysis_tool",
+                "execution_tool",
+                "verification_tool",
+            }
         )
 
     def evaluate(self, request: AURARequest) -> PolicyDecision:
