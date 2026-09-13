@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AURA — Autonomous Personal Intelligence</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="aura-app">
+    <!-- Header -->
+    <header class="aura-header">
+      <div class="brand-group">
+        <div class="aura-logo">
+          <span class="logo-spark">✨</span>
+          <span class="logo-text">AURA</span>
+        </div>
+        <span class="brand-tagline">Autonomous Personal Intelligence</span>
+      </div>
+      <div class="header-actions">
+        <div id="connection-status" class="status-pill status-checking">
+          <span class="status-dot"></span>
+          <span id="status-text">Connecting...</span>
+        </div>
+        <button id="settings-btn" class="icon-btn" title="Client Settings" aria-label="Settings">⚙️</button>
+      </div>
+    </header>
+
+    <!-- Main Chat Workspace -->
+    <main class="chat-workspace">
+      <!-- Conversation History Stream -->
+      <div id="messages-container" class="messages-container">
+        <div class="welcome-card" id="welcome-card">
+          <div class="welcome-icon">🔮</div>
+          <h2>Welcome to Project AURA</h2>
+          <p>Your autonomous, policy-governed personal intelligence assistant.</p>
+          
+          <div class="suggestions-grid">
+            <button class="suggestion-chip" data-prompt="What is Project AURA and what capabilities do you have?">
+              💡 What is Project AURA?
+            </button>
+            <button class="suggestion-chip" data-prompt="Calculate 256 * 1024 / 8">
+              🧮 Calculate 256 * 1024 / 8
+            </button>
+            <button class="suggestion-chip" data-prompt="Hello AURA. Reply with: AURA CLIENT LIVE TEST">
+              ⚡ Test Connection
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Typing / Loading Indicator -->
+      <div id="loading-indicator" class="loading-indicator hidden">
+        <div class="aura-avatar">✨</div>
+        <div class="typing-bubble">
+          <span class="dot"></span>
+          <span class="dot"></span>
+          <span class="dot"></span>
+        </div>
+      </div>
+    </main>
+
+    <!-- Bottom Input Dock -->
+    <footer class="input-dock">
+      <form id="chat-form" class="chat-form">
+        <button type="button" id="clear-btn" class="action-btn secondary" title="Clear Chat History" aria-label="Clear Chat">
+          🗑️
+        </button>
+        <div class="textarea-wrapper">
+          <textarea 
+            id="user-input" 
+            placeholder="Message AURA... (Enter to send, Shift+Enter for newline)" 
+            rows="1" 
+            required
+            autocomplete="off"
+            spellcheck="true"
+          ></textarea>
+        </div>
+        <button type="submit" id="send-btn" class="action-btn primary" title="Send Message" aria-label="Send">
+          <span class="send-icon">➤</span>
+        </button>
+      </form>
+      <div class="footer-note">
+        <span>AURA Runtime v0.28.0 • Policy Governed • Safe Execution</span>
+      </div>
+    </footer>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Client Settings</h3>
+          <button id="close-settings-btn" class="icon-btn" aria-label="Close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-field">
+            <label for="server-url-input">AURA Server Base URL</label>
+            <input type="url" id="server-url-input" placeholder="http://127.0.0.1:8000" value="">
+            <span class="field-hint">Leave blank to use current browser origin.</span>
+          </div>
+          <div class="form-field">
+            <label for="auth-token-input">Bearer Auth Token (Optional)</label>
+            <input type="password" id="auth-token-input" placeholder="Bearer token if enabled on server">
+            <span class="field-hint">Required only if AURA_API_KEY_AUTH_ENABLED is active. Stored in session memory only.</span>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" id="save-settings-btn" class="action-btn primary">Save Settings</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

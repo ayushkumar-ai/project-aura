@@ -199,6 +199,54 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "read_error", f"Failed to read payload: {e}")
             return None
 
+    def _serve_static(self, rel_path: str) -> None:
+        """Serve static web client assets safely from app/static directory."""
+        static_root = (Path(__file__).resolve().parent / "static").resolve()
+        if not static_root.exists():
+            self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", "Static assets directory not found")
+            return
+
+        clean_rel = rel_path.lstrip("/")
+        if not clean_rel or clean_rel in ("ui", "index.html"):
+            clean_rel = "index.html"
+        elif clean_rel.startswith("static/"):
+            clean_rel = clean_rel[7:]
+
+        try:
+            target_file = (static_root / clean_rel).resolve()
+            # Security: Prevent directory/path traversal attacks
+            if not str(target_file).startswith(str(static_root)):
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Access denied")
+                return
+
+            if not target_file.is_file():
+                self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"File '{clean_rel}' not found")
+                return
+
+            content_types = {
+                ".html": "text/html; charset=utf-8",
+                ".css": "text/css; charset=utf-8",
+                ".js": "application/javascript; charset=utf-8",
+                ".json": "application/json; charset=utf-8",
+                ".svg": "image/svg+xml",
+                ".png": "image/png",
+                ".ico": "image/x-icon",
+            }
+            content_type = content_types.get(target_file.suffix.lower(), "application/octet-stream")
+
+            body = target_file.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self._set_cors_headers()
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            logger.error(f"Error serving static file {clean_rel}: {e}")
+            self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "file_error", "Error reading static file")
+
     def do_OPTIONS(self) -> None:
         """Handle CORS preflight requests."""
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -242,6 +290,11 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                     "not_ready",
                     "AURA runtime is initializing or degraded",
                 )
+            return
+
+        # Web UI and Static Assets
+        if path in ("/", "/ui", "/index.html") or path.startswith("/static/"):
+            self._serve_static(path)
             return
 
         # Authenticated endpoints
