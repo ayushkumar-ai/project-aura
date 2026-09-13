@@ -20,11 +20,12 @@ from tools.calculator import CalculatorTool
 
 def create_orchestrator(
     knowledge: KnowledgeInterface | None = None,
+    config: Settings | None = None,
 ) -> Orchestrator:
     """Create the default AURA orchestration pipeline."""
 
-    config = Settings()
-    logging.getLogger("aura").setLevel(config.aura_log_level.upper())
+    cfg = config or Settings()
+    logging.getLogger("aura").setLevel(cfg.aura_log_level.upper())
 
     registry = ToolRegistry()
     registry.register("echo", EchoTool())
@@ -34,11 +35,18 @@ def create_orchestrator(
     selector = ToolSelector(registry)
     executor = ToolExecutor(registry, policy=policy)
 
+    model_name = cfg.aura_model_name or cfg.aura_generic_model_name
+    api_key = cfg.aura_api_key or cfg.aura_generic_model_api_key
+    base_url = cfg.aura_generic_model_endpoint_url or cfg.aura_local_model_endpoint_url
+
     return Orchestrator(
         model=create_model_provider(
-            provider=config.aura_model_provider,
-            model_name=config.aura_model_name,
-            api_key=config.aura_api_key,
+            provider=cfg.aura_model_provider,
+            model_name=model_name,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=cfg.aura_model_request_timeout_seconds,
+            allow_local_endpoints=cfg.aura_allow_local_model_endpoints,
         ),
         policy=policy,
         memory=InMemoryStore(),
@@ -50,14 +58,16 @@ def create_orchestrator(
     )
 
 
-def create_aura(agentic: bool = False) -> AURA:
+def create_aura(agentic: bool = False, config: Settings | None = None) -> AURA:
     """Create a persistent AURA runtime.
     
     Args:
         agentic: If True, wires a full AgenticRuntime with Goal Engine, Dynamic Skills,
                  Self-Healing, and Epistemic Knowledge Graph.
+        config: Optional custom Settings instance.
     """
-    orchestrator = create_orchestrator()
+    cfg = config or Settings()
+    orchestrator = create_orchestrator(config=cfg)
     if agentic:
         from core.agentic_runtime import AgenticRuntime
         runtime = AgenticRuntime(

@@ -825,7 +825,7 @@ class AgenticRuntime:
         self.durable_state_store = (
             durable_state_store
             if durable_state_store is not None
-            else DurablePersonalStateStore()
+            else DurablePersonalStateStore(storage_dir=ckpt_dir)
         )
 
         # M31 Advanced Multi-Source Retrieval / RAG Pipeline

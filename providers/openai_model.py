@@ -27,7 +27,10 @@ class OpenAIProvider(ModelInterface):
         if client is not None:
             self.client = client
         elif timeout is not None:
-            self.client = OpenAI(api_key=api_key, timeout=timeout)
+            try:
+                self.client = OpenAI(api_key=api_key, timeout=timeout)
+            except TypeError:
+                self.client = OpenAI(api_key=api_key)
         else:
             self.client = OpenAI(api_key=api_key)
 

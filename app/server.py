@@ -518,7 +518,7 @@ class AURAHTTPServer:
         port: int | None = None,
     ):
         self.config = config or settings
-        self.aura = aura or create_aura(agentic=True)
+        self.aura = aura or create_aura(agentic=True, config=self.config)
         self.host = host or self.config.aura_server_host
         self.port = port if port is not None else self.config.aura_server_port
         self.start_time = time.time()
