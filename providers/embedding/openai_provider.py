@@ -134,15 +134,67 @@ class OpenAICompatibleEmbeddingProvider(BaseEmbeddingProvider):
         return results[0]
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Generate embedding vectors for a batch of texts."""
+        """Generate embedding vectors for a batch of texts with tracing and metrics."""
+        from core.metrics import get_metrics_registry
+        from core.tracing import Tracer
+        from core.trace_types import SpanKind, SpanStatus
+
         if not texts:
             return []
 
-        all_vectors: list[list[float]] = []
-        for i in range(0, len(texts), self._batch_size):
-            chunk = texts[i : i + self._batch_size]
-            cleaned_chunk = [t if (t and t.strip()) else " " for t in chunk]
-            sub_vectors = self._call_embeddings_api(cleaned_chunk)
-            all_vectors.extend(sub_vectors)
+        tracer = Tracer(service_name="aura.embedding")
+        metrics = get_metrics_registry()
+        start_time = time.time()
 
-        return all_vectors
+        with tracer.start_span(
+            f"embedding_batch:{self._model_name}",
+            kind=SpanKind.CLIENT,
+            attributes={
+                "embedding.provider": "openai_compatible",
+                "embedding.model": self._model_name,
+                "embedding.batch_size": len(texts),
+                "embedding.dimension": self._dimension,
+            },
+        ) as span:
+            try:
+                all_vectors: list[list[float]] = []
+                for i in range(0, len(texts), self._batch_size):
+                    chunk = texts[i : i + self._batch_size]
+                    cleaned_chunk = [t if (t and t.strip()) else " " for t in chunk]
+                    sub_vectors = self._call_embeddings_api(cleaned_chunk)
+                    all_vectors.extend(sub_vectors)
+
+                duration = time.time() - start_time
+                span.set_status(SpanStatus.OK)
+                span.record_resource_usage(cpu_ms=round(duration * 1000.0, 2))
+
+                try:
+                    metrics.get_counter("aura_embedding_requests_total").inc(
+                        labels={"provider": "openai_compatible", "model": self._model_name, "status": "success"}
+                    )
+                    metrics.get_counter("aura_embedding_vectors_total").inc(
+                        len(all_vectors),
+                        labels={"provider": "openai_compatible", "model": self._model_name},
+                    )
+                    metrics.get_histogram("aura_embedding_duration_seconds").observe(
+                        duration,
+                        labels={"provider": "openai_compatible", "model": self._model_name},
+                    )
+                except Exception:
+                    pass
+
+                return all_vectors
+
+            except Exception as exc:
+                duration = time.time() - start_time
+                span.record_exception(exc)
+                err_str = str(exc).lower()
+                status_lbl = "rate_limit" if ("429" in err_str or "quota" in err_str) else "error"
+                try:
+                    metrics.get_counter("aura_embedding_requests_total").inc(
+                        labels={"provider": "openai_compatible", "model": self._model_name, "status": status_lbl}
+                    )
+                except Exception:
+                    pass
+                raise
+

@@ -59,13 +59,31 @@ class Policy:
 
     def authorize_tool(self, tool_name: str, identity: Any | None = None) -> PolicyDecision:
         """Authorize execution of a registered tool, with optional principal RBAC verification."""
+        from core.security_audit import SecurityEventType, get_security_audit_logger
+        audit = get_security_audit_logger()
+        user_id = getattr(identity, "user_id", None) if identity is not None else None
+
         if tool_name not in self.authorized_tools:
+            audit.record_event(
+                event_type=SecurityEventType.TOOL_POLICY_VIOLATION,
+                outcome="deny",
+                user_id=user_id,
+                reason=f"Tool '{tool_name}' not in authorized tools list.",
+                metadata={"tool_name": tool_name},
+            )
             return PolicyDecision.DENY
 
         if identity is not None and tool_name in self.privileged_tools:
             # Check if principal has administrative/operator role or device execution scope
             is_auth = getattr(identity, "is_authenticated", False)
             if not is_auth:
+                audit.record_event(
+                    event_type=SecurityEventType.AUTHORIZATION_DENIED,
+                    outcome="deny",
+                    user_id=user_id,
+                    reason=f"Unauthenticated principal attempted privileged tool '{tool_name}'.",
+                    metadata={"tool_name": tool_name},
+                )
                 return PolicyDecision.DENY
 
             has_admin_role = (
@@ -78,6 +96,14 @@ class Policy:
             )
 
             if not (has_admin_role or has_exec_scope):
+                audit.record_event(
+                    event_type=SecurityEventType.AUTHORIZATION_DENIED,
+                    outcome="deny",
+                    user_id=user_id,
+                    reason=f"Principal lacks admin/operator role or device execution scope for '{tool_name}'.",
+                    metadata={"tool_name": tool_name},
+                )
                 return PolicyDecision.DENY
 
         return PolicyDecision.ALLOW
+

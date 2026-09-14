@@ -103,45 +103,148 @@ class GenericOpenAICompatibleProvider(ModelInterface):
         request_id: UUID,
     ) -> AURAResponse:
         """Execute a text generation call through the OpenAI-compatible endpoint."""
+        import time
+        from core.metrics import get_metrics_registry
+        from core.tracing import Tracer
+        from core.trace_types import SpanKind, SpanStatus
+
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("Prompt cannot be empty.")
 
-        try:
-            # First attempt chat completions standard
+        tracer = Tracer(service_name="aura.llm")
+        metrics = get_metrics_registry()
+        start_time = time.time()
+
+        with tracer.start_span(
+            f"llm_generate:{self.model_name}",
+            kind=SpanKind.CLIENT,
+            attributes={
+                "llm.provider": "generic",
+                "llm.model": self.model_name,
+                "llm.base_url": self.base_url,
+            },
+        ) as span:
             try:
-                chat_resp = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[{"role": "user", "content": prompt}],
-                    timeout=self.timeout,
-                )
-                output_text = chat_resp.choices[0].message.content or ""
-            except Exception as chat_err:
-                # Fallback to responses API if supported
-                if hasattr(self.client, "responses"):
-                    resp_obj = self.client.responses.create(
+                usage_dict: dict[str, int] | None = None
+                prompt_tokens = 0
+                completion_tokens = 0
+                total_tokens = 0
+
+                def _safe_int(v: Any) -> int:
+                    if isinstance(v, int) and not isinstance(v, bool):
+                        return v
+                    if isinstance(v, float):
+                        return int(v)
+                    return 0
+
+                # First attempt chat completions standard
+                try:
+                    chat_resp = self.client.chat.completions.create(
                         model=self.model_name,
-                        input=prompt,
+                        messages=[{"role": "user", "content": prompt}],
                         timeout=self.timeout,
                     )
-                    output_text = getattr(resp_obj, "output_text", str(resp_obj))
-                else:
-                    raise chat_err
+                    output_text = chat_resp.choices[0].message.content or ""
+                    if hasattr(chat_resp, "usage") and chat_resp.usage is not None:
+                        usage = chat_resp.usage
+                        prompt_tokens = _safe_int(getattr(usage, "prompt_tokens", None))
+                        completion_tokens = _safe_int(getattr(usage, "completion_tokens", None))
+                        total_tokens = _safe_int(getattr(usage, "total_tokens", None)) or (prompt_tokens + completion_tokens)
+                        if prompt_tokens > 0 or completion_tokens > 0 or total_tokens > 0:
+                            usage_dict = {
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
+                                "total_tokens": total_tokens,
+                            }
+                except Exception as chat_err:
+                    # Fallback to responses API if supported
+                    if hasattr(self.client, "responses"):
+                        resp_obj = self.client.responses.create(
+                            model=self.model_name,
+                            input=prompt,
+                            timeout=self.timeout,
+                        )
+                        output_text = getattr(resp_obj, "output_text", str(resp_obj))
+                        if hasattr(resp_obj, "usage") and resp_obj.usage is not None:
+                            usage = resp_obj.usage
+                            prompt_tokens = _safe_int(getattr(usage, "prompt_tokens", None))
+                            completion_tokens = _safe_int(getattr(usage, "completion_tokens", None))
+                            total_tokens = _safe_int(getattr(usage, "total_tokens", None)) or (prompt_tokens + completion_tokens)
+                            if prompt_tokens > 0 or completion_tokens > 0 or total_tokens > 0:
+                                usage_dict = {
+                                    "prompt_tokens": prompt_tokens,
+                                    "completion_tokens": completion_tokens,
+                                    "total_tokens": total_tokens,
+                                }
+                    else:
+                        raise chat_err
 
-        except TimeoutError:
-            raise
-        except Exception as exc:
-            # Mask API keys from exception representation
-            err_msg = str(exc)
-            if self.api_key and self.api_key in err_msg:
-                err_msg = err_msg.replace(self.api_key, "[REDACTED_API_KEY]")
-            raise RuntimeError(f"Generic model provider generation failed ({self.model_name} @ {self.base_url}): {err_msg}") from exc
+                duration = time.time() - start_time
+                span.set_status(SpanStatus.OK)
+                span.record_resource_usage(
+                    tokens=total_tokens,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cpu_ms=round(duration * 1000.0, 2),
+                )
 
-        return AURAResponse(
-            request_id=request_id,
-            content=output_text,
-            metadata={
-                "provider": "generic",
-                "model": self.model_name,
-                "base_url": self.base_url,
-            },
-        )
+                try:
+                    metrics.get_counter("aura_llm_requests_total").inc(
+                        labels={"provider": "generic", "model": self.model_name, "status": "success"}
+                    )
+                    if total_tokens > 0:
+                        metrics.get_counter("aura_llm_tokens_total").inc(
+                            prompt_tokens, labels={"provider": "generic", "model": self.model_name, "type": "prompt"}
+                        )
+                        metrics.get_counter("aura_llm_tokens_total").inc(
+                            completion_tokens, labels={"provider": "generic", "model": self.model_name, "type": "completion"}
+                        )
+                        metrics.get_counter("aura_llm_tokens_total").inc(
+                            total_tokens, labels={"provider": "generic", "model": self.model_name, "type": "total"}
+                        )
+                    metrics.get_histogram("aura_llm_duration_seconds").observe(
+                        duration, labels={"provider": "generic", "model": self.model_name}
+                    )
+                except Exception:
+                    pass
+
+                meta: dict[str, Any] = {
+                    "provider": "generic",
+                    "model": self.model_name,
+                    "base_url": self.base_url,
+                    "duration_seconds": round(duration, 4),
+                }
+                if usage_dict:
+                    meta["usage"] = usage_dict
+
+                return AURAResponse(
+                    request_id=request_id,
+                    content=output_text,
+                    metadata=meta,
+                )
+
+            except TimeoutError as te:
+                duration = time.time() - start_time
+                span.record_exception(te)
+                try:
+                    metrics.get_counter("aura_llm_requests_total").inc(
+                        labels={"provider": "generic", "model": self.model_name, "status": "timeout"}
+                    )
+                except Exception:
+                    pass
+                raise
+            except Exception as exc:
+                duration = time.time() - start_time
+                span.record_exception(exc)
+                try:
+                    metrics.get_counter("aura_llm_requests_total").inc(
+                        labels={"provider": "generic", "model": self.model_name, "status": "error"}
+                    )
+                except Exception:
+                    pass
+                # Mask API keys from exception representation
+                err_msg = str(exc)
+                if self.api_key and self.api_key in err_msg:
+                    err_msg = err_msg.replace(self.api_key, "[REDACTED_API_KEY]")
+                raise RuntimeError(f"Generic model provider generation failed ({self.model_name} @ {self.base_url}): {err_msg}") from exc
+

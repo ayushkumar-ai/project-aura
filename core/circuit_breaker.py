@@ -69,6 +69,20 @@ class CircuitBreaker:
             self._evaluate_state(time.time())
             return self._state
 
+    def _sync_metric(self) -> None:
+        """Update Prometheus gauge metric for circuit breaker state."""
+        try:
+            from core.metrics import get_metrics_registry
+            metrics = get_metrics_registry()
+            val = 0.0
+            if self._state == CircuitState.HALF_OPEN:
+                val = 1.0
+            elif self._state == CircuitState.OPEN:
+                val = 2.0
+            metrics.get_gauge("aura_circuit_breaker_state").set(val, labels={"provider": self.name})
+        except Exception:
+            pass
+
     def _evaluate_state(self, now: float) -> None:
         """Evaluate whether an OPEN circuit should transition to HALF_OPEN after recovery timeout."""
         if self._state == CircuitState.OPEN:
@@ -83,6 +97,7 @@ class CircuitBreaker:
                 self._last_state_change_time = now
                 self._half_open_success_count = 0
                 self._in_flight_canary = False
+                self._sync_metric()
 
     def can_execute(self, current_time: float | None = None) -> bool:
         """Check whether a request is permitted through the circuit breaker."""
@@ -123,6 +138,7 @@ class CircuitBreaker:
                     self._failure_count = 0
                     self._half_open_success_count = 0
                     self._last_state_change_time = now
+                    self._sync_metric()
 
     def record_failure(
         self,
@@ -147,6 +163,7 @@ class CircuitBreaker:
                     )
                     self._state = CircuitState.OPEN
                     self._last_state_change_time = now
+                    self._sync_metric()
             elif self._state == CircuitState.HALF_OPEN:
                 logger.warning(
                     "Circuit breaker '%s' canary probe failed. Re-tripping HALF_OPEN -> OPEN. Error: %s",
@@ -156,6 +173,7 @@ class CircuitBreaker:
                 self._state = CircuitState.OPEN
                 self._last_state_change_time = now
                 self._in_flight_canary = False
+                self._sync_metric()
 
     def reset(self) -> None:
         """Force reset the circuit breaker to CLOSED state."""
@@ -165,6 +183,8 @@ class CircuitBreaker:
             self._half_open_success_count = 0
             self._in_flight_canary = False
             self._last_state_change_time = time.time()
+            self._sync_metric()
+
 
     def get_status_dict(self) -> dict[str, Any]:
         """Return a serializable status snapshot of this circuit breaker."""

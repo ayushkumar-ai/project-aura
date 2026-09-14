@@ -36,6 +36,12 @@ _active_trace_context: contextvars.ContextVar[TraceContext | None] = contextvars
 )
 
 
+def get_active_trace_context() -> TraceContext | None:
+    """Return the active TraceContext in this async/thread context."""
+    return _active_trace_context.get()
+
+
+
 class Span:
     """Active, mutable span representing an ongoing bounded execution block."""
 

@@ -39,6 +39,16 @@ from core.security_scrubber import sanitize_error_message, scrub_dict
 from core.identity import UserIdentity, UserRole, UserScope, create_anonymous_identity, create_dev_identity
 from core.auth import BaseAuthenticator, TokenAuthenticator, create_token_authenticator
 from core.repositories.factory import create_repository_container, RepositoryContainer
+from core.telemetry_context import (
+    validate_or_generate_request_id,
+    set_correlation_context,
+    clear_correlation_context,
+    get_current_request_id,
+    get_current_trace_id,
+)
+from core.metrics import get_metrics_registry
+from core.security_audit import SecurityEventType, get_security_audit_logger
+from core.structured_logger import configure_structured_logging
 
 logger = logging.getLogger("aura.server")
 
@@ -92,19 +102,55 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
     def authenticator(self) -> BaseAuthenticator:
         return self.server.authenticator  # type: ignore
 
+    def _setup_request_context(self) -> tuple[str, str, Any]:
+        """Initialize correlation context from headers (X-Request-ID, W3C traceparent)."""
+        incoming_req_id = self.headers.get("X-Request-ID")
+        req_id = validate_or_generate_request_id(incoming_req_id)
+
+        incoming_tp = self.headers.get("traceparent")
+        parent_ctx = None
+        if incoming_tp:
+            try:
+                from core.trace_types import TraceContext
+                parent_ctx = TraceContext.from_traceparent(incoming_tp)
+            except Exception:
+                parent_ctx = None
+
+        from uuid import uuid4
+        tr_id = parent_ctx.trace_id if parent_ctx else uuid4().hex.lower()[:32].rjust(32, "0")
+        set_correlation_context(request_id=req_id, trace_id=tr_id)
+        self.request_id = req_id
+        self.trace_id = tr_id
+        self.req_start = time.time()
+        return req_id, tr_id, parent_ctx
+
     def _set_cors_headers(self) -> None:
-        """Apply CORS headers from configuration."""
+        """Apply CORS and correlation headers from configuration."""
         origin = self.config.aura_cors_allowed_origins
         self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, traceparent")
+        req_id = getattr(self, "request_id", None) or get_current_request_id()
+        if req_id:
+            self.send_header("X-Request-ID", str(req_id))
+        tr_id = getattr(self, "trace_id", None) or get_current_trace_id()
+        if tr_id:
+            self.send_header("X-Trace-ID", str(tr_id))
 
     def _send_json_response(
         self,
         data: Any,
         status: HTTPStatus = HTTPStatus.OK,
     ) -> None:
-        """Send a formatted JSON response with security headers."""
+        """Send a formatted JSON response with security headers and record metrics."""
+        stat_code = status.value if isinstance(status, HTTPStatus) else int(status)
+        self._record_http_metric(
+            getattr(self, "command", "GET"),
+            getattr(self, "path", "/"),
+            stat_code,
+            getattr(self, "req_start", time.time()),
+        )
+
         try:
             body = json.dumps(
                 scrub_dict(data) if isinstance(data, dict) else data,
@@ -117,7 +163,7 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            self.send_response(status.value if isinstance(status, HTTPStatus) else status)
+            self.send_response(stat_code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self._set_cors_headers()
@@ -127,6 +173,7 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError) as e:
             logger.debug(f"Client disconnected before response could be sent: {e}")
+
 
     def _drain_body(self) -> None:
         """Safely drain bounded unread request body from socket to prevent TCP RST on early error."""
@@ -288,6 +335,24 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             logger.error(f"Error serving static file {clean_rel}: {e}")
             self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "file_error", "Error reading static file")
 
+    def _record_http_metric(self, method: str, path: str, status_code: int, start_time: float) -> None:
+        """Record HTTP request counter and latency histogram."""
+        try:
+            duration = time.time() - start_time
+            metrics = get_metrics_registry()
+            # Normalize path for low cardinality
+            norm_path = path.split("?")[0]
+            if len(norm_path) > 32:
+                norm_path = norm_path[:32]
+            metrics.get_counter("aura_http_requests_total").inc(
+                labels={"method": method, "path": norm_path, "status_code": str(status_code)}
+            )
+            metrics.get_histogram("aura_http_request_duration_seconds").observe(
+                duration, labels={"method": method, "path": norm_path, "status_code": str(status_code)}
+            )
+        except Exception:
+            pass
+
     def do_OPTIONS(self) -> None:
         """Handle CORS preflight requests."""
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -295,13 +360,15 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        """Route GET requests with M41 authentication and authorization."""
+        """Route GET requests with M41 authentication and authorization and M44 telemetry."""
+        req_start = time.time()
+        self._setup_request_context()
         parsed_url = urlparse(self.path)
         path = parsed_url.path.rstrip("/")
         if not path:
             path = "/"
 
-        # Unauthenticated health probes
+        # Unauthenticated health probes and Prometheus metrics
         if path == "/health":
             uptime = time.time() - self.start_time
             self._send_json_response({
@@ -312,6 +379,7 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 "uptime_seconds": round(uptime, 2),
                 "timestamp": time.time(),
             })
+            self._record_http_metric("GET", path, 200, req_start)
             return
 
         if path == "/ready":
@@ -324,6 +392,11 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                     is_ready = False
                     db_status = db_health.get("error", "database_unreachable")
 
+            # In production or when DB URL is set, fail closed if DB is unreachable
+            is_prod = self.config.aura_env.lower() == "production"
+            if (is_prod or self.config.aura_database_url) and db_status != "ok":
+                is_ready = False
+
             if is_ready:
                 self._send_json_response({
                     "status": "ready",
@@ -333,35 +406,63 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                     "database": db_status,
                     "timestamp": time.time(),
                 })
+                self._record_http_metric("GET", path, 200, req_start)
             else:
                 self._send_error_response(
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     "not_ready",
                     f"AURA runtime is initializing or degraded (database: {db_status})",
                 )
+                self._record_http_metric("GET", path, 503, req_start)
+            return
+
+        if path == "/metrics":
+            # Prometheus text exposition format (unauthenticated standard pull endpoint)
+            metrics_text = get_metrics_registry().to_prometheus_text()
+            body = metrics_text.encode("utf-8")
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self._set_cors_headers()
+                self.end_headers()
+                self.wfile.write(body)
+                self._record_http_metric("GET", path, 200, req_start)
+            except Exception as e:
+                logger.error(f"Error serving metrics: {e}")
             return
 
         # Web UI and Static Assets
         if path in ("/", "/ui", "/index.html") or path.startswith("/static/"):
             self._serve_static(path)
+            self._record_http_metric("GET", path, 200, req_start)
             return
 
         # Authenticated endpoints
         is_auth, identity, err_msg, status_code = self._resolve_identity()
         if not is_auth:
             self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+            self._record_http_metric("GET", path, status_code, req_start)
             return
 
         user_id = identity.user_id if identity else "default"
 
-        if path in ("/metrics", "/v1/telemetry"):
+        if path == "/v1/telemetry":
+            # Operational JSON telemetry summary (Admin-only)
+            if not (identity and (identity.has_role(UserRole.ADMIN) or identity.has_scope(UserScope.ADMIN.value))):
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Administrative privileges required to view operational telemetry")
+                self._record_http_metric("GET", path, 403, req_start)
+                return
             health = self.aura.get_health_status()
             provider_health = self.aura.get_provider_health()
+            metrics_dict = get_metrics_registry().to_dict()
             self._send_json_response({
                 "system": health,
                 "providers": provider_health,
+                "metrics": metrics_dict,
                 "timestamp": time.time(),
             })
+            self._record_http_metric("GET", path, 200, req_start)
             return
 
         if path == "/v1/skills":
@@ -467,7 +568,9 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_POST(self) -> None:
-        """Route POST requests with M41 authentication and user isolation."""
+        """Route POST requests with M41 authentication, user isolation, and M44 correlation."""
+        req_start = time.time()
+        self._setup_request_context()
         parsed_url = urlparse(self.path)
         path = parsed_url.path.rstrip("/")
 
@@ -490,7 +593,12 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 return
 
             metadata = body.get("metadata", {})
-            req = AURARequest(user_input=user_input, metadata=metadata, identity=identity, user_id=user_id)
+            import uuid
+            try:
+                eff_uuid = UUID(self.request_id)
+            except Exception:
+                eff_uuid = uuid.uuid4()
+            req = AURARequest(request_id=eff_uuid, user_input=user_input, metadata=metadata, identity=identity, user_id=user_id)
             try:
                 response = self.aura.run_request(req)
                 self._send_json_response({
@@ -745,10 +853,18 @@ def main() -> None:
     if args.env:
         config.aura_env = args.env
 
-    logging.basicConfig(
-        level=getattr(logging, config.aura_log_level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    if getattr(config, "aura_structured_logging_enabled", True):
+        configure_structured_logging(
+            level=config.aura_log_level,
+            json_format=(getattr(config, "aura_log_format", "json").lower() == "json"),
+            service_name=config.aura_app_name,
+            environment=config.aura_env,
+        )
+    else:
+        logging.basicConfig(
+            level=getattr(logging, config.aura_log_level.upper(), logging.INFO),
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
 
     server = AURAHTTPServer(config=config, host=args.host, port=args.port)
     server.start(block=True)

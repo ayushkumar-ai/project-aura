@@ -10,7 +10,7 @@ class AURARequest(BaseModel):
 
     request_id: UUID = Field(default_factory=uuid4)
     user_input: str
-    metadata: dict[str, str] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     identity: Any | None = None
     user_id: str | None = None
 
@@ -29,4 +29,5 @@ class AURAResponse(BaseModel):
 
     request_id: UUID
     content: str
-    metadata: dict[str, str] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+

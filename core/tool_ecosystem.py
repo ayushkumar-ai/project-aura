@@ -356,71 +356,141 @@ class ToolEcosystemRegistry:
         request: ToolExecutionRequest,
         policy_engine: Any | None = None,
     ) -> ToolExecutionResult:
-        """Execute a tool with schema validation, permission checks, and audit logging."""
+        """Execute a tool with schema validation, permission checks, audit logging, and tracing."""
+        from core.metrics import get_metrics_registry
+        from core.tracing import Tracer
+        from core.trace_types import SpanKind, SpanStatus
+
         start_time = time.time()
         exec_id = request.execution_id or f"exec_{uuid4().hex[:12]}"
+        metrics = get_metrics_registry()
+        tracer = Tracer(service_name="aura.tools")
 
         tool = self.get_tool(request.tool_name)
         if not tool:
             err = f"Tool '{request.tool_name}' not found in registry."
             self._record_audit(exec_id, request.tool_name, request.caller_role, 1, False, 0.0, err)
+            try:
+                metrics.get_counter("aura_tool_executions_total").inc(
+                    labels={"tool_name": request.tool_name, "caller_role": request.caller_role, "status": "not_found"}
+                )
+            except Exception:
+                pass
             return ToolExecutionResult(execution_id=exec_id, tool_name=request.tool_name, success=False, error=err)
 
         spec = tool.spec
 
-        # 1. Schema Validation
-        valid, schema_err = self.validate_parameters(spec, request.parameters)
-        if not valid:
-            self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, 0.0, schema_err)
-            return ToolExecutionResult(execution_id=exec_id, tool_name=spec.name, success=False, error=schema_err)
+        with tracer.start_span(
+            f"tool_execution:{spec.name}",
+            kind=SpanKind.INTERNAL,
+            attributes={
+                "tool.name": spec.name,
+                "tool.caller": request.caller_role,
+                "tool.permission_tier": int(spec.permission_tier),
+            },
+        ) as span:
+            # 1. Schema Validation
+            valid, schema_err = self.validate_parameters(spec, request.parameters)
+            if not valid:
+                self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, 0.0, schema_err)
+                span.set_status(SpanStatus.ERROR, message=schema_err)
+                try:
+                    metrics.get_counter("aura_tool_executions_total").inc(
+                        labels={"tool_name": spec.name, "caller_role": request.caller_role, "status": "schema_error"}
+                    )
+                except Exception:
+                    pass
+                return ToolExecutionResult(execution_id=exec_id, tool_name=spec.name, success=False, error=schema_err)
 
-        # 2. Policy / Authorization Check
-        pol = policy_engine or self.policy_engine
-        if pol is not None:
+            # 2. Policy / Authorization Check
+            pol = policy_engine or self.policy_engine
+            if pol is not None:
+                try:
+                    if hasattr(pol, "authorize_tool"):
+                        decision = pol.authorize_tool(spec.name)
+                        if getattr(decision, "value", str(decision)).lower() != "allow":
+                            err = f"Policy denied execution of tool '{spec.name}'"
+                            self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, 0.0, err)
+                            span.set_status(SpanStatus.ERROR, message=err)
+                            try:
+                                metrics.get_counter("aura_tool_executions_total").inc(
+                                    labels={"tool_name": spec.name, "caller_role": request.caller_role, "status": "denied"}
+                                )
+                            except Exception:
+                                pass
+                            return ToolExecutionResult(execution_id=exec_id, tool_name=spec.name, success=False, error=err)
+                    elif hasattr(pol, "evaluate"):
+                        from core.models import AURARequest
+                        decision = pol.evaluate(AURARequest(user_input=f"Execute {spec.name}"))
+                        if getattr(decision, "value", None) == "deny" or getattr(decision, "decision", None) == "deny" or getattr(decision, "is_allowed", True) is False:
+                            err = f"Policy denied execution of tool '{spec.name}'"
+                            self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, 0.0, err)
+                            span.set_status(SpanStatus.ERROR, message=err)
+                            try:
+                                metrics.get_counter("aura_tool_executions_total").inc(
+                                    labels={"tool_name": spec.name, "caller_role": request.caller_role, "status": "denied"}
+                                )
+                            except Exception:
+                                pass
+                            return ToolExecutionResult(execution_id=exec_id, tool_name=spec.name, success=False, error=err)
+                except Exception as e:
+                    err = f"Policy evaluation error for tool '{spec.name}': {type(e).__name__}"
+                    logger.warning(f"Policy evaluation error for tool '{spec.name}': {type(e).__name__}")
+                    self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, 0.0, err)
+                    span.record_exception(e)
+                    try:
+                        metrics.get_counter("aura_tool_executions_total").inc(
+                            labels={"tool_name": spec.name, "caller_role": request.caller_role, "status": "error"}
+                        )
+                    except Exception:
+                        pass
+                    return ToolExecutionResult(execution_id=exec_id, tool_name=spec.name, success=False, error=err)
+
+            # 3. Execution with Timeout & Error Boundary
+            timeout = request.timeout_seconds or spec.timeout_seconds
             try:
-                if hasattr(pol, "authorize_tool"):
-                    decision = pol.authorize_tool(spec.name)
-                    if getattr(decision, "value", str(decision)).lower() != "allow":
-                        err = f"Policy denied execution of tool '{spec.name}'"
-                        self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, 0.0, err)
-                        return ToolExecutionResult(execution_id=exec_id, tool_name=spec.name, success=False, error=err)
-                elif hasattr(pol, "evaluate"):
-                    from core.models import AURARequest
-                    decision = pol.evaluate(AURARequest(user_input=f"Execute {spec.name}"))
-                    if getattr(decision, "value", None) == "deny" or getattr(decision, "decision", None) == "deny" or getattr(decision, "is_allowed", True) is False:
-                        err = f"Policy denied execution of tool '{spec.name}'"
-                        self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, 0.0, err)
-                        return ToolExecutionResult(execution_id=exec_id, tool_name=spec.name, success=False, error=err)
+                output = tool.execute(request.parameters)
+                duration = time.time() - start_time
+                self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), True, duration, "")
+                span.set_status(SpanStatus.OK)
+                span.record_resource_usage(tool_calls=1, cpu_ms=round(duration * 1000.0, 2))
+                try:
+                    metrics.get_counter("aura_tool_executions_total").inc(
+                        labels={"tool_name": spec.name, "caller_role": request.caller_role, "status": "success"}
+                    )
+                    metrics.get_histogram("aura_tool_duration_seconds").observe(
+                        duration, labels={"tool_name": spec.name}
+                    )
+                except Exception:
+                    pass
+                return ToolExecutionResult(
+                    execution_id=exec_id,
+                    tool_name=spec.name,
+                    success=True,
+                    output=output,
+                    duration_seconds=round(duration, 4),
+                )
             except Exception as e:
-                err = f"Policy evaluation error for tool '{spec.name}': {type(e).__name__}"
-                logger.warning(f"Policy evaluation error for tool '{spec.name}': {type(e).__name__}")
-                self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, 0.0, err)
-                return ToolExecutionResult(execution_id=exec_id, tool_name=spec.name, success=False, error=err)
-
-        # 3. Execution with Timeout & Error Boundary
-        timeout = request.timeout_seconds or spec.timeout_seconds
-        try:
-            output = tool.execute(request.parameters)
-            duration = time.time() - start_time
-            self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), True, duration, "")
-            return ToolExecutionResult(
-                execution_id=exec_id,
-                tool_name=spec.name,
-                success=True,
-                output=output,
-                duration_seconds=round(duration, 4),
-            )
-        except Exception as e:
-            duration = time.time() - start_time
-            err_msg = str(e)
-            self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, duration, err_msg)
-            return ToolExecutionResult(
-                execution_id=exec_id,
-                tool_name=spec.name,
-                success=False,
-                error=err_msg,
-                duration_seconds=round(duration, 4),
-            )
+                duration = time.time() - start_time
+                err_msg = str(e)
+                self._record_audit(exec_id, spec.name, request.caller_role, int(spec.permission_tier), False, duration, err_msg)
+                span.record_exception(e)
+                try:
+                    metrics.get_counter("aura_tool_executions_total").inc(
+                        labels={"tool_name": spec.name, "caller_role": request.caller_role, "status": "failure"}
+                    )
+                    metrics.get_histogram("aura_tool_duration_seconds").observe(
+                        duration, labels={"tool_name": spec.name}
+                    )
+                except Exception:
+                    pass
+                return ToolExecutionResult(
+                    execution_id=exec_id,
+                    tool_name=spec.name,
+                    success=False,
+                    error=err_msg,
+                    duration_seconds=round(duration, 4),
+                )
 
     def _record_audit(
         self,
@@ -443,7 +513,10 @@ class ToolEcosystemRegistry:
             error=error,
         )
         with self._lock:
+            if len(self._audit_log) >= 1000:
+                self._audit_log.pop(0)
             self._audit_log.append(record)
+
 
     def get_audit_log(self, tool_name: str | None = None) -> list[ToolAuditRecord]:
         with self._lock:

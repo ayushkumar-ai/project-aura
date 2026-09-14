@@ -86,9 +86,19 @@ class TokenAuthenticator(BaseAuthenticator):
         """Validate token credentials and resolve the associated UserIdentity.
         
         Uses hmac.compare_digest for secret comparison and queries token repository if configured.
-        Checks credential expiration.
+        Checks credential expiration and emits structured security audit events.
         """
+        from core.security_audit import SecurityEventType, get_security_audit_logger
+        audit = get_security_audit_logger()
+        client_ip = kwargs.get("client_ip")
+
         if credentials is None or not isinstance(credentials, str) or not credentials.strip():
+            audit.record_event(
+                event_type=SecurityEventType.AUTH_FAILURE,
+                outcome="deny",
+                reason="Missing authentication credentials.",
+                client_ip=client_ip,
+            )
             return AuthenticationResult(
                 success=False,
                 identity=None,
@@ -104,12 +114,26 @@ class TokenAuthenticator(BaseAuthenticator):
             if res is not None:
                 token_id, identity = res
                 if identity.is_expired():
+                    audit.record_event(
+                        event_type=SecurityEventType.AUTH_FAILURE,
+                        outcome="deny",
+                        user_id=identity.user_id,
+                        reason="Authentication token has expired.",
+                        client_ip=client_ip,
+                    )
                     return AuthenticationResult(
                         success=False,
                         identity=None,
                         error_message="Authentication token has expired.",
                         status_code=401,
                     )
+                audit.record_event(
+                    event_type=SecurityEventType.AUTH_SUCCESS,
+                    outcome="allow",
+                    user_id=identity.user_id,
+                    reason="Authentication successful.",
+                    client_ip=client_ip,
+                )
                 return AuthenticationResult(
                     success=True,
                     identity=identity,
@@ -125,6 +149,12 @@ class TokenAuthenticator(BaseAuthenticator):
                 break
 
         if matched_identity is None:
+            audit.record_event(
+                event_type=SecurityEventType.AUTH_FAILURE,
+                outcome="deny",
+                reason="Invalid authentication token.",
+                client_ip=client_ip,
+            )
             return AuthenticationResult(
                 success=False,
                 identity=None,
@@ -133,6 +163,13 @@ class TokenAuthenticator(BaseAuthenticator):
             )
 
         if matched_identity.is_expired():
+            audit.record_event(
+                event_type=SecurityEventType.AUTH_FAILURE,
+                outcome="deny",
+                user_id=matched_identity.user_id,
+                reason="Authentication token has expired.",
+                client_ip=client_ip,
+            )
             return AuthenticationResult(
                 success=False,
                 identity=None,
@@ -140,11 +177,19 @@ class TokenAuthenticator(BaseAuthenticator):
                 status_code=401,
             )
 
+        audit.record_event(
+            event_type=SecurityEventType.AUTH_SUCCESS,
+            outcome="allow",
+            user_id=matched_identity.user_id,
+            reason="Authentication successful.",
+            client_ip=client_ip,
+        )
         return AuthenticationResult(
             success=True,
             identity=matched_identity,
             status_code=200,
         )
+
 
 
 def create_token_authenticator(

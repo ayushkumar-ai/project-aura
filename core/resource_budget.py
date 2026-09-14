@@ -82,6 +82,13 @@ class ResourceBudgetManager:
             # 2. Check global concurrent goal slots
             if clean_goal_id not in self._active_goals:
                 if len(self._active_goals) >= self.max_concurrent_goals:
+                    try:
+                        from core.metrics import get_metrics_registry
+                        get_metrics_registry().get_counter("aura_rate_limits_throttled_total").inc(
+                            labels={"resource": "goals"}
+                        )
+                    except Exception:
+                        pass
                     return ResourceAllocationResult(
                         is_granted=False,
                         reason=f"Global active goals limit reached ({len(self._active_goals)}/{self.max_concurrent_goals}).",
@@ -91,6 +98,13 @@ class ResourceBudgetManager:
             # 3. Check global tool call rate limit
             current_tool_rate = sum(count for _, count in self._global_tool_call_history)
             if current_tool_rate + estimated_tool_calls > self.global_max_tool_calls_per_minute:
+                try:
+                    from core.metrics import get_metrics_registry
+                    get_metrics_registry().get_counter("aura_rate_limits_throttled_total").inc(
+                        labels={"resource": "tools"}
+                    )
+                except Exception:
+                    pass
                 return ResourceAllocationResult(
                     is_granted=False,
                     reason=(
@@ -103,6 +117,13 @@ class ResourceBudgetManager:
             # 4. Check global token rate limit
             current_token_rate = sum(count for _, count in self._global_token_history)
             if current_token_rate + estimated_tokens > self.global_max_tokens_per_minute:
+                try:
+                    from core.metrics import get_metrics_registry
+                    get_metrics_registry().get_counter("aura_rate_limits_throttled_total").inc(
+                        labels={"resource": "tokens"}
+                    )
+                except Exception:
+                    pass
                 return ResourceAllocationResult(
                     is_granted=False,
                     reason=(
@@ -119,6 +140,13 @@ class ResourceBudgetManager:
             )
 
             if usage["tool_calls"] + estimated_tool_calls > eff_quota.max_tool_calls:
+                try:
+                    from core.metrics import get_metrics_registry
+                    get_metrics_registry().get_counter("aura_rate_limits_throttled_total").inc(
+                        labels={"resource": "tools"}
+                    )
+                except Exception:
+                    pass
                 return ResourceAllocationResult(
                     is_granted=False,
                     reason=(
@@ -129,6 +157,13 @@ class ResourceBudgetManager:
                 )
 
             if usage["tokens"] + estimated_tokens > eff_quota.max_tokens:
+                try:
+                    from core.metrics import get_metrics_registry
+                    get_metrics_registry().get_counter("aura_rate_limits_throttled_total").inc(
+                        labels={"resource": "tokens"}
+                    )
+                except Exception:
+                    pass
                 return ResourceAllocationResult(
                     is_granted=False,
                     reason=(
@@ -137,6 +172,7 @@ class ResourceBudgetManager:
                     ),
                     quota_remaining={"goal_tokens": usage["tokens"], "max": eff_quota.max_tokens},
                 )
+
 
             # Mark goal as active
             if clean_goal_id not in self._active_goals:

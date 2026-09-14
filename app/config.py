@@ -183,6 +183,13 @@ class Settings(BaseSettings):
     aura_auto_heal_on_failure: bool = True
     aura_max_healing_attempts_per_phase: int = 3
 
+    # M44 Production Observability & Operational Reliability Configuration
+    aura_structured_logging_enabled: bool = True
+    aura_log_format: str = "json"
+    aura_metrics_enabled: bool = True
+    aura_security_audit_log_path: str = ""
+
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

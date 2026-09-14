@@ -206,6 +206,10 @@ class TraceContext:
             is_sampled=is_sampled,
         )
 
+    # Class method alias for W3C compatibility
+    from_w3c_traceparent = from_traceparent
+
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize trace context to primitive dictionary."""
         return {
