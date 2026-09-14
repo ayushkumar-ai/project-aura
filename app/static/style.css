@@ -215,7 +215,8 @@ body {
 }
 
 /* Chat View */
-#chat-view {
+#chat-view,
+.chat-workspace {
   padding: 0;
   display: flex;
   flex-direction: column;

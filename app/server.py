@@ -382,10 +382,11 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             path = "/"
 
         # Unauthenticated health probes and Prometheus metrics
-        if path == "/health":
+        if path in ("/health", "/healthz", "/live", "/livez"):
             uptime = time.time() - self.start_time
             self._send_json_response({
                 "status": "healthy",
+                "live": True,
                 "app_name": self.config.aura_app_name,
                 "version": "0.28.0",
                 "environment": self.config.aura_env,
@@ -395,7 +396,7 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._record_http_metric("GET", path, 200, req_start)
             return
 
-        if path == "/ready":
+        if path in ("/ready", "/readyz"):
             is_ready = self.aura is not None and self.aura.orchestrator is not None
             db_status = "ok"
             rep_container = getattr(self.server, "repository_container", None)
@@ -789,7 +790,11 @@ class AURAHTTPServer:
     ):
         self.config = config or settings
         # Validate production configuration fail-closed
-        validate_production_config(self.config, raise_on_error=(self.config.aura_env.lower() == "production"))
+        validate_production_config(
+            self.config,
+            raise_on_error=(self.config.aura_env.lower() == "production"),
+            authenticator_provided=(authenticator is not None),
+        )
         self.aura = aura or create_aura(agentic=True, config=self.config)
         self.host = host or self.config.aura_server_host
         self.port = port if port is not None else self.config.aura_server_port

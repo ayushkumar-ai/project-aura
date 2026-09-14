@@ -29,7 +29,11 @@ INSECURE_KEY_DEFAULTS = {
 }
 
 
-def validate_production_config(config: Settings, raise_on_error: bool = False) -> tuple[bool, list[str]]:
+def validate_production_config(
+    config: Settings,
+    raise_on_error: bool = False,
+    authenticator_provided: bool = False,
+) -> tuple[bool, list[str]]:
     """Validate runtime configuration settings for production safety.
     
     Returns (is_valid, list_of_error_messages).
@@ -43,7 +47,7 @@ def validate_production_config(config: Settings, raise_on_error: bool = False) -
         auth_enabled = getattr(config, "aura_api_key_auth_enabled", False)
         api_key = getattr(config, "aura_server_api_key", "").strip()
 
-        if auth_enabled:
+        if auth_enabled and not authenticator_provided:
             if not api_key:
                 errors.append("AURA_API_KEY_AUTH_ENABLED is true, but AURA_SERVER_API_KEY is not set.")
             elif len(api_key) < 16:
