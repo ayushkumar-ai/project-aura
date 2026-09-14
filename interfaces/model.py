@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-from core.models import AURAResponse
+if TYPE_CHECKING:
+    from core.models import AURAResponse
 
 
 class ModelInterface(ABC):
