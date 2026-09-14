@@ -17,79 +17,170 @@
         </div>
         <span class="brand-tagline">Autonomous Personal Intelligence</span>
       </div>
+
+      <!-- Navigation Tabs -->
+      <nav class="header-nav">
+        <button id="nav-chat-btn" class="nav-tab active" data-tab="chat-view">💬 Chat</button>
+        <button id="nav-memory-btn" class="nav-tab" data-tab="memory-view">🧠 Memory</button>
+        <button id="nav-rag-btn" class="nav-tab" data-tab="rag-view">🔍 Knowledge</button>
+        <button id="nav-tools-btn" class="nav-tab" data-tab="tools-view">🛠️ Tools</button>
+      </nav>
+
       <div class="header-actions">
         <div id="connection-status" class="status-pill status-checking">
           <span class="status-dot"></span>
           <span id="status-text">Connecting...</span>
         </div>
-        <button id="settings-btn" class="icon-btn" title="Client Settings" aria-label="Settings">⚙️</button>
+        <button id="settings-btn" class="icon-btn" title="Client & Auth Settings" aria-label="Settings">⚙️</button>
       </div>
     </header>
 
-    <!-- Main Chat Workspace -->
-    <main class="chat-workspace">
-      <!-- Conversation History Stream -->
-      <div id="messages-container" class="messages-container">
-        <div class="welcome-card" id="welcome-card">
-          <div class="welcome-icon">🔮</div>
-          <h2>Welcome to Project AURA</h2>
-          <p>Your autonomous, policy-governed personal intelligence assistant.</p>
-          
-          <div class="suggestions-grid">
-            <button class="suggestion-chip" data-prompt="What is Project AURA and what capabilities do you have?">
-              💡 What is Project AURA?
-            </button>
-            <button class="suggestion-chip" data-prompt="Calculate 256 * 1024 / 8">
-              🧮 Calculate 256 * 1024 / 8
-            </button>
-            <button class="suggestion-chip" data-prompt="Hello AURA. Reply with: AURA CLIENT LIVE TEST">
-              ⚡ Test Connection
-            </button>
+    <!-- Main Workspace -->
+    <main class="main-workspace">
+      <!-- 1. Chat Workspace View -->
+      <section id="chat-view" class="view-panel active">
+        <div id="messages-container" class="messages-container">
+          <div class="welcome-card" id="welcome-card">
+            <div class="welcome-icon">🔮</div>
+            <h2>Welcome to Project AURA</h2>
+            <p>Your policy-governed, autonomous personal intelligence system.</p>
+            
+            <div class="suggestions-grid">
+              <button class="suggestion-chip" data-prompt="What is Project AURA and what capabilities do you have?">
+                💡 What is Project AURA?
+              </button>
+              <button class="suggestion-chip" data-prompt="Calculate 256 * 1024 / 8">
+                🧮 Calculate 256 * 1024 / 8
+              </button>
+              <button class="suggestion-chip" data-prompt="Hello AURA. Reply with: AURA CLIENT LIVE TEST">
+                ⚡ Test Connection
+              </button>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- Typing / Loading Indicator -->
-      <div id="loading-indicator" class="loading-indicator hidden">
-        <div class="aura-avatar">✨</div>
-        <div class="typing-bubble">
-          <span class="dot"></span>
-          <span class="dot"></span>
-          <span class="dot"></span>
+        <!-- Typing / Loading Indicator -->
+        <div id="loading-indicator" class="loading-indicator hidden">
+          <div class="aura-avatar">✨</div>
+          <div class="typing-bubble">
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+          </div>
         </div>
-      </div>
+
+        <!-- Bottom Input Dock -->
+        <footer class="input-dock">
+          <form id="chat-form" class="chat-form">
+            <button type="button" id="clear-btn" class="action-btn secondary" title="Clear Chat History" aria-label="Clear Chat">
+              🗑️
+            </button>
+            <div class="textarea-wrapper">
+              <textarea 
+                id="user-input" 
+                placeholder="Message AURA... (Enter to send, Shift+Enter for newline)" 
+                rows="1" 
+                required
+                autocomplete="off"
+                spellcheck="true"
+              ></textarea>
+            </div>
+            <button type="submit" id="send-btn" class="action-btn primary" title="Send Message" aria-label="Send">
+              <span class="send-icon">➤</span>
+            </button>
+          </form>
+          <div class="footer-note">
+            <span>AURA Runtime v0.28.0 • Multi-Tenant Isolation • Safe Policy Execution</span>
+          </div>
+        </footer>
+      </section>
+
+      <!-- 2. Memory & Preferences View -->
+      <section id="memory-view" class="view-panel hidden">
+        <div class="panel-header">
+          <h2>🧠 User-Scoped Memory & Preferences</h2>
+          <p>Manage your persistent preferences, privacy settings, and custom instructions.</p>
+        </div>
+        <div class="panel-content">
+          <form id="preferences-form" class="card-form">
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="pref-name">Preferred Name</label>
+                <input type="text" id="pref-name" placeholder="e.g. Alex">
+              </div>
+              <div class="form-field">
+                <label for="pref-style">Communication Style</label>
+                <select id="pref-style">
+                  <option value="concise">Concise & Direct</option>
+                  <option value="detailed">Detailed & Analytical</option>
+                  <option value="technical">Deep Technical / Engineering</option>
+                  <option value="creative">Creative & Exploratory</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label for="pref-privacy">Privacy Mode</label>
+                <select id="pref-privacy">
+                  <option value="standard">Standard (Persistent memory enabled)</option>
+                  <option value="high">High (Ephemeral only, zero retention)</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label for="pref-proactivity">Proactivity Level</label>
+                <select id="pref-proactivity">
+                  <option value="balanced">Balanced</option>
+                  <option value="reactive">Reactive (Action on explicit request only)</option>
+                  <option value="proactive">Proactive (Autonomous suggestions)</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-field full-width">
+              <label for="pref-instructions">Custom Directives / Instructions</label>
+              <textarea id="pref-instructions" rows="4" placeholder="Add specific guidance or constraints for AURA..."></textarea>
+            </div>
+            <div class="form-actions">
+              <button type="submit" id="save-prefs-btn" class="action-btn primary">Save Preferences</button>
+              <span id="prefs-status-msg" class="status-msg"></span>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- 3. Knowledge & RAG View -->
+      <section id="rag-view" class="view-panel hidden">
+        <div class="panel-header">
+          <h2>🔍 Knowledge & Vector Retrieval (RAG)</h2>
+          <p>Search your indexed documents, knowledge base, and episodic memory.</p>
+        </div>
+        <div class="panel-content">
+          <form id="rag-search-form" class="search-bar-form">
+            <input type="text" id="rag-query-input" placeholder="Search knowledge base (e.g. quantum architecture, project roadmap)..." required>
+            <button type="submit" class="action-btn primary">Query Knowledge</button>
+          </form>
+          <div id="rag-results-container" class="results-container">
+            <div class="empty-state">Enter a query above to retrieve contextual knowledge chunks.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. Tools & Capabilities View -->
+      <section id="tools-view" class="view-panel hidden">
+        <div class="panel-header">
+          <h2>🛠️ Tool Ecosystem & Execution</h2>
+          <p>Inspect registered system tools, execution policies, and run test executions.</p>
+        </div>
+        <div class="panel-content">
+          <div id="tools-catalog-container" class="tools-grid">
+            <div class="empty-state">Loading tool catalog...</div>
+          </div>
+        </div>
+      </section>
     </main>
 
-    <!-- Bottom Input Dock -->
-    <footer class="input-dock">
-      <form id="chat-form" class="chat-form">
-        <button type="button" id="clear-btn" class="action-btn secondary" title="Clear Chat History" aria-label="Clear Chat">
-          🗑️
-        </button>
-        <div class="textarea-wrapper">
-          <textarea 
-            id="user-input" 
-            placeholder="Message AURA... (Enter to send, Shift+Enter for newline)" 
-            rows="1" 
-            required
-            autocomplete="off"
-            spellcheck="true"
-          ></textarea>
-        </div>
-        <button type="submit" id="send-btn" class="action-btn primary" title="Send Message" aria-label="Send">
-          <span class="send-icon">➤</span>
-        </button>
-      </form>
-      <div class="footer-note">
-        <span>AURA Runtime v0.28.0 • Policy Governed • Safe Execution</span>
-      </div>
-    </footer>
-
-    <!-- Settings Modal -->
+    <!-- Settings & Auth Modal -->
     <div id="settings-modal" class="modal-backdrop hidden">
       <div class="modal-card">
         <div class="modal-header">
-          <h3>Client Settings</h3>
+          <h3>Client & Authentication Settings</h3>
           <button id="close-settings-btn" class="icon-btn" aria-label="Close">✕</button>
         </div>
         <div class="modal-body">
@@ -99,13 +190,14 @@
             <span class="field-hint">Leave blank to use current browser origin.</span>
           </div>
           <div class="form-field">
-            <label for="auth-token-input">Bearer Auth Token (Optional)</label>
-            <input type="password" id="auth-token-input" placeholder="Bearer token if enabled on server">
-            <span class="field-hint">Required only if AURA_API_KEY_AUTH_ENABLED is active. Stored in session memory only.</span>
+            <label for="auth-token-input">Bearer Authentication Token</label>
+            <input type="password" id="auth-token-input" placeholder="Bearer API token">
+            <span class="field-hint">Required in production or when AURA_API_KEY_AUTH_ENABLED is true. Stored in session memory only.</span>
           </div>
         </div>
         <div class="modal-footer">
-          <button type="button" id="save-settings-btn" class="action-btn primary">Save Settings</button>
+          <button type="button" id="logout-btn" class="action-btn secondary">Clear Session</button>
+          <button type="button" id="save-settings-btn" class="action-btn primary">Save & Connect</button>
         </div>
       </div>
     </div>
