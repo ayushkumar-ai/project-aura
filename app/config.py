@@ -167,6 +167,18 @@ class Settings(BaseSettings):
     aura_persistence_backend: str = "auto"
     aura_legacy_migration_owner_id: str = "default"
 
+    # M43 Production RAG & Vector Retrieval Configuration
+    aura_embedding_provider: str = "mock"
+    aura_embedding_model_name: str = "gemini-embedding-001"
+    aura_embedding_dimension: int = 1536
+    aura_embedding_endpoint_url: str = ""
+    aura_embedding_api_key: str = ""
+    aura_embedding_batch_size: int = 32
+    aura_rag_hybrid_alpha: float = 0.7
+    aura_rag_max_chunks_per_doc: int = 100
+    aura_rag_chunk_size: int = 600
+    aura_rag_chunk_overlap: int = 100
+
     # Self-Healing & Epistemic Distillation Defaults
     aura_auto_heal_on_failure: bool = True
     aura_max_healing_attempts_per_phase: int = 3

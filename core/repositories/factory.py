@@ -17,27 +17,33 @@ from core.repositories.base import (
     BaseCheckpointRepository,
     BaseConversationRepository,
     BaseExperienceRepository,
+    BaseKnowledgeRepository,
     BaseMemoryRepository,
     BaseUserPreferencesRepository,
     BaseUserRepository,
+    BaseVectorSearchRepository,
 )
 from core.repositories.in_memory import (
     InMemoryApiTokenRepository,
     InMemoryCheckpointRepository,
     InMemoryConversationRepository,
     InMemoryExperienceRepository,
+    InMemoryKnowledgeRepository,
     InMemoryMemoryRepository,
     InMemoryUserPreferencesRepository,
     InMemoryUserRepository,
+    InMemoryVectorSearchRepository,
 )
 from core.repositories.postgres import (
     PostgresApiTokenRepository,
     PostgresCheckpointRepository,
     PostgresConversationRepository,
     PostgresExperienceRepository,
+    PostgresKnowledgeRepository,
     PostgresMemoryRepository,
     PostgresUserPreferencesRepository,
     PostgresUserRepository,
+    PostgresVectorSearchRepository,
 )
 
 logger = logging.getLogger("aura.repositories.factory")
@@ -54,6 +60,8 @@ class RepositoryContainer:
     memories: BaseMemoryRepository
     experiences: BaseExperienceRepository
     checkpoints: BaseCheckpointRepository
+    knowledge: BaseKnowledgeRepository
+    vectors: BaseVectorSearchRepository
     db_pool: DatabaseConnectionPool | None = None
     is_postgres: bool = False
 
@@ -67,6 +75,12 @@ def create_in_memory_repositories() -> RepositoryContainer:
     mem_repo = InMemoryMemoryRepository()
     exp_repo = InMemoryExperienceRepository()
     chk_repo = InMemoryCheckpointRepository()
+    know_repo = InMemoryKnowledgeRepository()
+    vec_repo = InMemoryVectorSearchRepository(
+        knowledge_repo=know_repo,
+        memory_repo=mem_repo,
+        experience_repo=exp_repo,
+    )
 
     return RepositoryContainer(
         users=user_repo,
@@ -76,6 +90,8 @@ def create_in_memory_repositories() -> RepositoryContainer:
         memories=mem_repo,
         experiences=exp_repo,
         checkpoints=chk_repo,
+        knowledge=know_repo,
+        vectors=vec_repo,
         db_pool=None,
         is_postgres=False,
     )
@@ -93,6 +109,8 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
     mem_repo = PostgresMemoryRepository(db_pool)
     exp_repo = PostgresExperienceRepository(db_pool)
     chk_repo = PostgresCheckpointRepository(db_pool)
+    know_repo = PostgresKnowledgeRepository(db_pool)
+    vec_repo = PostgresVectorSearchRepository(db_pool)
 
     return RepositoryContainer(
         users=user_repo,
@@ -102,6 +120,8 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
         memories=mem_repo,
         experiences=exp_repo,
         checkpoints=chk_repo,
+        knowledge=know_repo,
+        vectors=vec_repo,
         db_pool=db_pool,
         is_postgres=True,
     )

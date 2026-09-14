@@ -298,3 +298,107 @@ class BaseCheckpointRepository(ABC):
     ) -> bool:
         """Delete a checkpoint."""
         pass
+
+
+class BaseKnowledgeRepository(ABC):
+    """Abstract repository for canonical knowledge documents and chunked texts."""
+
+    @abstractmethod
+    def save_document(
+        self,
+        doc_id: str,
+        title: str,
+        content: str,
+        doc_checksum: str,
+        user_id: str | None = None,
+        visibility: str = "public",
+        authority: str = "verified",
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a knowledge document."""
+        pass
+
+    @abstractmethod
+    def get_document(self, doc_id: str, user_id: str | None = None) -> dict[str, Any] | None:
+        """Fetch a document if visible to user_id (public or owned by user_id)."""
+        pass
+
+    @abstractmethod
+    def delete_document(self, doc_id: str, user_id: str | None = None) -> bool:
+        """Delete a document if owned by user_id."""
+        pass
+
+    @abstractmethod
+    def list_documents(
+        self,
+        user_id: str | None = None,
+        visibility: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """List documents visible to user_id."""
+        pass
+
+    @abstractmethod
+    def save_chunks(self, chunks: list[dict[str, Any]], user_id: str | None = None) -> int:
+        """Batch save document chunks. Returns number of chunks saved."""
+        pass
+
+    @abstractmethod
+    def get_chunks_for_doc(self, doc_id: str, user_id: str | None = None) -> list[dict[str, Any]]:
+        """Fetch all chunks for a document if accessible to user_id."""
+        pass
+
+    @abstractmethod
+    def delete_chunks_for_doc(self, doc_id: str, user_id: str | None = None) -> int:
+        """Delete all chunks for a document."""
+        pass
+
+
+class BaseVectorSearchRepository(ABC):
+    """Abstract repository for vector similarity search across documents, memories, and experiences."""
+
+    @abstractmethod
+    def search_knowledge_chunks(
+        self,
+        query_vector: list[float],
+        user_id: str | None = None,
+        limit: int = 10,
+        min_similarity: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """Find most similar knowledge chunks visible to user_id (owned by user_id or public)."""
+        pass
+
+    @abstractmethod
+    def search_memories(
+        self,
+        query_vector: list[float],
+        user_id: str,
+        limit: int = 10,
+        min_similarity: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """Find most similar memory records strictly owned by user_id."""
+        pass
+
+    @abstractmethod
+    def search_experiences(
+        self,
+        query_vector: list[float],
+        user_id: str,
+        limit: int = 10,
+        min_similarity: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """Find most similar experience records strictly owned by user_id."""
+        pass
+
+    @abstractmethod
+    def update_memory_embedding(self, memory_id: str, user_id: str, embedding: list[float]) -> bool:
+        """Update the embedding vector for a specific memory record."""
+        pass
+
+    @abstractmethod
+    def update_experience_embedding(self, experience_id: str, user_id: str, embedding: list[float]) -> bool:
+        """Update the embedding vector for a specific experience record."""
+        pass
+

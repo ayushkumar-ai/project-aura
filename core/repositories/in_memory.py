@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import threading
 import time
 from typing import Any
@@ -27,9 +28,11 @@ from core.repositories.base import (
     BaseCheckpointRepository,
     BaseConversationRepository,
     BaseExperienceRepository,
+    BaseKnowledgeRepository,
     BaseMemoryRepository,
     BaseUserPreferencesRepository,
     BaseUserRepository,
+    BaseVectorSearchRepository,
 )
 
 
@@ -619,3 +622,287 @@ class InMemoryCheckpointRepository(BaseCheckpointRepository):
                 return False
             del self._checkpoints[checkpoint_id]
             return True
+
+
+def _cosine_similarity(vec_a: list[float] | None, vec_b: list[float] | None) -> float:
+    """Compute cosine similarity between two float vectors."""
+    if not vec_a or not vec_b or len(vec_a) != len(vec_b):
+        return 0.0
+    dot = sum(a * b for a, b in zip(vec_a, vec_b))
+    norm_a = math.sqrt(sum(a * a for a in vec_a))
+    norm_b = math.sqrt(sum(b * b for b in vec_b))
+    if norm_a <= 1e-9 or norm_b <= 1e-9:
+        return 0.0
+    return max(0.0, min(1.0, dot / (norm_a * norm_b)))
+
+
+class InMemoryKnowledgeRepository(BaseKnowledgeRepository):
+    """In-memory knowledge and chunk repository with user isolation and visibility control."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._documents: dict[str, dict[str, Any]] = {}
+        self._chunks: dict[str, dict[str, Any]] = {}
+
+    def save_document(
+        self,
+        doc_id: str,
+        title: str,
+        content: str,
+        doc_checksum: str,
+        user_id: str | None = None,
+        visibility: str = "public",
+        authority: str = "verified",
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            now = time.time()
+            existing = self._documents.get(doc_id)
+            created_at = existing["created_at"] if existing else now
+            doc = {
+                "id": doc_id,
+                "user_id": user_id,
+                "title": title,
+                "content": content,
+                "doc_checksum": doc_checksum,
+                "visibility": visibility.lower(),
+                "authority": authority,
+                "tags": list(tags or []),
+                "metadata": dict(metadata or {}),
+                "created_at": created_at,
+                "updated_at": now,
+            }
+            self._documents[doc_id] = doc
+            return dict(doc)
+
+    def get_document(self, doc_id: str, user_id: str | None = None) -> dict[str, Any] | None:
+        with self._lock:
+            doc = self._documents.get(doc_id)
+            if not doc:
+                return None
+            vis = doc.get("visibility", "public")
+            doc_uid = doc.get("user_id")
+            if vis == "public":
+                return dict(doc)
+            if user_id is not None and doc_uid == user_id:
+                return dict(doc)
+            return None
+
+    def delete_document(self, doc_id: str, user_id: str | None = None) -> bool:
+        with self._lock:
+            doc = self._documents.get(doc_id)
+            if not doc:
+                return False
+            if user_id is not None and doc.get("user_id") is not None and doc.get("user_id") != user_id:
+                return False
+            del self._documents[doc_id]
+            # Cascade delete chunks
+            to_delete = [cid for cid, chk in self._chunks.items() if chk.get("doc_id") == doc_id]
+            for cid in to_delete:
+                del self._chunks[cid]
+            return True
+
+    def list_documents(
+        self,
+        user_id: str | None = None,
+        visibility: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            results = []
+            for doc in self._documents.values():
+                vis = doc.get("visibility", "public")
+                doc_uid = doc.get("user_id")
+                if visibility and vis != visibility:
+                    continue
+                if vis == "public" or (user_id is not None and doc_uid == user_id):
+                    results.append(dict(doc))
+            results.sort(key=lambda x: x["created_at"], reverse=True)
+            return results[offset : offset + limit]
+
+    def save_chunks(self, chunks: list[dict[str, Any]], user_id: str | None = None) -> int:
+        with self._lock:
+            saved = 0
+            for c in chunks:
+                cid = c["id"]
+                self._chunks[cid] = {
+                    "id": cid,
+                    "doc_id": c["doc_id"],
+                    "user_id": c.get("user_id") or user_id,
+                    "chunk_index": c["chunk_index"],
+                    "content": c["content"],
+                    "char_start": c.get("char_start", 0),
+                    "char_end": c.get("char_end", 0),
+                    "chunk_hash": c.get("chunk_hash", ""),
+                    "embedding": list(c["embedding"]) if c.get("embedding") is not None else None,
+                    "metadata": dict(c.get("metadata", {})),
+                    "created_at": time.time(),
+                }
+                saved += 1
+            return saved
+
+    def get_chunks_for_doc(self, doc_id: str, user_id: str | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            doc = self.get_document(doc_id, user_id=user_id)
+            if not doc:
+                return []
+            results = [dict(c) for c in self._chunks.values() if c.get("doc_id") == doc_id]
+            results.sort(key=lambda x: x["chunk_index"])
+            return results
+
+    def delete_chunks_for_doc(self, doc_id: str, user_id: str | None = None) -> int:
+        with self._lock:
+            to_delete = [cid for cid, chk in self._chunks.items() if chk.get("doc_id") == doc_id]
+            for cid in to_delete:
+                del self._chunks[cid]
+            return len(to_delete)
+
+
+class InMemoryVectorSearchRepository(BaseVectorSearchRepository):
+    """In-memory vector similarity search repository with strict multi-tenant isolation."""
+
+    def __init__(
+        self,
+        knowledge_repo: InMemoryKnowledgeRepository | None = None,
+        memory_repo: InMemoryMemoryRepository | None = None,
+        experience_repo: InMemoryExperienceRepository | None = None,
+    ) -> None:
+        self._lock = threading.RLock()
+        self._knowledge_repo = knowledge_repo or InMemoryKnowledgeRepository()
+        self._memory_repo = memory_repo or InMemoryMemoryRepository()
+        self._experience_repo = experience_repo or InMemoryExperienceRepository()
+        # memory_id -> (user_id, embedding)
+        self._memory_embeddings: dict[str, tuple[str, list[float]]] = {}
+        # experience_id -> (user_id, embedding)
+        self._experience_embeddings: dict[str, tuple[str, list[float]]] = {}
+
+    def search_knowledge_chunks(
+        self,
+        query_vector: list[float],
+        user_id: str | None = None,
+        limit: int = 10,
+        min_similarity: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            results: list[dict[str, Any]] = []
+            for chk in self._knowledge_repo._chunks.values():
+                doc_id = chk.get("doc_id")
+                doc = self._knowledge_repo._documents.get(doc_id)
+                if not doc:
+                    continue
+
+                vis = doc.get("visibility", "public")
+                chunk_uid = chk.get("user_id") or doc.get("user_id")
+
+                # Multi-tenant isolation filter:
+                # Chunk matches if user_id matches OR (doc is public and user_id is None / any)
+                is_accessible = False
+                if vis == "public" and (chunk_uid is None or user_id is None or chunk_uid == user_id):
+                    is_accessible = True
+                elif user_id is not None and chunk_uid == user_id:
+                    is_accessible = True
+
+                if not is_accessible:
+                    continue
+
+                embedding = chk.get("embedding")
+                if not embedding:
+                    continue
+
+                sim = _cosine_similarity(query_vector, embedding)
+                if sim >= min_similarity:
+                    item = dict(chk)
+                    item["similarity"] = sim
+                    item["score"] = sim
+                    item["title"] = doc.get("title", "")
+                    item["authority"] = doc.get("authority", "verified")
+                    item["tags"] = doc.get("tags", [])
+                    results.append(item)
+
+            results.sort(key=lambda x: x["similarity"], reverse=True)
+            return results[:limit]
+
+    def search_memories(
+        self,
+        query_vector: list[float],
+        user_id: str,
+        limit: int = 10,
+        min_similarity: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            results: list[dict[str, Any]] = []
+            for mem_id, (m_uid, emb) in self._memory_embeddings.items():
+                if m_uid != user_id:
+                    continue
+                mem = self._memory_repo.get_memory(mem_id, user_id=user_id)
+                if not mem:
+                    continue
+                sim = _cosine_similarity(query_vector, emb)
+                if sim >= min_similarity:
+                    results.append({
+                        "memory_id": mem.record_id,
+                        "user_id": user_id,
+                        "category": mem.category.value,
+                        "content": mem.content,
+                        "confidence": mem.confidence,
+                        "importance": mem.importance,
+                        "tags": mem.tags,
+                        "similarity": sim,
+                        "score": sim * mem.confidence,
+                        "metadata": mem.metadata,
+                    })
+
+            results.sort(key=lambda x: x["similarity"], reverse=True)
+            return results[:limit]
+
+    def search_experiences(
+        self,
+        query_vector: list[float],
+        user_id: str,
+        limit: int = 10,
+        min_similarity: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            results: list[dict[str, Any]] = []
+            for exp_id, (e_uid, emb) in self._experience_embeddings.items():
+                if e_uid != user_id:
+                    continue
+                exp = self._experience_repo.get_experience(exp_id, user_id=user_id)
+                if not exp:
+                    continue
+                sim = _cosine_similarity(query_vector, emb)
+                if sim >= min_similarity:
+                    results.append({
+                        "experience_id": exp.experience_id,
+                        "user_id": user_id,
+                        "task_description": exp.task_description,
+                        "plan_summary": exp.plan_summary,
+                        "outcome": exp.outcome,
+                        "reward_score": exp.reward_score,
+                        "lessons_learned": exp.lessons_learned,
+                        "similarity": sim,
+                        "score": sim * max(0.1, exp.reward_score),
+                        "metadata": exp.metadata,
+                    })
+
+            results.sort(key=lambda x: x["similarity"], reverse=True)
+            return results[:limit]
+
+    def update_memory_embedding(self, memory_id: str, user_id: str, embedding: list[float]) -> bool:
+        with self._lock:
+            mem = self._memory_repo.get_memory(memory_id, user_id=user_id)
+            if not mem:
+                return False
+            self._memory_embeddings[memory_id] = (user_id, list(embedding))
+            return True
+
+    def update_experience_embedding(self, experience_id: str, user_id: str, embedding: list[float]) -> bool:
+        with self._lock:
+            exp = self._experience_repo.get_experience(experience_id, user_id=user_id)
+            if not exp:
+                return False
+            self._experience_embeddings[experience_id] = (user_id, list(embedding))
+            return True
+

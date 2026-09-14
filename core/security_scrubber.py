@@ -32,16 +32,29 @@ API_KEY_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+# Regex pattern matching connection URL credentials (e.g. postgres://user:password@host)
+PASSWORD_URL_REGEX = re.compile(r"(://[^:\s]+):([^@\s]+)@", re.IGNORECASE)
+
+# Regex pattern matching inline key-value credentials (e.g. password: secret123, api_key: secret456)
+INLINE_SECRET_REGEX = re.compile(
+    r"(password|secret|token|api[_-]?key|auth_token)\s*[:=]\s*['\"]?([^\s'\",;]{4,})['\"]?",
+    re.IGNORECASE,
+)
+
 REDACTED_STR = "[REDACTED]"
 
 
 def scrub_string(text: str) -> str:
-    """Scrub sensitive patterns such as API keys and tokens from a text string."""
+    """Scrub sensitive patterns such as API keys, passwords, and URL credentials from a text string."""
     if not isinstance(text, str) or not text:
         return text
 
     # Redact known API key formats
     scrubbed = API_KEY_REGEX.sub(lambda m: f"{m.group(0)[:6]}...{REDACTED_STR}", text)
+    # Redact connection URL credentials
+    scrubbed = PASSWORD_URL_REGEX.sub(r"\1:[REDACTED]@", scrubbed)
+    # Redact inline credentials
+    scrubbed = INLINE_SECRET_REGEX.sub(r"\1: [REDACTED]", scrubbed)
     return scrubbed
 
 

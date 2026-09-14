@@ -27,9 +27,11 @@ from core.repositories.base import (
     BaseCheckpointRepository,
     BaseConversationRepository,
     BaseExperienceRepository,
+    BaseKnowledgeRepository,
     BaseMemoryRepository,
     BaseUserPreferencesRepository,
     BaseUserRepository,
+    BaseVectorSearchRepository,
 )
 
 logger = logging.getLogger("aura.repositories.postgres")
@@ -1078,3 +1080,399 @@ class PostgresCheckpointRepository(BaseCheckpointRepository):
                         (checkpoint_id, user_id),
                     )
                 return cur.rowcount > 0
+
+
+def _format_vector(vec: list[float] | None) -> str | None:
+    """Format float list into PostgreSQL vector string literal syntax '[0.1,0.2,...]'."""
+    if vec is None:
+        return None
+    return "[" + ",".join(str(float(x)) for x in vec) + "]"
+
+
+class PostgresKnowledgeRepository(BaseKnowledgeRepository):
+    """PostgreSQL knowledge document and chunk repository with user isolation."""
+
+    def __init__(self, pool: DatabaseConnectionPool) -> None:
+        self.pool = pool
+
+    def save_document(
+        self,
+        doc_id: str,
+        title: str,
+        content: str,
+        doc_checksum: str,
+        user_id: str | None = None,
+        visibility: str = "public",
+        authority: str = "verified",
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        tags_json = json.dumps(list(tags or []))
+        meta_json = json.dumps(dict(metadata or {}))
+        vis = visibility.lower().strip()
+
+        with self.pool.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO knowledge_documents (
+                        id, user_id, title, content, doc_checksum,
+                        visibility, authority, tags, metadata, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, CURRENT_TIMESTAMP)
+                    ON CONFLICT (id) DO UPDATE SET
+                        user_id = EXCLUDED.user_id,
+                        title = EXCLUDED.title,
+                        content = EXCLUDED.content,
+                        doc_checksum = EXCLUDED.doc_checksum,
+                        visibility = EXCLUDED.visibility,
+                        authority = EXCLUDED.authority,
+                        tags = EXCLUDED.tags,
+                        metadata = EXCLUDED.metadata,
+                        updated_at = CURRENT_TIMESTAMP
+                    RETURNING id, user_id, title, content, doc_checksum, visibility, authority, tags, metadata,
+                              EXTRACT(EPOCH FROM created_at) as created_at,
+                              EXTRACT(EPOCH FROM updated_at) as updated_at;
+                    """,
+                    (doc_id, user_id, title, content, doc_checksum, vis, authority, tags_json, meta_json),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise RuntimeError("Failed to insert or update knowledge document.")
+                item = dict(row)
+                if isinstance(item.get("tags"), str):
+                    item["tags"] = json.loads(item["tags"])
+                if isinstance(item.get("metadata"), str):
+                    item["metadata"] = json.loads(item["metadata"])
+                return item
+
+    def get_document(self, doc_id: str, user_id: str | None = None) -> dict[str, Any] | None:
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, user_id, title, content, doc_checksum, visibility, authority, tags, metadata,
+                           EXTRACT(EPOCH FROM created_at) as created_at,
+                           EXTRACT(EPOCH FROM updated_at) as updated_at
+                    FROM knowledge_documents
+                    WHERE id = %s
+                      AND (visibility = 'public' OR (%s IS NOT NULL AND user_id = %s));
+                    """,
+                    (doc_id, user_id, user_id),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                item = dict(row)
+                if isinstance(item.get("tags"), str):
+                    item["tags"] = json.loads(item["tags"])
+                if isinstance(item.get("metadata"), str):
+                    item["metadata"] = json.loads(item["metadata"])
+                return item
+
+    def delete_document(self, doc_id: str, user_id: str | None = None) -> bool:
+        with self.pool.transaction() as conn:
+            with conn.cursor() as cur:
+                if user_id is None:
+                    cur.execute(
+                        "DELETE FROM knowledge_documents WHERE id = %s AND user_id IS NULL;",
+                        (doc_id,),
+                    )
+                else:
+                    cur.execute(
+                        "DELETE FROM knowledge_documents WHERE id = %s AND user_id = %s;",
+                        (doc_id, user_id),
+                    )
+                return cur.rowcount > 0
+
+    def list_documents(
+        self,
+        user_id: str | None = None,
+        visibility: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        query_sql = """
+            SELECT id, user_id, title, content, doc_checksum, visibility, authority, tags, metadata,
+                   EXTRACT(EPOCH FROM created_at) as created_at,
+                   EXTRACT(EPOCH FROM updated_at) as updated_at
+            FROM knowledge_documents
+            WHERE (visibility = 'public' OR (%s IS NOT NULL AND user_id = %s))
+        """
+        params: list[Any] = [user_id, user_id]
+
+        if visibility:
+            query_sql += " AND visibility = %s"
+            params.append(visibility.lower())
+
+        query_sql += " ORDER BY created_at DESC LIMIT %s OFFSET %s;"
+        params.extend([limit, offset])
+
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query_sql, tuple(params))
+                rows = []
+                for r in cur.fetchall():
+                    item = dict(r)
+                    if isinstance(item.get("tags"), str):
+                        item["tags"] = json.loads(item["tags"])
+                    if isinstance(item.get("metadata"), str):
+                        item["metadata"] = json.loads(item["metadata"])
+                    rows.append(item)
+                return rows
+
+    def save_chunks(self, chunks: list[dict[str, Any]], user_id: str | None = None) -> int:
+        if not chunks:
+            return 0
+
+        saved = 0
+        with self.pool.transaction() as conn:
+            with conn.cursor() as cur:
+                for c in chunks:
+                    cid = c["id"]
+                    doc_id = c["doc_id"]
+                    uid = c.get("user_id") or user_id
+                    c_idx = c["chunk_index"]
+                    content = c["content"]
+                    c_start = c.get("char_start", 0)
+                    c_end = c.get("char_end", 0)
+                    c_hash = c.get("chunk_hash", "")
+                    vec_str = _format_vector(c.get("embedding"))
+                    meta_json = json.dumps(dict(c.get("metadata", {})))
+
+                    if vec_str:
+                        cur.execute(
+                            """
+                            INSERT INTO document_chunks (
+                                id, doc_id, user_id, chunk_index, content,
+                                char_start, char_end, chunk_hash, embedding, metadata
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s::jsonb)
+                            ON CONFLICT (id) DO UPDATE SET
+                                content = EXCLUDED.content,
+                                char_start = EXCLUDED.char_start,
+                                char_end = EXCLUDED.char_end,
+                                chunk_hash = EXCLUDED.chunk_hash,
+                                embedding = EXCLUDED.embedding,
+                                metadata = EXCLUDED.metadata;
+                            """,
+                            (cid, doc_id, uid, c_idx, content, c_start, c_end, c_hash, vec_str, meta_json),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            INSERT INTO document_chunks (
+                                id, doc_id, user_id, chunk_index, content,
+                                char_start, char_end, chunk_hash, embedding, metadata
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s::jsonb)
+                            ON CONFLICT (id) DO UPDATE SET
+                                content = EXCLUDED.content,
+                                char_start = EXCLUDED.char_start,
+                                char_end = EXCLUDED.char_end,
+                                chunk_hash = EXCLUDED.chunk_hash,
+                                embedding = EXCLUDED.embedding,
+                                metadata = EXCLUDED.metadata;
+                            """,
+                            (cid, doc_id, uid, c_idx, content, c_start, c_end, c_hash, meta_json),
+                        )
+                    saved += 1
+        return saved
+
+    def get_chunks_for_doc(self, doc_id: str, user_id: str | None = None) -> list[dict[str, Any]]:
+        # Verify access to parent document first
+        doc = self.get_document(doc_id, user_id=user_id)
+        if not doc:
+            return []
+
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, doc_id, user_id, chunk_index, content,
+                           char_start, char_end, chunk_hash, metadata,
+                           EXTRACT(EPOCH FROM created_at) as created_at
+                    FROM document_chunks
+                    WHERE doc_id = %s
+                    ORDER BY chunk_index ASC;
+                    """,
+                    (doc_id,),
+                )
+                rows = []
+                for r in cur.fetchall():
+                    item = dict(r)
+                    if isinstance(item.get("metadata"), str):
+                        item["metadata"] = json.loads(item["metadata"])
+                    rows.append(item)
+                return rows
+
+    def delete_chunks_for_doc(self, doc_id: str, user_id: str | None = None) -> int:
+        with self.pool.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM document_chunks WHERE doc_id = %s;", (doc_id,))
+                return cur.rowcount
+
+
+class PostgresVectorSearchRepository(BaseVectorSearchRepository):
+    """PostgreSQL pgvector similarity search repository with strict multi-tenant boundary."""
+
+    def __init__(self, pool: DatabaseConnectionPool) -> None:
+        self.pool = pool
+
+    def search_knowledge_chunks(
+        self,
+        query_vector: list[float],
+        user_id: str | None = None,
+        limit: int = 10,
+        min_similarity: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        vec_str = _format_vector(query_vector)
+        if not vec_str:
+            return []
+
+        query_sql = """
+            SELECT c.id, c.doc_id, c.user_id, c.chunk_index, c.content,
+                   c.char_start, c.char_end, c.chunk_hash, c.metadata,
+                   d.title, d.authority, d.tags, d.visibility,
+                   (1.0 - (c.embedding <=> %s::vector)) AS similarity
+            FROM document_chunks c
+            JOIN knowledge_documents d ON c.doc_id = d.id
+            WHERE c.embedding IS NOT NULL
+              AND (d.visibility = 'public' OR (%s IS NOT NULL AND c.user_id = %s))
+              AND (1.0 - (c.embedding <=> %s::vector)) >= %s
+            ORDER BY c.embedding <=> %s::vector ASC
+            LIMIT %s;
+        """
+        params = (vec_str, user_id, user_id, vec_str, min_similarity, vec_str, limit)
+
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query_sql, params)
+                rows = []
+                for r in cur.fetchall():
+                    item = dict(r)
+                    if isinstance(item.get("tags"), str):
+                        item["tags"] = json.loads(item["tags"])
+                    if isinstance(item.get("metadata"), str):
+                        item["metadata"] = json.loads(item["metadata"])
+                    item["score"] = float(item["similarity"])
+                    rows.append(item)
+                return rows
+
+    def search_memories(
+        self,
+        query_vector: list[float],
+        user_id: str,
+        limit: int = 10,
+        min_similarity: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        vec_str = _format_vector(query_vector)
+        if not vec_str:
+            return []
+
+        query_sql = """
+            SELECT id AS memory_id, user_id, category, content, confidence, importance,
+                   tags, provenance, metadata,
+                   (1.0 - (embedding <=> %s::vector)) AS similarity
+            FROM user_memories
+            WHERE user_id = %s
+              AND embedding IS NOT NULL
+              AND (1.0 - (embedding <=> %s::vector)) >= %s
+            ORDER BY embedding <=> %s::vector ASC
+            LIMIT %s;
+        """
+        params = (vec_str, user_id, vec_str, min_similarity, vec_str, limit)
+
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query_sql, params)
+                rows = []
+                for r in cur.fetchall():
+                    item = dict(r)
+                    if isinstance(item.get("tags"), str):
+                        item["tags"] = json.loads(item["tags"])
+                    if isinstance(item.get("metadata"), str):
+                        item["metadata"] = json.loads(item["metadata"])
+                    if isinstance(item.get("provenance"), str):
+                        item["provenance"] = json.loads(item["provenance"])
+                    sim = float(item["similarity"])
+                    item["score"] = sim * float(item.get("confidence", 1.0))
+                    rows.append(item)
+                return rows
+
+    def search_experiences(
+        self,
+        query_vector: list[float],
+        user_id: str,
+        limit: int = 10,
+        min_similarity: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        vec_str = _format_vector(query_vector)
+        if not vec_str:
+            return []
+
+        query_sql = """
+            SELECT id AS experience_id, user_id, task_description, plan_summary,
+                   action_sequence, outcome, reward_score, lessons_learned,
+                   provenance, metadata,
+                   (1.0 - (embedding <=> %s::vector)) AS similarity
+            FROM user_experiences
+            WHERE user_id = %s
+              AND embedding IS NOT NULL
+              AND (1.0 - (embedding <=> %s::vector)) >= %s
+            ORDER BY embedding <=> %s::vector ASC
+            LIMIT %s;
+        """
+        params = (vec_str, user_id, vec_str, min_similarity, vec_str, limit)
+
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query_sql, params)
+                rows = []
+                for r in cur.fetchall():
+                    item = dict(r)
+                    if isinstance(item.get("action_sequence"), str):
+                        item["action_sequence"] = json.loads(item["action_sequence"])
+                    if isinstance(item.get("lessons_learned"), str):
+                        item["lessons_learned"] = json.loads(item["lessons_learned"])
+                    if isinstance(item.get("metadata"), str):
+                        item["metadata"] = json.loads(item["metadata"])
+                    if isinstance(item.get("provenance"), str):
+                        item["provenance"] = json.loads(item["provenance"])
+                    sim = float(item["similarity"])
+                    reward = float(item.get("reward_score", 1.0))
+                    item["score"] = sim * max(0.1, reward)
+                    rows.append(item)
+                return rows
+
+    def update_memory_embedding(self, memory_id: str, user_id: str, embedding: list[float]) -> bool:
+        vec_str = _format_vector(embedding)
+        if not vec_str:
+            return False
+
+        with self.pool.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE user_memories
+                    SET embedding = %s::vector
+                    WHERE id = %s AND user_id = %s;
+                    """,
+                    (vec_str, memory_id, user_id),
+                )
+                return cur.rowcount > 0
+
+    def update_experience_embedding(self, experience_id: str, user_id: str, embedding: list[float]) -> bool:
+        vec_str = _format_vector(embedding)
+        if not vec_str:
+            return False
+
+        with self.pool.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE user_experiences
+                    SET embedding = %s::vector
+                    WHERE id = %s AND user_id = %s;
+                    """,
+                    (vec_str, experience_id, user_id),
+                )
+                return cur.rowcount > 0
+
