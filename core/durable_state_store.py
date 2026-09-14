@@ -232,6 +232,10 @@ class DurablePersonalStateStore:
     def create_snapshot(self) -> PersonalStateSnapshot:
         """Build an in-memory snapshot sealed with a SHA256 checksum."""
         with self._lock:
+            meta = dict(self._metadata)
+            meta["user_preferences_map"] = {
+                uid: p.to_dict() for uid, p in self._user_preferences.items()
+            }
             snap = PersonalStateSnapshot(
                 snapshot_id=f"snap_{uuid4().hex[:12]}",
                 schema_version=StateSchemaVersion.CURRENT,
@@ -241,7 +245,7 @@ class DurablePersonalStateStore:
                 episodic_experiences=list(self._experiences.values()),
                 knowledge_entity_ids=list(self._knowledge_entity_ids),
                 artifact_ids=list(self._artifact_ids),
-                metadata=dict(self._metadata),
+                metadata=meta,
                 provenance=dict(self._provenance),
             )
             snap.seal()
@@ -271,8 +275,21 @@ class DurablePersonalStateStore:
                 with tempfile.NamedTemporaryFile("wb", dir=str(self.storage_dir), delete=False) as tf:
                     tf.write(raw_json)
                     temp_file = Path(tf.name)
-                # Atomic replace
-                temp_file.replace(target_path)
+                # Atomic replace with retry for Windows file locking resilience
+                max_retries = 5
+                for attempt in range(max_retries):
+                    try:
+                        temp_file.replace(target_path)
+                        break
+                    except (PermissionError, OSError) as pe:
+                        if attempt == max_retries - 1:
+                            # Final attempt: try shutil.move
+                            try:
+                                shutil.move(str(temp_file), str(target_path))
+                                break
+                            except Exception:
+                                raise pe
+                        time.sleep(0.02 * (attempt + 1))
                 logger.debug(f"Saved state snapshot '{snap.snapshot_id}' to {target_path}")
                 return snap.snapshot_id
             except Exception as e:
@@ -314,6 +331,11 @@ class DurablePersonalStateStore:
         """Apply a loaded snapshot to in-memory state with schema handling."""
         self._preferences = snap.user_preferences
         self._user_preferences = {"default": snap.user_preferences}
+        if snap.user_preferences and snap.user_preferences.user_id:
+            self._user_preferences[snap.user_preferences.user_id] = snap.user_preferences
+        if snap.metadata and "user_preferences_map" in snap.metadata:
+            for uid, p_data in snap.metadata["user_preferences_map"].items():
+                self._user_preferences[uid] = UserPreferences.from_dict(p_data)
         self._memories = {m.record_id: m for m in snap.memory_records}
         self._experiences = {e.experience_id: e for e in snap.episodic_experiences}
         self._knowledge_entity_ids = set(snap.knowledge_entity_ids)

@@ -38,6 +38,7 @@ from core.models import AURARequest
 from core.security_scrubber import sanitize_error_message, scrub_dict
 from core.identity import UserIdentity, UserRole, UserScope, create_anonymous_identity, create_dev_identity
 from core.auth import BaseAuthenticator, TokenAuthenticator, create_token_authenticator
+from core.repositories.factory import create_repository_container, RepositoryContainer
 
 logger = logging.getLogger("aura.server")
 
@@ -115,14 +116,17 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "serialization_error", "Failed to encode response")
             return
 
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self._set_cors_headers()
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status.value if isinstance(status, HTTPStatus) else status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self._set_cors_headers()
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError) as e:
+            logger.debug(f"Client disconnected before response could be sent: {e}")
 
     def _drain_body(self) -> None:
         """Safely drain bounded unread request body from socket to prevent TCP RST on early error."""
@@ -269,14 +273,17 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             content_type = content_types.get(target_file.suffix.lower(), "application/octet-stream")
 
             body = target_file.read_bytes()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self._set_cors_headers()
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("X-Frame-Options", "DENY")
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self._set_cors_headers()
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Frame-Options", "DENY")
+                self.end_headers()
+                self.wfile.write(body)
+            except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError) as ce:
+                logger.debug(f"Client disconnected during static file delivery: {ce}")
         except Exception as e:
             logger.error(f"Error serving static file {clean_rel}: {e}")
             self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "file_error", "Error reading static file")
@@ -309,19 +316,28 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/ready":
             is_ready = self.aura is not None and self.aura.orchestrator is not None
+            db_status = "ok"
+            rep_container = getattr(self.server, "repository_container", None)
+            if rep_container is not None and rep_container.db_pool is not None:
+                db_health = rep_container.db_pool.check_health()
+                if not db_health.get("connected", False):
+                    is_ready = False
+                    db_status = db_health.get("error", "database_unreachable")
+
             if is_ready:
                 self._send_json_response({
                     "status": "ready",
                     "ready": True,
                     "model_provider": self.config.aura_model_provider or "default",
                     "agentic_enabled": self.aura.agentic_runtime is not None,
+                    "database": db_status,
                     "timestamp": time.time(),
                 })
             else:
                 self._send_error_response(
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     "not_ready",
-                    "AURA runtime is initializing or degraded",
+                    f"AURA runtime is initializing or degraded (database: {db_status})",
                 )
             return
 
@@ -615,12 +631,23 @@ class AURAHTTPServer:
         host: str | None = None,
         port: int | None = None,
         authenticator: BaseAuthenticator | None = None,
+        repository_container: RepositoryContainer | None = None,
     ):
         self.config = config or settings
         self.aura = aura or create_aura(agentic=True, config=self.config)
         self.host = host or self.config.aura_server_host
         self.port = port if port is not None else self.config.aura_server_port
-        self.authenticator = authenticator or create_token_authenticator(master_key=self.config.aura_server_api_key)
+        self.repository_container = (
+            repository_container
+            or create_repository_container(
+                config=self.config,
+                auto_migrate=getattr(self.config, "aura_database_auto_migrate", True),
+            )
+        )
+        self.authenticator = authenticator or create_token_authenticator(
+            master_key=self.config.aura_server_api_key,
+            token_repo=self.repository_container.tokens,
+        )
         self.start_time = time.time()
         self._server: ThreadedHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -634,6 +661,7 @@ class AURAHTTPServer:
         self._server.config = self.config  # type: ignore
         self._server.start_time = self.start_time  # type: ignore
         self._server.authenticator = self.authenticator  # type: ignore
+        self._server.repository_container = self.repository_container  # type: ignore
         self._is_running = True
 
         logger.info(
@@ -670,6 +698,12 @@ class AURAHTTPServer:
                 self.aura.stop_daemon(timeout=self.config.aura_shutdown_grace_period_seconds)
             except Exception:
                 pass
+
+        if self.repository_container and self.repository_container.db_pool:
+            try:
+                self.repository_container.db_pool.close()
+            except Exception as e:
+                logger.warning(f"Error closing db_pool: {e}")
 
         if self._server:
             self._server.shutdown()

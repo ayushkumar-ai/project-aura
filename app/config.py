@@ -158,6 +158,15 @@ class Settings(BaseSettings):
     aura_skills_storage_dir: str = ".aura_skills"
     aura_knowledge_storage_dir: str = ".aura_knowledge"
 
+    # M42 Relational Persistence & Database Configuration
+    aura_database_url: str = ""
+    aura_database_pool_min_connections: int = 1
+    aura_database_pool_max_connections: int = 10
+    aura_database_pool_timeout_seconds: float = 30.0
+    aura_database_auto_migrate: bool = True
+    aura_persistence_backend: str = "auto"
+    aura_legacy_migration_owner_id: str = "default"
+
     # Self-Healing & Epistemic Distillation Defaults
     aura_auto_heal_on_failure: bool = True
     aura_max_healing_attempts_per_phase: int = 3
