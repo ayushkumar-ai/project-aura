@@ -49,6 +49,19 @@ from core.telemetry_context import (
 from core.metrics import get_metrics_registry
 from core.security_audit import SecurityEventType, get_security_audit_logger
 from core.structured_logger import configure_structured_logging
+from pydantic import ValidationError
+from core.api_contracts import (
+    RunRequestSchema,
+    TaskRequestSchema,
+    PreferencesUpdateRequestSchema,
+    RAGQueryRequestSchema,
+    PlanRequestSchema,
+    ToolExecutionRequestSchema,
+    ProactiveActionRequestSchema,
+    DeviceActionRequestSchema,
+    CycleRequestSchema,
+)
+from core.config_validator import validate_production_config
 
 logger = logging.getLogger("aura.server")
 
@@ -587,12 +600,14 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         user_id = identity.user_id if identity else "default"
 
         if path == "/v1/run":
-            user_input = body.get("user_input") or body.get("prompt")
-            if not user_input or not isinstance(user_input, str):
-                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", "Field 'user_input' or 'prompt' is required")
+            try:
+                parsed_req = RunRequestSchema.model_validate(body)
+                user_input = parsed_req.get_prompt_text()
+            except (ValidationError, ValueError) as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
                 return
 
-            metadata = body.get("metadata", {})
+            metadata = parsed_req.metadata
             import uuid
             try:
                 eff_uuid = UUID(self.request_id)
@@ -613,18 +628,17 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/task":
-            task = body.get("task")
-            if not task or not isinstance(task, str):
-                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", "Field 'task' is required")
+            try:
+                task_schema = TaskRequestSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
                 return
 
-            task_id = body.get("task_id")
-            timeout = body.get("timeout")
             try:
-                result = self.aura.run_task(task=task, task_id=task_id, timeout=timeout)
+                result = self.aura.run_task(task=task_schema.task, task_id=task_schema.task_id, timeout=task_schema.timeout)
                 self._send_json_response({
-                    "task": task,
-                    "task_id": task_id,
+                    "task": task_schema.task,
+                    "task_id": task_schema.task_id,
                     "result": str(result),
                     "status": "completed",
                     "timestamp": time.time(),
@@ -636,56 +650,80 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/v1/preferences":
             try:
+                PreferencesUpdateRequestSchema.model_validate(body)
                 updated = self.aura.update_user_preferences(body, user_id=user_id)
                 self._send_json_response(updated.to_dict() if hasattr(updated, "to_dict") else updated)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
             except Exception as e:
                 self._send_error_response(HTTPStatus.BAD_REQUEST, "preference_update_error", str(e))
             return
 
         if path == "/v1/rag":
-            query = body.get("query", "")
-            max_chars = int(body.get("max_chars", 4000))
             try:
-                bundle = self.aura.retrieve_rag_context(query=query, max_chars=max_chars, user_id=user_id)
+                rag_schema = RAGQueryRequestSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                bundle = self.aura.retrieve_rag_context(query=rag_schema.query, max_chars=rag_schema.max_chars, user_id=user_id)
                 self._send_json_response(bundle.to_dict() if hasattr(bundle, "to_dict") else bundle)
             except Exception as e:
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "rag_error", str(e))
             return
 
         if path == "/v1/plan":
-            goal = body.get("goal", "")
             try:
-                plan = self.aura.create_structured_plan(goal=goal)
+                plan_schema = PlanRequestSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                plan = self.aura.create_structured_plan(goal=plan_schema.goal)
                 self._send_json_response(plan.to_dict() if hasattr(plan, "to_dict") else plan)
             except Exception as e:
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "planning_error", str(e))
             return
 
         if path == "/v1/tools/execute":
-            tool_name = body.get("tool_name", "")
-            parameters = body.get("parameters", {})
-            caller = body.get("caller", "agent")
             try:
-                result = self.aura.execute_ecosystem_tool(tool_name=tool_name, parameters=parameters, caller=caller)
+                tool_schema = ToolExecutionRequestSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                result = self.aura.execute_ecosystem_tool(tool_name=tool_schema.tool_name, parameters=tool_schema.parameters, caller=tool_schema.caller)
                 self._send_json_response(result.to_dict() if hasattr(result, "to_dict") else result)
             except Exception as e:
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "tool_execution_error", str(e))
             return
 
         if path == "/v1/proactive/approve":
-            proposal_id = body.get("proposal_id", "")
             try:
-                prop = self.aura.approve_proactive_proposal(proposal_id)
+                act_schema = ProactiveActionRequestSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                prop = self.aura.approve_proactive_proposal(act_schema.proposal_id)
                 self._send_json_response(prop.to_dict() if hasattr(prop, "to_dict") else prop)
             except Exception as e:
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "approval_error", str(e))
             return
 
         if path == "/v1/proactive/reject":
-            proposal_id = body.get("proposal_id", "")
-            reason = body.get("reason", "")
             try:
-                prop = self.aura.reject_proactive_proposal(proposal_id, reason=reason)
+                act_schema = ProactiveActionRequestSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                prop = self.aura.reject_proactive_proposal(act_schema.proposal_id, reason=act_schema.reason or "")
                 self._send_json_response(prop.to_dict() if hasattr(prop, "to_dict") else prop)
             except Exception as e:
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "rejection_error", str(e))
@@ -695,13 +733,17 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             if identity and not (identity.has_role(UserRole.ADMIN) or identity.has_role(UserRole.OPERATOR) or identity.has_scope(UserScope.DEVICE_EXEC.value)):
                 self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Insufficient permission for device execution")
                 return
-            device_id = body.get("device_id", "")
-            capability = body.get("capability", "")
-            parameters = body.get("parameters", {})
+
+            try:
+                dev_schema = DeviceActionRequestSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
             try:
                 from core.device_integration_types import DeviceCapability
-                cap_enum = DeviceCapability(capability) if isinstance(capability, str) else capability
-                act_res = self.aura.execute_device_action(device_id=device_id, capability=cap_enum, parameters=parameters)
+                cap_enum = DeviceCapability(dev_schema.capability) if isinstance(dev_schema.capability, str) else dev_schema.capability
+                act_res = self.aura.execute_device_action(device_id=dev_schema.device_id, capability=cap_enum, parameters=dev_schema.parameters)
                 self._send_json_response(act_res.to_dict() if hasattr(act_res, "to_dict") else act_res)
             except Exception as e:
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "device_action_error", str(e))
@@ -716,11 +758,15 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/cycle":
-            user_input = body.get("user_input") or body.get("prompt") or body.get("goal", "")
-            task_id = body.get("task_id")
-            auto_sync = body.get("auto_sync", True)
             try:
-                cycle_res = self.aura.execute_integrated_cycle(user_input=user_input, task_id=task_id, auto_sync=auto_sync)
+                cycle_schema = CycleRequestSchema.model_validate(body)
+                user_input = cycle_schema.get_input_text()
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                cycle_res = self.aura.execute_integrated_cycle(user_input=user_input, task_id=cycle_schema.task_id, auto_sync=cycle_schema.auto_sync)
                 self._send_json_response(cycle_res.to_dict() if hasattr(cycle_res, "to_dict") else cycle_res)
             except Exception as e:
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "cycle_execution_error", str(e))
@@ -742,6 +788,8 @@ class AURAHTTPServer:
         repository_container: RepositoryContainer | None = None,
     ):
         self.config = config or settings
+        # Validate production configuration fail-closed
+        validate_production_config(self.config, raise_on_error=(self.config.aura_env.lower() == "production"))
         self.aura = aura or create_aura(agentic=True, config=self.config)
         self.host = host or self.config.aura_server_host
         self.port = port if port is not None else self.config.aura_server_port

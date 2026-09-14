@@ -47,6 +47,7 @@ COPY --chown=appuser:appgroup evaluation/ /app/evaluation/
 COPY --chown=appuser:appgroup interfaces/ /app/interfaces/
 COPY --chown=appuser:appgroup knowledge/ /app/knowledge/
 COPY --chown=appuser:appgroup memory/ /app/memory/
+COPY --chown=appuser:appgroup migrations/ /app/migrations/
 COPY --chown=appuser:appgroup providers/ /app/providers/
 COPY --chown=appuser:appgroup research/ /app/research/
 COPY --chown=appuser:appgroup tools/ /app/tools/
