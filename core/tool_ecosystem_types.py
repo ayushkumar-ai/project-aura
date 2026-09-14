@@ -19,6 +19,14 @@ class ToolPermissionTier(IntEnum):
     CRITICAL = 4
 
 
+class ToolExecutionType(str, Enum):
+    REAL = "real"
+    SIMULATED = "simulated"
+    LOCAL_ONLY = "local_only"
+    MOCK = "mock"
+    PARTIAL = "partial"
+
+
 @dataclass
 class ToolParameterSchema:
     name: str
@@ -36,6 +44,8 @@ class ToolSpec:
     name: str
     description: str
     permission_tier: ToolPermissionTier = ToolPermissionTier.READ_ONLY
+    execution_type: ToolExecutionType = ToolExecutionType.LOCAL_ONLY
+    production_status: str = "production_ready"
     parameters: list[ToolParameterSchema] = field(default_factory=list)
     timeout_seconds: float = 10.0
     is_deterministic: bool = True
@@ -48,6 +58,8 @@ class ToolSpec:
             "description": self.description,
             "permission_tier": int(self.permission_tier),
             "permission_tier_name": self.permission_tier.name,
+            "execution_type": self.execution_type.value if hasattr(self.execution_type, "value") else str(self.execution_type),
+            "production_status": self.production_status,
             "parameters": [p.to_dict() for p in self.parameters],
             "timeout_seconds": self.timeout_seconds,
             "is_deterministic": self.is_deterministic,

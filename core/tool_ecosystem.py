@@ -19,6 +19,7 @@ from typing import Any
 from uuid import uuid4
 
 from core.tool_ecosystem_types import (
+    ToolExecutionType,
     ToolAuditRecord,
     ToolExecutionRequest,
     ToolExecutionResult,
@@ -210,6 +211,8 @@ class HttpMockTool(BaseEcosystemTool):
             name="http_mock",
             description="Simulated HTTP fetch tool for testing and mocked responses",
             permission_tier=ToolPermissionTier.SAFE_WRITE,
+            execution_type=ToolExecutionType.SIMULATED,
+            production_status="simulated_only",
             parameters=[
                 ToolParameterSchema(name="url", type_str="string", description="Target URL", required=True),
                 ToolParameterSchema(name="method", type_str="string", description="HTTP Method (GET, POST)", required=False, default="GET"),
@@ -293,6 +296,137 @@ class VerificationTool(BaseEcosystemTool):
         return {"status": "verified", "goal": goal, "is_valid": True}
 
 
+class SafeDocumentTool(BaseEcosystemTool):
+    """Production-grade safe document reader restricted to authorized sandboxes."""
+
+    _ALLOWED_ROOTS = (".aura_artifacts", ".aura_knowledge", "docs", "scratch")
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="document_reader",
+            description="Read and inspect text documents in authorized local sandbox directories",
+            permission_tier=ToolPermissionTier.READ_ONLY,
+            execution_type=ToolExecutionType.REAL,
+            production_status="production_ready",
+            parameters=[
+                ToolParameterSchema(name="path", type_str="string", description="Relative path within workspace or sandbox", required=True),
+                ToolParameterSchema(name="max_bytes", type_str="int", description="Max bytes to read (default 50000)", required=False, default=50000),
+            ],
+            timeout_seconds=5.0,
+            tags=["document", "file", "storage"],
+        )
+
+    def execute(self, parameters: dict[str, Any]) -> dict[str, Any]:
+        raw_path = str(parameters.get("path", "")).strip()
+        if not raw_path:
+            raise ValueError("Parameter 'path' cannot be empty.")
+        if ".." in raw_path or raw_path.startswith("/") or (len(raw_path) > 1 and raw_path[1] == ":"):
+            raise ValueError("Path traversal or absolute outside paths are forbidden.")
+
+        from pathlib import Path
+        clean_path = Path(raw_path)
+        if not any(raw_path.startswith(prefix) for prefix in self._ALLOWED_ROOTS):
+            raise ValueError(f"Access to path '{raw_path}' is outside authorized sandboxes: {self._ALLOWED_ROOTS}")
+
+        resolved = clean_path.resolve()
+        if not resolved.exists() or not resolved.is_file():
+            raise FileNotFoundError(f"Document '{raw_path}' not found.")
+
+        max_b = int(parameters.get("max_bytes", 50000))
+        max_b = min(max(max_b, 100), 500000)
+        content = resolved.read_text(encoding="utf-8", errors="replace")[:max_b]
+        return {
+            "path": raw_path,
+            "size_chars": len(content),
+            "content": content,
+        }
+
+
+class StructuredInfoTool(BaseEcosystemTool):
+    """Structured information services: UTC datetime, ISO timestamp, UUID generator."""
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="structured_info",
+            description="Lookup structured date/time, generate UUIDs, and inspect system clock",
+            permission_tier=ToolPermissionTier.READ_ONLY,
+            execution_type=ToolExecutionType.REAL,
+            production_status="production_ready",
+            parameters=[
+                ToolParameterSchema(name="operation", type_str="string", description="Operation: now_utc, generate_uuid, iso_date", required=True),
+            ],
+            timeout_seconds=2.0,
+            tags=["time", "uuid", "system"],
+        )
+
+    def execute(self, parameters: dict[str, Any]) -> dict[str, Any]:
+        import datetime
+        op = str(parameters.get("operation", "now_utc")).lower().strip()
+        if op in ("now_utc", "datetime"):
+            now = datetime.datetime.now(datetime.timezone.utc)
+            return {
+                "iso_utc": now.isoformat(),
+                "timestamp": now.timestamp(),
+                "year": now.year,
+                "month": now.month,
+                "day": now.day,
+            }
+        elif op in ("generate_uuid", "uuid"):
+            return {"uuid": str(uuid4())}
+        elif op in ("iso_date", "date"):
+            today = datetime.datetime.now(datetime.timezone.utc).date()
+            return {"date": today.isoformat()}
+        else:
+            raise ValueError(f"Unsupported operation '{op}'. Supported: now_utc, generate_uuid, iso_date")
+
+
+class ControlledWebFetchTool(BaseEcosystemTool):
+    """Production-grade safe HTTP fetch tool with SSRF protection, size caps, and timeout guards."""
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="web_fetch",
+            description="Fetch public HTTP/HTTPS resources safely with SSRF protection",
+            permission_tier=ToolPermissionTier.READ_ONLY,
+            execution_type=ToolExecutionType.REAL,
+            production_status="production_ready",
+            parameters=[
+                ToolParameterSchema(name="url", type_str="string", description="Public HTTP/HTTPS URL", required=True),
+                ToolParameterSchema(name="max_chars", type_str="int", description="Max characters to extract (default 10000)", required=False, default=10000),
+            ],
+            timeout_seconds=10.0,
+            tags=["web", "fetch", "network"],
+        )
+
+    def execute(self, parameters: dict[str, Any]) -> dict[str, Any]:
+        import urllib.request
+        from providers.generic_provider import validate_endpoint_url
+        url = str(parameters.get("url", "")).strip()
+        if not url:
+            raise ValueError("Parameter 'url' cannot be empty.")
+        validated_url = validate_endpoint_url(url, allow_local=False)
+
+        max_c = int(parameters.get("max_chars", 10000))
+        max_c = min(max(max_c, 100), 50000)
+
+        req = urllib.request.Request(validated_url, headers={"User-Agent": "AURA-Agent/0.28.0"})
+        with urllib.request.urlopen(req, timeout=8.0) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            raw_bytes = resp.read(max_c * 2)
+            text = raw_bytes.decode("utf-8", errors="replace")[:max_c]
+            return {
+                "url": validated_url,
+                "status_code": resp.status,
+                "content_type": content_type,
+                "content": text,
+                "length_chars": len(text),
+            }
+
+
+
 class ToolEcosystemRegistry:
     """Central registry and executor for AURA's tool and action ecosystem."""
 
@@ -311,6 +445,9 @@ class ToolEcosystemRegistry:
         self.register_tool(AnalysisTool())
         self.register_tool(GenericExecutionTool())
         self.register_tool(VerificationTool())
+        self.register_tool(SafeDocumentTool())
+        self.register_tool(StructuredInfoTool())
+        self.register_tool(ControlledWebFetchTool())
 
     def register_tool(self, tool: BaseEcosystemTool) -> None:
         """Register a new tool instance."""
