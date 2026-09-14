@@ -349,18 +349,6 @@ class BoundedAgenticExecutor:
                                 ),
                             )
                             break
-                        curr_plan = curr_plan.with_step_update(
-                            step.step_id,
-                            status=StepStatus.BLOCKED,
-                            result=Observation(
-                                step_id=step.step_id,
-                                task_id=trace.task_id,
-                                skill_name=step.skill_name,
-                                success=False,
-                                error=f"Policy denied action: {step.skill_name}",
-                            ),
-                        )
-                        break
 
                 # Check tool calls budget
                 if tool_calls_count >= self.config.max_tool_calls:
