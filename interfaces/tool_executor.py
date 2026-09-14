@@ -1,4 +1,5 @@
 import concurrent.futures
+from typing import Any
 
 from core.policy import Policy, PolicyDecision
 from core.tool_registry import ToolRegistry
@@ -22,8 +23,9 @@ class ToolExecutor:
         tool_name: str,
         tool_input: str,
         timeout: float | None = None,
+        identity: Any | None = None,
     ) -> str:
-        """Execute a registered tool with the supplied input."""
+        """Execute a registered tool with the supplied input and principal context."""
         if not tool_name.strip():
             raise ValueError("Tool name cannot be empty.")
 
@@ -34,9 +36,15 @@ class ToolExecutor:
 
         if self.policy is not None:
             try:
-                decision = self.policy.authorize_tool(tool_name)
+                try:
+                    decision = self.policy.authorize_tool(tool_name, identity=identity)
+                except TypeError:
+                    decision = self.policy.authorize_tool(tool_name)
+            except PermissionError:
+                raise
             except Exception as e:
                 raise PermissionError(f"Policy evaluation error for tool '{tool_name}': {type(e).__name__}") from e
+
             if decision != PolicyDecision.ALLOW:
                 raise PermissionError(
                     f"Tool '{tool_name}' is not authorized."
@@ -53,6 +61,7 @@ class ToolExecutor:
             return future.result(timeout=effective_timeout)
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
+
     def list_tools(self) -> list[str]:
         """Return the names of available tools."""
         return self.registry.list_tools()

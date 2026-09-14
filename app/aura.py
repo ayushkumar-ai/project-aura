@@ -994,17 +994,17 @@ class AURA:
     # ---------------------------------------------------------
     # M30 Durable Personal State
     # ---------------------------------------------------------
-    def get_user_preferences(self) -> Any:
-        """Retrieve current durable user preferences (M30)."""
+    def get_user_preferences(self, user_id: str = "default") -> Any:
+        """Retrieve current durable user preferences (M30/M41)."""
         if self.agentic_runtime is None:
             raise RuntimeError("Agentic runtime is not configured.")
-        return self.agentic_runtime.get_user_preferences()
+        return self.agentic_runtime.get_user_preferences(user_id=user_id)
 
-    def update_user_preferences(self, preferences: Any) -> Any:
-        """Update and persist durable user preferences (M30)."""
+    def update_user_preferences(self, preferences: Any, user_id: str = "default") -> Any:
+        """Update and persist durable user preferences (M30/M41)."""
         if self.agentic_runtime is None:
             raise RuntimeError("Agentic runtime is not configured.")
-        return self.agentic_runtime.update_user_preferences(preferences)
+        return self.agentic_runtime.update_user_preferences(preferences, user_id=user_id)
 
     def record_durable_memory(
         self,
@@ -1012,8 +1012,9 @@ class AURA:
         content: str,
         confidence: float = 1.0,
         tags: list[str] | None = None,
+        user_id: str = "default",
     ) -> Any:
-        """Record a unified durable memory entry (M30)."""
+        """Record a unified durable memory entry (M30/M41)."""
         if self.agentic_runtime is None:
             raise RuntimeError("Agentic runtime is not configured.")
         return self.agentic_runtime.record_durable_memory(
@@ -1021,6 +1022,7 @@ class AURA:
             content=content,
             confidence=confidence,
             tags=tags,
+            user_id=user_id,
         )
 
     def query_durable_memories(
@@ -1029,8 +1031,9 @@ class AURA:
         query: str = "",
         tag: str | None = None,
         limit: int = 50,
+        user_id: str | None = None,
     ) -> list[Any]:
-        """Query unified durable memory records (M30)."""
+        """Query unified durable memory records (M30/M41)."""
         if self.agentic_runtime is None:
             raise RuntimeError("Agentic runtime is not configured.")
         return self.agentic_runtime.query_durable_memories(
@@ -1038,16 +1041,17 @@ class AURA:
             query=query,
             tag=tag,
             limit=limit,
+            user_id=user_id,
         )
 
     # ---------------------------------------------------------
     # M31 Advanced Multi-Source Retrieval / RAG
     # ---------------------------------------------------------
-    def retrieve_rag_context(self, query: str, max_chars: int = 4000) -> Any:
-        """Execute multi-source RAG retrieval across memory, knowledge, experiences (M31)."""
+    def retrieve_rag_context(self, query: str, max_chars: int = 4000, user_id: str | None = None) -> Any:
+        """Execute multi-source RAG retrieval across memory, knowledge, experiences (M31/M41)."""
         if self.agentic_runtime is None:
             raise RuntimeError("Agentic runtime is not configured.")
-        return self.agentic_runtime.retrieve_rag_context(query, max_chars=max_chars)
+        return self.agentic_runtime.retrieve_rag_context(query, max_chars=max_chars, user_id=user_id)
 
     def add_knowledge_document(
         self,

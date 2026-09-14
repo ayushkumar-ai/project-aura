@@ -1,4 +1,4 @@
-"""M30 — Durable Personal State Types and Schema Definitions.
+"""M30/M41 — Durable Personal State Types and Schema Definitions with User Isolation.
 
 Defines unified representations for user preferences, personal state snapshots,
 episodic experiences, unified memory records, and schema version migrations.
@@ -31,6 +31,7 @@ class MemoryCategory(str, Enum):
 
 @dataclass
 class UserPreferences:
+    user_id: str = "default"
     preferred_name: str = "User"
     interaction_style: str = "concise"  # concise, detailed, technical, conversational
     verbosity: int = 2  # 1 (terse) to 5 (exhaustive)
@@ -55,6 +56,7 @@ class UnifiedMemoryRecord:
     record_id: str
     category: MemoryCategory
     content: str
+    user_id: str = "default"
     confidence: float = 1.0
     importance: float = 0.5
     created_at: float = field(default_factory=time.time)
@@ -84,6 +86,7 @@ class EpisodicExperienceRecord:
     experience_id: str
     task_description: str
     plan_summary: str
+    user_id: str = "default"
     action_sequence: list[str] = field(default_factory=list)
     outcome: str = "success"  # success, partial, failure
     reward_score: float = 1.0  # -1.0 to +1.0

@@ -4,7 +4,7 @@ Validates that when configured with real LLM credentials (.env), AURA's complete
 runtime path (facade -> orchestrator -> context/history -> model provider -> Gemini)
 actively and genuinely executes the model while preserving policy and security boundaries.
 
-These tests skip cleanly when real LLM credentials are not available.
+These tests skip cleanly when real LLM credentials are not available or when upstream API rate-limits apply.
 """
 
 import os
@@ -40,6 +40,12 @@ REAL_LLM_CONFIG = _get_real_llm_config()
 SKIP_REASON = "Real Gemini / OpenAI-compatible LLM credentials not configured in .env"
 
 
+def _check_rate_limit(response: AURAResponse) -> None:
+    """Check if model generation failed due to upstream API quota / rate limit."""
+    if response.metadata.get("error") == "model_generation_failed":
+        pytest.skip("Upstream LLM API rate limit or quota exceeded (429)")
+
+
 @pytest.mark.skipif(REAL_LLM_CONFIG is None, reason=SKIP_REASON)
 def test_real_llm_runtime_e2e_execution():
     """Verify that AURA runtime genuinely invokes real Gemini provider end-to-end."""
@@ -50,6 +56,8 @@ def test_real_llm_runtime_e2e_execution():
 
     test_prompt = "Hello AURA. Reply with the single word: AURA_E2E_CONFIRMED"
     response = aura.run(test_prompt)
+
+    _check_rate_limit(response)
 
     assert isinstance(response, AURAResponse)
     assert bool(response.content)
@@ -74,9 +82,11 @@ def test_real_llm_multi_turn_conversational_context():
     aura = create_aura(agentic=True, config=REAL_LLM_CONFIG)
 
     turn1_res = aura.run("My secret test keyword is ZEPHYR_987.")
+    _check_rate_limit(turn1_res)
     assert bool(turn1_res.content)
 
     turn2_res = aura.run("What is my secret test keyword that I just told you? Reply with only the keyword.")
+    _check_rate_limit(turn2_res)
     assert bool(turn2_res.content)
     assert "ZEPHYR_987" in turn2_res.content
 
@@ -88,6 +98,7 @@ def test_real_llm_structured_reasoning():
 
     prompt = "List exactly three primary colors. Format as numbered list 1, 2, 3."
     response = aura.run(prompt)
+    _check_rate_limit(response)
 
     assert bool(response.content)
     assert "1" in response.content

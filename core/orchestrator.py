@@ -67,9 +67,12 @@ class Orchestrator:
     def _build_context(self, request: AURARequest) -> AURAContext:
         """Build execution context with optional memory."""
 
+        user_id = getattr(request, "user_id", None) or (request.identity.user_id if getattr(request, "identity", None) else "default")
         context = AURAContext(
             request=request,
             request_id=request.request_id,
+            identity=getattr(request, "identity", None),
+            user_id=user_id,
             history=(
                 self.history
                 if self.history is not None
@@ -143,23 +146,33 @@ class Orchestrator:
                 request=request.user_input,
             )
 
+        identity = getattr(request, "identity", None)
         if self.tool_timeout is not None:
             try:
                 return self.tool_executor.execute(
                     tool_name=tool_name,
                     tool_input=tool_input,
                     timeout=self.tool_timeout,
+                    identity=identity,
                 )
             except TypeError:
                 return self.tool_executor.execute(
                     tool_name=tool_name,
                     tool_input=tool_input,
+                    identity=identity,
                 )
 
-        return self.tool_executor.execute(
-            tool_name=tool_name,
-            tool_input=tool_input,
-        )
+        try:
+            return self.tool_executor.execute(
+                tool_name=tool_name,
+                tool_input=tool_input,
+                identity=identity,
+            )
+        except TypeError:
+            return self.tool_executor.execute(
+                tool_name=tool_name,
+                tool_input=tool_input,
+            )
 
     def _generate_model_response(
         self,
@@ -231,13 +244,15 @@ class Orchestrator:
         if "memory" in context.state:
             prompt_parts.append(f"Memory: {context.state['memory']}")
 
-        if context.history.turns:
+        user_id = getattr(request, "user_id", None) or (request.identity.user_id if getattr(request, "identity", None) else getattr(context, "user_id", None))
+        turns = context.history.get_turns(user_id) if hasattr(context.history, "get_turns") else context.history.turns
+        if turns:
             history_text = "\n".join(
                 (
                     f"User: {turn.user_input}\n"
                     f"Assistant: {turn.assistant_output}"
                 )
-                for turn in context.history.turns
+                for turn in turns
             )
             prompt_parts.append(f"History:\n{history_text}")
 
@@ -468,11 +483,13 @@ class Orchestrator:
                             )
 
                             if self.history is not None:
+                                user_id = getattr(request, "user_id", None) or (request.identity.user_id if getattr(request, "identity", None) else "default")
                                 self.history.add_turn(
                                     user_input=request.user_input,
                                     assistant_output=response.content,
                                     tool_name=tool_name,
                                     tool_result=tool_result,
+                                    user_id=user_id,
                                 )
 
                             return AURAResponse(
@@ -487,9 +504,11 @@ class Orchestrator:
                             )
 
                         if self.history is not None:
+                            user_id = getattr(request, "user_id", None) or (request.identity.user_id if getattr(request, "identity", None) else "default")
                             self.history.add_turn(
                                 user_input=request.user_input,
                                 assistant_output=tool_result,
+                                user_id=user_id,
                             )
 
                         return AURAResponse(
@@ -628,9 +647,11 @@ class Orchestrator:
         )
 
         if self.history is not None:
+            user_id = getattr(request, "user_id", None) or (request.identity.user_id if getattr(request, "identity", None) else "default")
             self.history.add_turn(
                 user_input=request.user_input,
                 assistant_output=response.content,
+                user_id=user_id,
             )
 
         return AURAResponse(

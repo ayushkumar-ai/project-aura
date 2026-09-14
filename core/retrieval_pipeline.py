@@ -1,7 +1,7 @@
-"""M31 — Advanced Retrieval & Multi-Source RAG Pipeline for Project AURA.
+"""M31/M41 — Advanced Retrieval & Multi-Source RAG Pipeline for Project AURA with User Isolation.
 
 Unifies knowledge base retrieval, personal memory, epistemic graph queries,
-episodic experiences, and artifacts into a coherent, ranked context bundle.
+episodic experiences, and artifacts into a coherent, ranked, user-isolated context bundle.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ logger = logging.getLogger("aura.retrieval_pipeline")
 
 
 class AdvancedRetrievalPipeline:
-    """Multi-source retrieval and RAG pipeline with deterministic ranking and security scrubbing."""
+    """Multi-source retrieval and RAG pipeline with deterministic ranking, user isolation, and security scrubbing."""
 
     def __init__(
         self,
@@ -99,11 +99,11 @@ class AdvancedRetrievalPipeline:
         return min(score, 1.0)
 
     def retrieve_candidates(self, query: RetrievalQuery) -> list[RetrievalCandidate]:
-        """Fetch candidates across all requested and available sources."""
+        """Fetch candidates across all requested and available sources with user isolation."""
         candidates: list[RetrievalCandidate] = []
         q_tokens = self._tokenize(query.query_text)
 
-        # 1. Knowledge Base Documents
+        # 1. Knowledge Base Documents (Shared/Global)
         if RetrievalSourceType.KNOWLEDGE_BASE in query.source_types:
             for doc in self._knowledge_documents:
                 score = self._compute_relevance_score(q_tokens, doc["content"], doc["title"])
@@ -122,11 +122,10 @@ class AdvancedRetrievalPipeline:
                         )
                     )
 
-        # 2. Personal Memory
+        # 2. Personal Memory (User Isolated)
         if RetrievalSourceType.PERSONAL_MEMORY in query.source_types and self.durable_state_store:
             try:
-                # Fetch all memories and score with token relevance
-                memories = self.durable_state_store.query_memories(limit=100)
+                memories = self.durable_state_store.query_memories(user_id=query.user_id, limit=100)
                 for mem in memories:
                     score = self._compute_relevance_score(q_tokens, mem.content)
                     if score >= query.min_score:
@@ -146,11 +145,10 @@ class AdvancedRetrievalPipeline:
             except Exception as e:
                 logger.warning(f"Error querying personal memory for retrieval: {e}")
 
-        # 3. Episodic Experiences
+        # 3. Episodic Experiences (User Isolated)
         if RetrievalSourceType.EXPERIENCES in query.source_types and self.durable_state_store:
             try:
-                # Fetch all experiences and score with token relevance
-                experiences = self.durable_state_store.query_experiences(limit=50)
+                experiences = self.durable_state_store.query_experiences(user_id=query.user_id, limit=50)
                 for exp in experiences:
                     exp_text = f"Task: {exp.task_description}\nPlan: {exp.plan_summary}\nOutcome: {exp.outcome}\nLessons: {'; '.join(exp.lessons_learned)}"
                     score = self._compute_relevance_score(q_tokens, exp_text)
@@ -251,10 +249,16 @@ class AdvancedRetrievalPipeline:
         self,
         query: str | RetrievalQuery,
         max_context_chars: int = 4000,
+        user_id: str | None = None,
     ) -> RetrievalContextBundle:
-        """Execute complete RAG pipeline and assemble structured context."""
+        """Execute complete RAG pipeline and assemble structured context with user isolation."""
         start_time = time.time()
-        ret_query = query if isinstance(query, RetrievalQuery) else RetrievalQuery(query_text=str(query))
+        if isinstance(query, RetrievalQuery):
+            ret_query = query
+            if user_id and not ret_query.user_id:
+                ret_query.user_id = user_id
+        else:
+            ret_query = RetrievalQuery(query_text=str(query), user_id=user_id)
 
         candidates = self.retrieve_candidates(ret_query)
 

@@ -1,7 +1,7 @@
-"""M30 — Durable Personal State Store for Project AURA.
+"""M30/M41 — Durable Personal State Store for Project AURA with User Isolation.
 
 Provides atomic, checksum-verified, schema-versioned persistence for unified memories,
-episodic experiences, user preferences, and cross-session personal state.
+episodic experiences, user preferences, and cross-session personal state with strict user isolation.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ logger = logging.getLogger("aura.durable_state")
 
 
 class DurablePersonalStateStore:
-    """Thread-safe, atomic, checksum-verified durable state store."""
+    """Thread-safe, atomic, checksum-verified durable state store with user isolation."""
 
     SNAPSHOT_FILENAME = "personal_state.json"
     BACKUP_FILENAME = "personal_state.json.bak"
@@ -39,6 +39,7 @@ class DurablePersonalStateStore:
         self.storage_dir = Path(storage_dir) if storage_dir else None
         self._lock = threading.RLock()
         self._preferences = UserPreferences()
+        self._user_preferences: dict[str, UserPreferences] = {}
         self._memories: dict[str, UnifiedMemoryRecord] = {}
         self._experiences: dict[str, EpisodicExperienceRecord] = {}
         self._knowledge_entity_ids: set[str] = set()
@@ -50,28 +51,48 @@ class DurablePersonalStateStore:
             self.storage_dir.mkdir(parents=True, exist_ok=True)
             self._load_from_disk()
 
-    def get_preferences(self) -> UserPreferences:
-        """Get current user preferences."""
+    def get_preferences(self, user_id: str = "default") -> UserPreferences:
+        """Get user preferences for a specific user_id."""
         with self._lock:
-            return UserPreferences.from_dict(self._preferences.to_dict())
+            uid = user_id if (user_id and str(user_id).strip()) else "default"
+            if uid in self._user_preferences:
+                return UserPreferences.from_dict(self._user_preferences[uid].to_dict())
+            if uid == "default":
+                return UserPreferences.from_dict(self._preferences.to_dict())
+            # Return fresh isolated preference for new user
+            new_prefs = UserPreferences(user_id=uid)
+            return new_prefs
 
-    def update_preferences(self, preferences: UserPreferences | dict[str, Any]) -> UserPreferences:
-        """Update and persist user preferences."""
+    def update_preferences(
+        self,
+        preferences: UserPreferences | dict[str, Any],
+        user_id: str = "default",
+    ) -> UserPreferences:
+        """Update and persist user preferences for a specific user_id."""
         with self._lock:
+            uid = user_id if (user_id and str(user_id).strip()) else "default"
+            current = self.get_preferences(uid)
+            current_dict = current.to_dict()
+
             if isinstance(preferences, dict):
-                current_dict = self._preferences.to_dict()
                 current_dict.update(preferences)
+                current_dict["user_id"] = uid
                 current_dict["updated_at"] = time.time()
-                self._preferences = UserPreferences.from_dict(current_dict)
+                updated_prefs = UserPreferences.from_dict(current_dict)
             elif isinstance(preferences, UserPreferences):
+                preferences.user_id = uid
                 preferences.updated_at = time.time()
-                self._preferences = preferences
+                updated_prefs = preferences
             else:
                 raise TypeError("preferences must be UserPreferences or dict")
 
+            self._user_preferences[uid] = updated_prefs
+            if uid == "default":
+                self._preferences = updated_prefs
+
             if self.storage_dir:
                 self.save_snapshot()
-            return self.get_preferences()
+            return self.get_preferences(uid)
 
     def record_memory(
         self,
@@ -82,15 +103,18 @@ class DurablePersonalStateStore:
         tags: list[str] | None = None,
         provenance: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        user_id: str = "default",
     ) -> UnifiedMemoryRecord:
-        """Record a unified memory entry."""
+        """Record a unified memory entry with user isolation."""
         with self._lock:
             cat_enum = MemoryCategory(category) if isinstance(category, str) else category
             rec_id = f"mem_{uuid4().hex[:12]}"
+            uid = user_id if (user_id and str(user_id).strip()) else "default"
             record = UnifiedMemoryRecord(
                 record_id=rec_id,
                 category=cat_enum,
                 content=content,
+                user_id=uid,
                 confidence=confidence,
                 importance=importance,
                 created_at=time.time(),
@@ -111,14 +135,18 @@ class DurablePersonalStateStore:
         query: str = "",
         min_confidence: float = 0.0,
         limit: int = 50,
+        user_id: str | None = None,
     ) -> list[UnifiedMemoryRecord]:
-        """Query unified memory records with filtering and keyword matching."""
+        """Query unified memory records with filtering, keyword matching, and user isolation."""
         with self._lock:
             cat_enum = MemoryCategory(category) if isinstance(category, str) else category
             results: list[UnifiedMemoryRecord] = []
             q_lower = query.lower().strip() if query else ""
+            target_uid = str(user_id).strip() if (user_id and str(user_id).strip()) else None
 
             for mem in self._memories.values():
+                if target_uid is not None and mem.user_id != target_uid:
+                    continue
                 if cat_enum is not None and mem.category != cat_enum:
                     continue
                 if mem.confidence < min_confidence:
@@ -142,14 +170,17 @@ class DurablePersonalStateStore:
         lessons_learned: list[str] | None = None,
         provenance: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        user_id: str = "default",
     ) -> EpisodicExperienceRecord:
-        """Record an episodic experience item."""
+        """Record an episodic experience item with user isolation."""
         with self._lock:
             exp_id = f"exp_{uuid4().hex[:12]}"
+            uid = user_id if (user_id and str(user_id).strip()) else "default"
             record = EpisodicExperienceRecord(
                 experience_id=exp_id,
                 task_description=task_description,
                 plan_summary=plan_summary,
+                user_id=uid,
                 action_sequence=action_sequence or [],
                 outcome=outcome,
                 reward_score=reward_score,
@@ -168,13 +199,17 @@ class DurablePersonalStateStore:
         outcome: str | None = None,
         query: str = "",
         limit: int = 20,
+        user_id: str | None = None,
     ) -> list[EpisodicExperienceRecord]:
-        """Query episodic experiences."""
+        """Query episodic experiences with optional user isolation."""
         with self._lock:
             results: list[EpisodicExperienceRecord] = []
             q_lower = query.lower().strip() if query else ""
+            target_uid = str(user_id).strip() if (user_id and str(user_id).strip()) else None
 
             for exp in self._experiences.values():
+                if target_uid is not None and exp.user_id != target_uid:
+                    continue
                 if outcome is not None and exp.outcome != outcome:
                     continue
                 if q_lower and (q_lower not in exp.task_description.lower() and q_lower not in exp.plan_summary.lower()):
@@ -201,7 +236,7 @@ class DurablePersonalStateStore:
                 snapshot_id=f"snap_{uuid4().hex[:12]}",
                 schema_version=StateSchemaVersion.CURRENT,
                 created_at=time.time(),
-                user_preferences=self.get_preferences(),
+                user_preferences=self.get_preferences("default"),
                 memory_records=list(self._memories.values()),
                 episodic_experiences=list(self._experiences.values()),
                 knowledge_entity_ids=list(self._knowledge_entity_ids),
@@ -278,6 +313,7 @@ class DurablePersonalStateStore:
     def _apply_snapshot(self, snap: PersonalStateSnapshot) -> None:
         """Apply a loaded snapshot to in-memory state with schema handling."""
         self._preferences = snap.user_preferences
+        self._user_preferences = {"default": snap.user_preferences}
         self._memories = {m.record_id: m for m in snap.memory_records}
         self._experiences = {e.experience_id: e for e in snap.episodic_experiences}
         self._knowledge_entity_ids = set(snap.knowledge_entity_ids)

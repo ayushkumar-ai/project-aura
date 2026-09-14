@@ -2131,13 +2131,13 @@ class AgenticRuntime:
     # ---------------------------------------------------------
     # M30 Durable Personal State
     # ---------------------------------------------------------
-    def get_user_preferences(self) -> Any:
-        """Retrieve current durable user preferences (M30)."""
-        return self.durable_state_store.get_preferences()
+    def get_user_preferences(self, user_id: str = "default") -> Any:
+        """Retrieve current durable user preferences (M30/M41)."""
+        return self.durable_state_store.get_preferences(user_id=user_id)
 
-    def update_user_preferences(self, preferences: Any) -> Any:
-        """Update and persist durable user preferences (M30)."""
-        return self.durable_state_store.update_preferences(preferences)
+    def update_user_preferences(self, preferences: Any, user_id: str = "default") -> Any:
+        """Update and persist durable user preferences (M30/M41)."""
+        return self.durable_state_store.update_preferences(preferences, user_id=user_id)
 
     def record_durable_memory(
         self,
@@ -2145,13 +2145,15 @@ class AgenticRuntime:
         content: str,
         confidence: float = 1.0,
         tags: list[str] | None = None,
+        user_id: str = "default",
     ) -> Any:
-        """Record a unified durable memory entry (M30)."""
+        """Record a unified durable memory entry (M30/M41)."""
         return self.durable_state_store.record_memory(
             category=category,
             content=content,
             confidence=confidence,
             tags=tags,
+            user_id=user_id,
         )
 
     def query_durable_memories(
@@ -2160,21 +2162,23 @@ class AgenticRuntime:
         query: str = "",
         tag: str | None = None,
         limit: int = 50,
+        user_id: str | None = None,
     ) -> list[Any]:
-        """Query unified durable memory records (M30)."""
+        """Query unified durable memory records (M30/M41)."""
         return self.durable_state_store.query_memories(
             category=category,
             query=query,
             tag=tag,
             limit=limit,
+            user_id=user_id,
         )
 
     # ---------------------------------------------------------
     # M31 Multi-Source Retrieval / Advanced RAG
     # ---------------------------------------------------------
-    def retrieve_rag_context(self, query: str, max_chars: int = 4000) -> Any:
-        """Execute multi-source RAG retrieval across memory, knowledge, experiences (M31)."""
-        return self.retrieval_pipeline.execute_rag(query, max_context_chars=max_chars)
+    def retrieve_rag_context(self, query: str, max_chars: int = 4000, user_id: str | None = None) -> Any:
+        """Execute multi-source RAG retrieval across memory, knowledge, experiences (M31/M41)."""
+        return self.retrieval_pipeline.execute_rag(query, max_context_chars=max_chars, user_id=user_id)
 
     def add_knowledge_document(
         self,

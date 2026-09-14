@@ -9,7 +9,7 @@ Provides a robust, zero-external-dependency HTTP REST API service supporting:
 - Dynamic skills catalog: GET /v1/skills
 - Mission campaigns: GET /v1/campaigns
 - Epistemic knowledge queries: GET /v1/knowledge/query
-- Bearer token authentication (optional via AURA_API_KEY_AUTH_ENABLED)
+- Multi-user authentication & principal isolation (M41)
 - Payload size limiting, CORS headers, and graceful shutdown signal handling
 """
 
@@ -36,6 +36,8 @@ from app.config import Settings, settings
 from app.main import create_aura
 from core.models import AURARequest
 from core.security_scrubber import sanitize_error_message, scrub_dict
+from core.identity import UserIdentity, UserRole, UserScope, create_anonymous_identity, create_dev_identity
+from core.auth import BaseAuthenticator, TokenAuthenticator, create_token_authenticator
 
 logger = logging.getLogger("aura.server")
 
@@ -61,10 +63,11 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Multi-threaded HTTP server enabling concurrent request handling."""
     daemon_threads = True
     allow_reuse_address = True
+    authenticator: BaseAuthenticator
 
 
 class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
-    """Production request handler for Project AURA REST API."""
+    """Production request handler for Project AURA REST API with M41 identity & authorization."""
 
     server_version = "AURA-HTTP/0.28.0"
 
@@ -83,6 +86,10 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
     @property
     def start_time(self) -> float:
         return self.server.start_time  # type: ignore
+
+    @property
+    def authenticator(self) -> BaseAuthenticator:
+        return self.server.authenticator  # type: ignore
 
     def _set_cors_headers(self) -> None:
         """Apply CORS headers from configuration."""
@@ -116,7 +123,6 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.end_headers()
         self.wfile.write(body)
-
 
     def _drain_body(self) -> None:
         """Safely drain bounded unread request body from socket to prevent TCP RST on early error."""
@@ -159,21 +165,31 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             payload["error"]["details"] = scrub_dict(details)
         self._send_json_response(payload, status=status)
 
-    def _authenticate(self) -> bool:
-        """Verify API key authentication if enabled."""
+    def _resolve_identity(self) -> tuple[bool, UserIdentity | None, str | None, int]:
+        """Verify credentials and resolve canonical UserIdentity principal (M41).
+        
+        Returns (is_authenticated, identity, error_message, http_status_code).
+        """
         if not self.config.aura_api_key_auth_enabled:
-            return True
+            # When auth is disabled:
+            # Dev/test/non-prod environments map to a dev principal; production explicitly maps to anonymous
+            if self.config.aura_env.lower() != "production":
+                return True, create_dev_identity(), None, 200
+            return True, create_anonymous_identity(), None, 200
 
-        expected_key = self.config.aura_server_api_key
-        if not expected_key:
-            logger.warning("API auth enabled but aura_server_api_key is empty; denying requests.")
-            return False
+        auth_header = self.headers.get("Authorization", "").strip()
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return False, None, "Invalid or missing Bearer token", 401
 
-        auth_header = self.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
-            return token == expected_key
-        return False
+        token = auth_header[7:].strip()
+        if not token:
+            return False, None, "Bearer token cannot be empty", 401
+
+        res = self.authenticator.authenticate(token)
+        if not res.success:
+            return False, None, res.error_message or "Authentication failed", res.status_code
+
+        return True, res.identity, None, 200
 
     def _read_json_body(self) -> dict[str, Any] | None:
         """Safely read and validate JSON request body within size limits."""
@@ -272,7 +288,7 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        """Route GET requests."""
+        """Route GET requests with M41 authentication and authorization."""
         parsed_url = urlparse(self.path)
         path = parsed_url.path.rstrip("/")
         if not path:
@@ -292,7 +308,6 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/ready":
-            # Verify core runtime readiness
             is_ready = self.aura is not None and self.aura.orchestrator is not None
             if is_ready:
                 self._send_json_response({
@@ -316,9 +331,12 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         # Authenticated endpoints
-        if not self._authenticate():
-            self._send_error_response(HTTPStatus.UNAUTHORIZED, "unauthorized", "Invalid or missing Bearer token")
+        is_auth, identity, err_msg, status_code = self._resolve_identity()
+        if not is_auth:
+            self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
             return
+
+        user_id = identity.user_id if identity else "default"
 
         if path in ("/metrics", "/v1/telemetry"):
             health = self.aura.get_health_status()
@@ -384,7 +402,7 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/preferences":
-            prefs = self.aura.get_user_preferences()
+            prefs = self.aura.get_user_preferences(user_id=user_id)
             self._send_json_response(prefs.to_dict() if hasattr(prefs, "to_dict") else prefs)
             return
 
@@ -423,6 +441,9 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/release/validation":
+            if identity and not (identity.has_role(UserRole.ADMIN) or identity.has_scope(UserScope.ADMIN.value)):
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Administrative privileges required")
+                return
             validation_report = self.aura.validate_release(self.config)
             self._send_json_response(validation_report.to_dict() if hasattr(validation_report, "to_dict") else validation_report)
             return
@@ -430,18 +451,21 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_POST(self) -> None:
-        """Route POST requests."""
+        """Route POST requests with M41 authentication and user isolation."""
         parsed_url = urlparse(self.path)
         path = parsed_url.path.rstrip("/")
 
         # Check authentication
-        if not self._authenticate():
-            self._send_error_response(HTTPStatus.UNAUTHORIZED, "unauthorized", "Invalid or missing Bearer token")
+        is_auth, identity, err_msg, status_code = self._resolve_identity()
+        if not is_auth:
+            self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
             return
 
         body = self._read_json_body()
         if body is None:
             return
+
+        user_id = identity.user_id if identity else "default"
 
         if path == "/v1/run":
             user_input = body.get("user_input") or body.get("prompt")
@@ -450,7 +474,7 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 return
 
             metadata = body.get("metadata", {})
-            req = AURARequest(user_input=user_input, metadata=metadata)
+            req = AURARequest(user_input=user_input, metadata=metadata, identity=identity, user_id=user_id)
             try:
                 response = self.aura.run_request(req)
                 self._send_json_response({
@@ -488,7 +512,7 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/v1/preferences":
             try:
-                updated = self.aura.update_user_preferences(body)
+                updated = self.aura.update_user_preferences(body, user_id=user_id)
                 self._send_json_response(updated.to_dict() if hasattr(updated, "to_dict") else updated)
             except Exception as e:
                 self._send_error_response(HTTPStatus.BAD_REQUEST, "preference_update_error", str(e))
@@ -498,7 +522,7 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             query = body.get("query", "")
             max_chars = int(body.get("max_chars", 4000))
             try:
-                bundle = self.aura.retrieve_rag_context(query=query, max_chars=max_chars)
+                bundle = self.aura.retrieve_rag_context(query=query, max_chars=max_chars, user_id=user_id)
                 self._send_json_response(bundle.to_dict() if hasattr(bundle, "to_dict") else bundle)
             except Exception as e:
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "rag_error", str(e))
@@ -544,6 +568,9 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/devices/action":
+            if identity and not (identity.has_role(UserRole.ADMIN) or identity.has_role(UserRole.OPERATOR) or identity.has_scope(UserScope.DEVICE_EXEC.value)):
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Insufficient permission for device execution")
+                return
             device_id = body.get("device_id", "")
             capability = body.get("capability", "")
             parameters = body.get("parameters", {})
@@ -587,11 +614,13 @@ class AURAHTTPServer:
         config: Settings | None = None,
         host: str | None = None,
         port: int | None = None,
+        authenticator: BaseAuthenticator | None = None,
     ):
         self.config = config or settings
         self.aura = aura or create_aura(agentic=True, config=self.config)
         self.host = host or self.config.aura_server_host
         self.port = port if port is not None else self.config.aura_server_port
+        self.authenticator = authenticator or create_token_authenticator(master_key=self.config.aura_server_api_key)
         self.start_time = time.time()
         self._server: ThreadedHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -604,6 +633,7 @@ class AURAHTTPServer:
         self._server.aura = self.aura  # type: ignore
         self._server.config = self.config  # type: ignore
         self._server.start_time = self.start_time  # type: ignore
+        self._server.authenticator = self.authenticator  # type: ignore
         self._is_running = True
 
         logger.info(
