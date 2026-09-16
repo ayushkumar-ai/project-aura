@@ -193,3 +193,32 @@ class ApprovalDecisionRequestSchema(BaseModel):
     nonce: str = Field(..., min_length=1, max_length=128, description="Cryptographic nonce provided with the approval request")
     reason: str | None = Field(default="", max_length=2000, description="Optional justification or decision reason")
 
+
+
+class AutomationCreateSchema(BaseModel):
+    """Schema for POST /v1/automations creation."""
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(..., min_length=1, max_length=255, description="Human-readable automation name")
+    description: str = Field(default="", max_length=2000, description="Optional description")
+    trigger_type: str = Field(..., description="Trigger type: one_time, recurring, time_window, condition, event")
+    trigger_config: dict[str, Any] = Field(default_factory=dict, description="Trigger configuration (cron, run_at, etc.)")
+    condition_config: dict[str, Any] | None = Field(default=None, description="Optional condition configuration")
+    action_template: dict[str, Any] = Field(..., description="Action template for M52 task instantiation")
+    max_runs: int | None = Field(default=None, ge=1, description="Optional max execution runs limit")
+    cooldown_seconds: int = Field(default=60, ge=0, description="Cooldown seconds between consecutive triggers")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary metadata")
+
+
+class AutomationUpdateSchema(BaseModel):
+    """Schema for PATCH /v1/automations/{id}."""
+    model_config = ConfigDict(extra="ignore")
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    trigger_config: dict[str, Any] | None = None
+    condition_config: dict[str, Any] | None = None
+    action_template: dict[str, Any] | None = None
+    max_runs: int | None = Field(default=None, ge=1)
+    cooldown_seconds: int | None = Field(default=None, ge=0)
+    metadata: dict[str, Any] | None = None

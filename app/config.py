@@ -212,6 +212,22 @@ class Settings(BaseSettings):
     aura_task_sse_ping_interval_seconds: int = 15
 
 
+    
+    # M53 Proactive Automation & Autonomous Supervisor Configuration
+    aura_automations_enabled: bool = True
+    aura_automation_scheduler_poll_interval_seconds: float = 5.0
+    aura_automation_scheduler_batch_size: int = 10
+    aura_automation_lease_ttl_seconds: int = 120
+    aura_automation_lease_heartbeat_interval_seconds: float = 30.0
+    aura_automation_reconciler_interval_seconds: float = 60.0
+    aura_automation_max_runs_per_hour: int = 60
+    aura_automation_max_recursion_depth: int = 3
+    aura_automation_max_condition_chars: int = 4000
+    aura_automation_max_per_tenant: int = 50
+    aura_automation_lock_timeout_ms: int = 3000
+    aura_automation_statement_timeout_ms: int = 3000
+    aura_automation_transaction_deadline_seconds: float = 5.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

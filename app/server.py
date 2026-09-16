@@ -62,9 +62,12 @@ from core.api_contracts import (
     CycleRequestSchema,
     AsyncTaskSubmissionSchema,
     ApprovalDecisionRequestSchema,
+    AutomationCreateSchema,
+    AutomationUpdateSchema,
 )
 from core.background import BackgroundTaskWorker, TaskEventBroadcaster, WorkflowOrchestrator
-from core.repositories.base import BaseApprovalRepository, BaseTaskRepository
+from core.automations import AutonomousSupervisor, validate_cron, calculate_next_fire
+from core.repositories.base import BaseApprovalRepository, BaseTaskRepository, BaseAutomationRepository
 import queue
 from core.config_validator import validate_production_config
 
@@ -142,6 +145,15 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         rc = getattr(self.server, "repository_container", None)
         return getattr(rc, "approvals", None) if rc else None
 
+    @property
+    def automation_repo(self) -> BaseAutomationRepository | None:
+        rc = getattr(self.server, "repository_container", None)
+        return getattr(rc, "automations", None) if rc else None
+
+    @property
+    def supervisor(self) -> AutonomousSupervisor | None:
+        return getattr(self.server, "supervisor", None)
+
     def _setup_request_context(self) -> tuple[str, str, Any]:
         """Initialize correlation context from headers (X-Request-ID, W3C traceparent)."""
         incoming_req_id = self.headers.get("X-Request-ID")
@@ -168,7 +180,7 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         """Apply CORS and correlation headers from configuration."""
         origin = self.config.aura_cors_allowed_origins
         self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, traceparent")
         req_id = getattr(self, "request_id", None) or get_current_request_id()
         if req_id:
@@ -723,6 +735,66 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response(approval)
             return
 
+        
+        # M53: List Automations
+        if path == "/v1/automations":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.automation_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Automation repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            st_filter = params.get("status", [None])[0]
+            limit = int(params.get("limit", [50])[0])
+            offset = int(params.get("offset", [0])[0])
+            autos = self.automation_repo.list_automations(user_id=user_id, status=st_filter, limit=limit, offset=offset)
+            total = self.automation_repo.count_automations(user_id=user_id, status=st_filter)
+            self._send_json_response({"automations": autos, "count": len(autos), "total": total})
+            return
+
+        # M53: Automation Runs
+        if path.startswith("/v1/automations/") and path.endswith("/runs"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            auto_id = path[len("/v1/automations/"):-len("/runs")].strip()
+            if not self.automation_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Automation repository unavailable")
+                return
+            auto = self.automation_repo.get_automation(auto_id, user_id=user_id)
+            if not auto:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "automation_not_found", "Automation not found")
+                return
+            params = parse_qs(parsed_url.query)
+            limit = int(params.get("limit", [50])[0])
+            offset = int(params.get("offset", [0])[0])
+            runs = self.automation_repo.list_runs(automation_id=auto_id, user_id=user_id, limit=limit, offset=offset)
+            self._send_json_response({"runs": runs, "count": len(runs)})
+            return
+
+        # M53: Automation Detail
+        if path.startswith("/v1/automations/"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            auto_id = path[len("/v1/automations/"):].strip()
+            if not self.automation_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Automation repository unavailable")
+                return
+            auto = self.automation_repo.get_automation(auto_id, user_id=user_id)
+            if not auto:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "automation_not_found", "Automation not found")
+                return
+            self._send_json_response(auto)
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_POST(self) -> None:
@@ -1054,6 +1126,176 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        # M53: Create Proactive Automation
+        if path == "/v1/automations":
+            if not self.automation_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Automation repository unavailable")
+                return
+            try:
+                auto_schema = AutomationCreateSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            trigger_cfg = auto_schema.trigger_config or {}
+            next_fire = None
+            if auto_schema.trigger_type in ("recurring", "cron") or "cron" in trigger_cfg:
+                cron_expr = trigger_cfg.get("cron")
+                if cron_expr:
+                    try:
+                        validate_cron(cron_expr)
+                        next_fire = calculate_next_fire(cron_expr)
+                    except Exception as e:
+                        self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_cron", str(e))
+                        return
+
+            try:
+                created = self.automation_repo.create_automation(
+                    user_id=user_id,
+                    name=auto_schema.name,
+                    trigger_type=auto_schema.trigger_type,
+                    trigger_config=trigger_cfg,
+                    condition_config=auto_schema.condition_config or {},
+                    action_template=auto_schema.action_template or {},
+                    description=auto_schema.description or "",
+                    max_runs=auto_schema.max_runs,
+                    cooldown_seconds=auto_schema.cooldown_seconds,
+                    metadata=auto_schema.metadata or {},
+                    next_fire_at=next_fire,
+                )
+                self._send_json_response(created)
+            except Exception as e:
+                logger.error(f"Error creating automation: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "automation_creation_error", str(e))
+            return
+
+        # M53: Pause Automation
+        if path.startswith("/v1/automations/") and path.endswith("/pause"):
+            auto_id = path[len("/v1/automations/"):-len("/pause")].strip()
+            if not self.automation_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Automation repository unavailable")
+                return
+            paused = self.automation_repo.pause_automation(auto_id, user_id=user_id)
+            if not paused:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "automation_not_found", f"Automation '{auto_id}' not found")
+                return
+            self._send_json_response(paused)
+            return
+
+        # M53: Resume Automation
+        if path.startswith("/v1/automations/") and path.endswith("/resume"):
+            auto_id = path[len("/v1/automations/"):-len("/resume")].strip()
+            if not self.automation_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Automation repository unavailable")
+                return
+            existing = self.automation_repo.get_automation(auto_id, user_id=user_id)
+            if not existing:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "automation_not_found", f"Automation '{auto_id}' not found")
+                return
+            next_fire = None
+            if existing.get("trigger_config") and "cron" in existing["trigger_config"]:
+                try:
+                    next_fire = calculate_next_fire(existing["trigger_config"]["cron"])
+                except Exception:
+                    pass
+            resumed = self.automation_repo.resume_automation(auto_id, user_id=user_id, next_fire_at=next_fire)
+            if not resumed:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "automation_not_found", f"Automation '{auto_id}' not found")
+                return
+            self._send_json_response(resumed)
+            return
+
+        # M53: Trigger Automation Manually
+        if path.startswith("/v1/automations/") and path.endswith("/trigger"):
+            auto_id = path[len("/v1/automations/"):-len("/trigger")].strip()
+            if not self.automation_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Automation repository unavailable")
+                return
+            existing = self.automation_repo.get_automation(auto_id, user_id=user_id)
+            if not existing:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "automation_not_found", f"Automation '{auto_id}' not found")
+                return
+            # Schedule immediate fire
+            updated = self.automation_repo.update_automation(auto_id, user_id=user_id, next_fire_at=time.time())
+            self._send_json_response({"id": auto_id, "status": "triggered", "automation": updated})
+            return
+
+        self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
+
+
+
+    def do_PATCH(self) -> None:
+        """Route PATCH requests with authentication and tenant isolation."""
+        req_start = time.time()
+        self._setup_request_context()
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path.rstrip("/")
+
+        is_auth, identity, err_msg, status_code = self._resolve_identity()
+        if not is_auth:
+            self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+            return
+
+        user_id = identity.user_id if identity else "default"
+        body = self._read_json_body()
+        if body is None:
+            return
+
+        if path.startswith("/v1/automations/"):
+            auto_id = path[len("/v1/automations/"):].strip()
+            if not self.automation_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Automation repository unavailable")
+                return
+            try:
+                update_schema = AutomationUpdateSchema.model_validate(body)
+                update_dict = {k: v for k, v in update_schema.model_dump().items() if v is not None}
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            if "trigger_config" in update_dict and "cron" in update_dict["trigger_config"]:
+                try:
+                    validate_cron(update_dict["trigger_config"]["cron"])
+                    update_dict["next_fire_at"] = calculate_next_fire(update_dict["trigger_config"]["cron"])
+                except Exception as e:
+                    self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_cron", str(e))
+                    return
+
+            updated = self.automation_repo.update_automation(auto_id, user_id=user_id, **update_dict)
+            if not updated:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "automation_not_found", "Automation not found")
+                return
+            self._send_json_response(updated)
+            return
+
+        self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
+
+    def do_DELETE(self) -> None:
+        """Route DELETE requests with authentication and tenant isolation."""
+        req_start = time.time()
+        self._setup_request_context()
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path.rstrip("/")
+
+        is_auth, identity, err_msg, status_code = self._resolve_identity()
+        if not is_auth:
+            self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+            return
+
+        user_id = identity.user_id if identity else "default"
+
+        if path.startswith("/v1/automations/"):
+            auto_id = path[len("/v1/automations/"):].strip()
+            if not self.automation_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Automation repository unavailable")
+                return
+            deleted = self.automation_repo.delete_automation(auto_id, user_id=user_id)
+            if not deleted:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "automation_not_found", "Automation not found")
+                return
+            self._send_json_response({"id": auto_id, "deleted": True})
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
 
@@ -1116,6 +1358,17 @@ class AURAHTTPServer:
         else:
             self.task_worker = None
 
+        # M53 Autonomous Supervisor
+        if getattr(self.config, "aura_automations_enabled", True) and self.repository_container.automations:
+            self.supervisor = AutonomousSupervisor(
+                repositories=self.repository_container,
+                poll_interval=getattr(self.config, "aura_automation_scheduler_poll_interval_seconds", 5.0),
+                reconcile_interval=getattr(self.config, "aura_automation_reconciler_interval_seconds", 60.0),
+                max_recursion_depth=getattr(self.config, "aura_automation_max_recursion_depth", 3),
+            )
+        else:
+            self.supervisor = None
+
     def start(self, block: bool = True) -> None:
         """Start the HTTP server on configured host and port."""
         server_address = (self.host, self.port)
@@ -1128,6 +1381,7 @@ class AURAHTTPServer:
         self._server.broadcaster = self.broadcaster  # type: ignore
         self._server.workflow_orchestrator = self.workflow_orchestrator  # type: ignore
         self._server.task_worker = self.task_worker  # type: ignore
+        self._server.supervisor = self.supervisor  # type: ignore
         self._is_running = True
 
         if self.task_worker:

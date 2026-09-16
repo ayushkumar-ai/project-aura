@@ -548,3 +548,6 @@ class BaseApprovalRepository(ABC):
         pass
 
 
+
+
+from core.repositories.base_automation import BaseAutomationRepository

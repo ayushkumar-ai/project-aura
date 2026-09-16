@@ -1,4 +1,4 @@
-"""M42 — Repository Factory & Dependency Resolution for Project AURA.
+"""M42/M52/M53 — Repository Factory & Dependency Resolution for Project AURA.
 
 Constructs and wires appropriate repository implementations (PostgreSQL vs In-Memory)
 based on runtime configuration and environment settings.
@@ -15,6 +15,7 @@ from core.database import DatabaseConnectionPool, MigrationRunner
 from core.repositories.base import (
     BaseApiTokenRepository,
     BaseApprovalRepository,
+    BaseAutomationRepository,
     BaseCheckpointRepository,
     BaseConversationRepository,
     BaseExperienceRepository,
@@ -38,6 +39,7 @@ from core.repositories.in_memory import (
     InMemoryUserRepository,
     InMemoryVectorSearchRepository,
 )
+from core.repositories.in_memory_automation import InMemoryAutomationRepository
 from core.repositories.postgres import (
     PostgresApiTokenRepository,
     PostgresCheckpointRepository,
@@ -51,6 +53,7 @@ from core.repositories.postgres import (
 )
 from core.repositories.postgres_task import PostgresTaskRepository
 from core.repositories.postgres_approval import PostgresApprovalRepository
+from core.repositories.postgres_automation import PostgresAutomationRepository
 
 logger = logging.getLogger("aura.repositories.factory")
 
@@ -70,6 +73,7 @@ class RepositoryContainer:
     vectors: BaseVectorSearchRepository
     tasks: BaseTaskRepository | None = None
     approvals: BaseApprovalRepository | None = None
+    automations: BaseAutomationRepository | None = None
     db_pool: DatabaseConnectionPool | None = None
     is_postgres: bool = False
 
@@ -91,6 +95,7 @@ def create_in_memory_repositories() -> RepositoryContainer:
     )
     task_repo = InMemoryTaskRepository()
     approval_repo = InMemoryApprovalRepository(task_repo=task_repo)
+    automation_repo = InMemoryAutomationRepository(task_repo=task_repo)
 
     return RepositoryContainer(
         users=user_repo,
@@ -104,6 +109,7 @@ def create_in_memory_repositories() -> RepositoryContainer:
         vectors=vec_repo,
         tasks=task_repo,
         approvals=approval_repo,
+        automations=automation_repo,
         db_pool=None,
         is_postgres=False,
     )
@@ -125,6 +131,7 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
     vec_repo = PostgresVectorSearchRepository(db_pool)
     task_repo = PostgresTaskRepository(db_pool)
     approval_repo = PostgresApprovalRepository(db_pool)
+    automation_repo = PostgresAutomationRepository(db_pool)
 
     return RepositoryContainer(
         users=user_repo,
@@ -138,6 +145,7 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
         vectors=vec_repo,
         tasks=task_repo,
         approvals=approval_repo,
+        automations=automation_repo,
         db_pool=db_pool,
         is_postgres=True,
     )
