@@ -35,19 +35,24 @@ def create_orchestrator(
     selector = ToolSelector(registry)
     executor = ToolExecutor(registry, policy=policy)
 
-    model_name = cfg.aura_model_name or cfg.aura_generic_model_name
-    api_key = cfg.aura_api_key or cfg.aura_generic_model_api_key
-    base_url = cfg.aura_generic_model_endpoint_url or cfg.aura_local_model_endpoint_url
-
-    return Orchestrator(
-        model=create_model_provider(
+    if cfg.aura_model_fallback_providers and cfg.aura_model_fallback_enabled:
+        from providers.gateway_factory import create_model_gateway
+        model_instance = create_model_gateway(config=cfg)
+    else:
+        model_name = cfg.aura_model_name or cfg.aura_generic_model_name
+        api_key = cfg.aura_api_key or cfg.aura_generic_model_api_key
+        base_url = cfg.aura_generic_model_endpoint_url or cfg.aura_local_model_endpoint_url
+        model_instance = create_model_provider(
             provider=cfg.aura_model_provider,
             model_name=model_name,
             api_key=api_key,
             base_url=base_url,
             timeout=cfg.aura_model_request_timeout_seconds,
             allow_local_endpoints=cfg.aura_allow_local_model_endpoints,
-        ),
+        )
+
+    return Orchestrator(
+        model=model_instance,
         policy=policy,
         memory=InMemoryStore(),
         history=ConversationHistory(),

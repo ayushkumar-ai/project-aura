@@ -39,6 +39,30 @@ def create_model_provider(
             api_key=api_key,
         )
 
+    if provider_name == "gemini":
+        eff_url = base_url.strip() if base_url.strip() else "https://generativelanguage.googleapis.com/v1beta/openai/"
+        eff_model = model_name.strip() if model_name.strip() else "gemini-2.5-flash"
+        return GenericOpenAICompatibleProvider(
+            base_url=eff_url,
+            model_name=eff_model,
+            api_key=api_key,
+            custom_headers=custom_headers,
+            timeout=timeout,
+            allow_local_endpoints=allow_local_endpoints,
+        )
+
+    if provider_name == "groq":
+        eff_url = base_url.strip() if base_url.strip() else "https://api.groq.com/openai/v1"
+        eff_model = model_name.strip() if model_name.strip() else "llama-3.3-70b-versatile"
+        return GenericOpenAICompatibleProvider(
+            base_url=eff_url,
+            model_name=eff_model,
+            api_key=api_key,
+            custom_headers=custom_headers,
+            timeout=timeout,
+            allow_local_endpoints=allow_local_endpoints,
+        )
+
     if provider_name in {"generic", "openai_compatible", "local", "ollama", "vllm", "lmstudio"}:
         if not base_url.strip():
             raise ValueError(f"Base URL cannot be empty for provider '{provider}'.")

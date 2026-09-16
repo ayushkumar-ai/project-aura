@@ -421,6 +421,23 @@ class MetricsRegistry:
             allowed_labels=["resource"],
         )
 
+        # 9. Model Gateway Layer (M51)
+        self.register_counter(
+            "aura_gateway_requests_total",
+            "Total model gateway requests by provider, status, and fallback tier",
+            allowed_labels=["provider", "status", "fallback_tier"],
+        )
+        self.register_counter(
+            "aura_gateway_fallbacks_total",
+            "Total model gateway fallback cascade transitions",
+            allowed_labels=["from_provider", "to_provider", "reason"],
+        )
+        self.register_histogram(
+            "aura_gateway_duration_seconds",
+            "Model gateway request duration latency distribution",
+            allowed_labels=["provider", "status"],
+        )
+
     def register_counter(
         self,
         name: str,

@@ -41,6 +41,15 @@ INLINE_SECRET_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+SAFE_METRIC_KEYS = frozenset({
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "tokens",
+    "token_count",
+    "tokens_total",
+})
+
 REDACTED_STR = "[REDACTED]"
 
 
@@ -66,7 +75,9 @@ def scrub_dict(data: dict[str, Any], max_depth: int = 5) -> dict[str, Any]:
     scrubbed: dict[str, Any] = {}
     for k, v in data.items():
         k_lower = str(k).lower()
-        if any(pat in k_lower for pat in SENSITIVE_KEY_PATTERNS):
+        if k_lower in SAFE_METRIC_KEYS:
+            scrubbed[k] = v
+        elif any(pat in k_lower for pat in SENSITIVE_KEY_PATTERNS):
             scrubbed[k] = REDACTED_STR
         elif isinstance(v, dict):
             scrubbed[k] = scrub_dict(v, max_depth=max_depth - 1)

@@ -137,6 +137,20 @@ class Settings(BaseSettings):
     aura_local_model_endpoint_url: str = ""
     aura_allow_local_model_endpoints: bool = True
 
+    # M51 Multi-Provider Model Gateway & Intelligent Provider Routing Configuration
+    aura_model_gateway_enabled: bool = True
+    aura_model_fallback_providers: str = ""
+    aura_gemini_endpoint_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    aura_gemini_api_key: str = ""
+    aura_gemini_model_name: str = "gemini-2.5-flash"
+    aura_groq_endpoint_url: str = "https://api.groq.com/openai/v1"
+    aura_groq_api_key: str = ""
+    aura_groq_model_name: str = "llama-3.3-70b-versatile"
+    aura_openai_endpoint_url: str = "https://api.openai.com/v1"
+    aura_openai_api_key: str = ""
+    aura_openai_model_name: str = "gpt-4o-mini"
+    aura_gateway_retry_on_rate_limit: bool = True
+
     # M21 Distributed Multi-Agent Team Collaboration Configuration
     aura_max_team_members: int = 20
     aura_max_delegation_depth: int = 3

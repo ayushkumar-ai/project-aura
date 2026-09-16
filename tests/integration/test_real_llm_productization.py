@@ -52,7 +52,14 @@ def test_real_llm_runtime_e2e_execution():
     aura = create_aura(agentic=True, config=REAL_LLM_CONFIG)
 
     assert isinstance(aura.orchestrator.model, ModelInterface)
-    assert isinstance(aura.orchestrator.model, GenericOpenAICompatibleProvider)
+    if isinstance(aura.orchestrator.model, GenericOpenAICompatibleProvider):
+        assert isinstance(aura.orchestrator.model, GenericOpenAICompatibleProvider)
+    else:
+        from core.model_gateway import ModelGateway
+        assert isinstance(aura.orchestrator.model, ModelGateway)
+        primary = aura.orchestrator.model.catalog.get_primary()
+        assert primary is not None
+        assert isinstance(primary.provider, GenericOpenAICompatibleProvider)
 
     test_prompt = "Hello AURA. Reply with the single word: AURA_E2E_CONFIRMED"
     response = aura.run(test_prompt)
