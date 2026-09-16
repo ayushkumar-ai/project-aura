@@ -216,7 +216,7 @@ class BoundedAgenticExecutor:
         cancellation_requested: Any = None,
     ) -> BoundedExecutionResult:
         """Execute the full bounded agentic lifecycle loop."""
-        start_time = time.time()
+        start_time = time.perf_counter()
         import hashlib
         eff_task_id = task_id or f"task_{hashlib.sha256(f'{user_id}:{goal}'.encode()).hexdigest()[:10]}"
         plan = self.create_plan(goal, user_id=user_id, plan_id=plan_id)
@@ -232,7 +232,7 @@ class BoundedAgenticExecutor:
                 steps_executed=0,
                 tool_calls_count=0,
                 replans_count=0,
-                duration_seconds=time.time() - start_time,
+                duration_seconds=max(time.perf_counter() - start_time, 0.0001),
             )
 
         trace = ExecutionTrace(task_id=eff_task_id, plan_id=plan.plan_id)
@@ -244,7 +244,7 @@ class BoundedAgenticExecutor:
         curr_plan = plan
         while not curr_plan.is_completed():
             # Check duration budget
-            elapsed = time.time() - start_time
+            elapsed = max(time.perf_counter() - start_time, 0.0001)
             if elapsed > self.config.max_execution_duration:
                 return BoundedExecutionResult(
                     plan_id=curr_plan.plan_id,
@@ -310,7 +310,7 @@ class BoundedAgenticExecutor:
                             steps_executed=steps_executed,
                             tool_calls_count=tool_calls_count,
                             replans_count=replans_count,
-                            duration_seconds=time.time() - start_time,
+                            duration_seconds=max(time.perf_counter() - start_time, 0.0001),
                             trace=trace,
                             approval_requests=pending_approvals,
                         )
@@ -360,7 +360,7 @@ class BoundedAgenticExecutor:
                         steps_executed=steps_executed,
                         tool_calls_count=tool_calls_count,
                         replans_count=replans_count,
-                        duration_seconds=time.time() - start_time,
+                        duration_seconds=max(time.perf_counter() - start_time, 0.0001),
                         trace=trace,
                         approval_requests=pending_approvals,
                     )
@@ -437,7 +437,7 @@ class BoundedAgenticExecutor:
             steps_executed=steps_executed,
             tool_calls_count=tool_calls_count,
             replans_count=replans_count,
-            duration_seconds=time.time() - start_time,
+            duration_seconds=max(time.perf_counter() - start_time, 0.0001),
             trace=trace,
             approval_requests=pending_approvals,
         )
