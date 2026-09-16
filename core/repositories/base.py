@@ -402,3 +402,149 @@ class BaseVectorSearchRepository(ABC):
         """Update the embedding vector for a specific experience record."""
         pass
 
+
+class BaseTaskRepository(ABC):
+    """Abstract repository for asynchronous background task and step lifecycle."""
+
+    @abstractmethod
+    def create_task(
+        self,
+        user_id: str,
+        title: str,
+        goal: str,
+        context: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        timeout_seconds: int = 600,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a new task record or return existing if idempotency key matches."""
+        pass
+
+    @abstractmethod
+    def get_task(self, task_id: str, user_id: str) -> dict[str, Any] | None:
+        """Retrieve task by ID strictly owned by user_id."""
+        pass
+
+    @abstractmethod
+    def list_tasks(
+        self,
+        user_id: str,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """List tasks owned by user_id with optional status filter."""
+        pass
+
+    @abstractmethod
+    def update_task_status(
+        self,
+        task_id: str,
+        user_id: str,
+        status: str,
+        error_message: str | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> bool:
+        """Update task lifecycle status, error, and result payload."""
+        pass
+
+    @abstractmethod
+    def acquire_next_pending_task(
+        self,
+        worker_id: str = "default",
+        lock_timeout_seconds: int = 600,
+    ) -> dict[str, Any] | None:
+        """Atomically acquire the next pending task for execution."""
+        pass
+
+    @abstractmethod
+    def create_or_update_step(
+        self,
+        task_id: str,
+        user_id: str,
+        step_index: int,
+        name: str,
+        status: str,
+        tool_name: str | None = None,
+        tool_input: dict[str, Any] | None = None,
+        tool_output: dict[str, Any] | None = None,
+        error_message: str | None = None,
+        step_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a task execution step record."""
+        pass
+
+    @abstractmethod
+    def get_steps(self, task_id: str, user_id: str) -> list[dict[str, Any]]:
+        """Retrieve all steps for a task in step_index order."""
+        pass
+
+    @abstractmethod
+    def cancel_task(self, task_id: str, user_id: str) -> bool:
+        """Cancel an in-flight or pending task."""
+        pass
+
+    @abstractmethod
+    def recover_stale_tasks(self, stale_threshold_seconds: float = 300.0) -> list[str]:
+        """Identify and recover stale tasks stuck in running status."""
+        pass
+
+
+class BaseApprovalRepository(ABC):
+    """Abstract repository for human approval requests."""
+
+    @abstractmethod
+    def create_approval(
+        self,
+        task_id: str,
+        user_id: str,
+        action_type: str,
+        action_payload: dict[str, Any],
+        justification: str,
+        step_id: str | None = None,
+        risk_level: str = "medium",
+        expires_in_seconds: int = 1800,
+        nonce: str | None = None,
+        approval_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a new human approval request with a cryptographic nonce."""
+        pass
+
+    @abstractmethod
+    def get_approval(self, approval_id: str, user_id: str) -> dict[str, Any] | None:
+        """Fetch approval request strictly owned by user_id."""
+        pass
+
+    @abstractmethod
+    def list_pending_approvals(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """List active unexpired approval requests for a user."""
+        pass
+
+    @abstractmethod
+    def get_approval_by_task(
+        self,
+        task_id: str,
+        user_id: str,
+        step_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Find approval request associated with task and optional step."""
+        pass
+
+    @abstractmethod
+    def decide_approval(
+        self,
+        approval_id: str,
+        user_id: str,
+        decision: str,
+        nonce: str,
+        reason: str = "",
+    ) -> tuple[bool, str, dict[str, Any] | None]:
+        """Atomically record decision on approval request with nonce check."""
+        pass
+
+    @abstractmethod
+    def expire_stale_approvals(self) -> list[str]:
+        """Mark expired pending approvals as expired."""
+        pass
+
+

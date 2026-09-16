@@ -60,7 +60,12 @@ from core.api_contracts import (
     ProactiveActionRequestSchema,
     DeviceActionRequestSchema,
     CycleRequestSchema,
+    AsyncTaskSubmissionSchema,
+    ApprovalDecisionRequestSchema,
 )
+from core.background import BackgroundTaskWorker, TaskEventBroadcaster, WorkflowOrchestrator
+from core.repositories.base import BaseApprovalRepository, BaseTaskRepository
+import queue
 from core.config_validator import validate_production_config
 
 logger = logging.getLogger("aura.server")
@@ -114,6 +119,28 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
     @property
     def authenticator(self) -> BaseAuthenticator:
         return self.server.authenticator  # type: ignore
+
+    @property
+    def broadcaster(self) -> TaskEventBroadcaster | None:
+        return getattr(self.server, "broadcaster", None)
+
+    @property
+    def workflow_orchestrator(self) -> WorkflowOrchestrator | None:
+        return getattr(self.server, "workflow_orchestrator", None)
+
+    @property
+    def task_worker(self) -> BackgroundTaskWorker | None:
+        return getattr(self.server, "task_worker", None)
+
+    @property
+    def task_repo(self) -> BaseTaskRepository | None:
+        rc = getattr(self.server, "repository_container", None)
+        return getattr(rc, "tasks", None) if rc else None
+
+    @property
+    def approval_repo(self) -> BaseApprovalRepository | None:
+        rc = getattr(self.server, "repository_container", None)
+        return getattr(rc, "approvals", None) if rc else None
 
     def _setup_request_context(self) -> tuple[str, str, Any]:
         """Initialize correlation context from headers (X-Request-ID, W3C traceparent)."""
@@ -579,6 +606,123 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response(validation_report.to_dict() if hasattr(validation_report, "to_dict") else validation_report)
             return
 
+        # M52: Task Event Stream (SSE)
+        if path.startswith("/v1/tasks/") and path.endswith("/events"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            task_id = path[len("/v1/tasks/"):-len("/events")].strip()
+            if not self.task_repo or not self.broadcaster:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Task system not initialized")
+                return
+            task = self.task_repo.get_task(task_id, user_id=user_id)
+            if not task:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "task_not_found", f"Task '{task_id}' not found")
+                return
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self._set_cors_headers()
+            self.end_headers()
+
+            init_evt = self.broadcaster.format_sse("task_status", {
+                "task_id": task["id"],
+                "status": task["status"],
+                "title": task["title"],
+            })
+            try:
+                self.wfile.write(init_evt.encode("utf-8"))
+                self.wfile.flush()
+            except Exception:
+                return
+
+            if task["status"] in ("completed", "failed", "cancelled", "timed_out"):
+                term_evt = self.broadcaster.format_sse(f"task_{task['status']}", task)
+                try:
+                    self.wfile.write(term_evt.encode("utf-8"))
+                    self.wfile.flush()
+                except Exception:
+                    pass
+                return
+
+            event_queue = self.broadcaster.subscribe(task_id)
+            ping_interval = getattr(self.config, "aura_task_sse_ping_interval_seconds", 15)
+            try:
+                while True:
+                    try:
+                        msg = event_queue.get(timeout=ping_interval)
+                        evt_str = self.broadcaster.format_sse(msg["event"], msg["data"])
+                        self.wfile.write(evt_str.encode("utf-8"))
+                        self.wfile.flush()
+                        if msg["event"] in ("task_completed", "task_failed", "task_cancelled", "task_timed_out"):
+                            break
+                    except queue.Empty:
+                        ping_str = self.broadcaster.format_ping()
+                        self.wfile.write(ping_str.encode("utf-8"))
+                        self.wfile.flush()
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError, Exception):
+                logger.debug(f"SSE client disconnected for task '{task_id}'")
+            finally:
+                self.close_connection = True
+                self.broadcaster.unsubscribe(task_id, event_queue)
+            return
+
+        # M52: Task Status & Details
+        if path.startswith("/v1/tasks/"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            task_id = path[len("/v1/tasks/"):].strip()
+            if not self.task_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Task repository unavailable")
+                return
+            task = self.task_repo.get_task(task_id, user_id=user_id)
+            if not task:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "task_not_found", f"Task '{task_id}' not found")
+                return
+            steps = self.task_repo.get_steps(task_id, user_id=user_id)
+            task["steps"] = steps
+            self._send_json_response(task)
+            return
+
+        # M52: List Pending Approvals
+        if path == "/v1/approvals":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.approval_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Approval repository unavailable")
+                return
+            approvals = self.approval_repo.list_pending_approvals(user_id=user_id)
+            self._send_json_response({"approvals": approvals, "count": len(approvals)})
+            return
+
+        # M52: Get Approval Detail
+        if path.startswith("/v1/approvals/"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            approval_id = path[len("/v1/approvals/"):].strip()
+            if not self.approval_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Approval repository unavailable")
+                return
+            approval = self.approval_repo.get_approval(approval_id, user_id=user_id)
+            if not approval:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "approval_not_found", f"Approval '{approval_id}' not found")
+                return
+            self._send_json_response(approval)
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_POST(self) -> None:
@@ -773,6 +917,143 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "cycle_execution_error", str(e))
             return
 
+        # M52: Submit Asynchronous Task
+        if path == "/v1/tasks":
+            try:
+                task_sub = AsyncTaskSubmissionSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            if not self.task_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Task repository unavailable")
+                return
+
+            idempotency_key = self.headers.get("Idempotency-Key")
+            timeout_sec = task_sub.timeout_seconds or getattr(self.config, "aura_task_default_timeout_seconds", 600)
+
+            try:
+                task = self.task_repo.create_task(
+                    user_id=user_id,
+                    title=task_sub.title,
+                    goal=task_sub.goal,
+                    context=task_sub.context,
+                    idempotency_key=idempotency_key,
+                    timeout_seconds=timeout_sec,
+                )
+                if self.broadcaster:
+                    self.broadcaster.publish(task["id"], "task_enqueued", {
+                        "task_id": task["id"],
+                        "title": task["title"],
+                        "status": task["status"],
+                    })
+
+                self._send_json_response(
+                    {
+                        "task_id": task["id"],
+                        "status": task["status"],
+                        "title": task["title"],
+                        "created_at": task["created_at"],
+                        "events_url": f"/v1/tasks/{task['id']}/events",
+                    },
+                    status=HTTPStatus.ACCEPTED,
+                )
+            except Exception as e:
+                logger.error(f"Error submitting async task: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "task_submission_error", str(e))
+            return
+
+        # M52: Cancel Asynchronous Task
+        if path.startswith("/v1/tasks/") and path.endswith("/cancel"):
+            task_id = path[len("/v1/tasks/"):-len("/cancel")].strip()
+            if not self.task_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Task repository unavailable")
+                return
+
+            task = self.task_repo.get_task(task_id, user_id=user_id)
+            if not task:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "task_not_found", f"Task '{task_id}' not found")
+                return
+
+            cancelled = False
+            if self.task_worker:
+                cancelled = self.task_worker.cancel_task(task_id, user_id=user_id)
+            else:
+                cancelled = self.task_repo.cancel_task(task_id, user_id=user_id)
+
+            if self.broadcaster:
+                self.broadcaster.publish(task_id, "task_cancelled", {"task_id": task_id})
+
+            self._send_json_response({
+                "task_id": task_id,
+                "status": "cancelled",
+                "cancelled": cancelled,
+                "message": "Cancellation signal processed",
+            })
+            return
+
+        # M52: Decide Approval Request
+        if path.startswith("/v1/approvals/") and path.endswith("/decide"):
+            approval_id = path[len("/v1/approvals/"):-len("/decide")].strip()
+            try:
+                dec_schema = ApprovalDecisionRequestSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            if not self.approval_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Approval repository unavailable")
+                return
+
+            success, msg, updated_appr = self.approval_repo.decide_approval(
+                approval_id=approval_id,
+                user_id=user_id,
+                decision=dec_schema.decision,
+                nonce=dec_schema.nonce,
+                reason=dec_schema.reason or "",
+            )
+
+            if not success:
+                if "not found" in msg.lower():
+                    self._send_error_response(HTTPStatus.NOT_FOUND, "approval_not_found", msg)
+                elif "expired" in msg.lower():
+                    self._send_error_response(HTTPStatus.GONE, "approval_expired", msg)
+                elif "nonce" in msg.lower():
+                    self._send_error_response(HTTPStatus.FORBIDDEN, "invalid_nonce", msg)
+                else:
+                    self._send_error_response(HTTPStatus.BAD_REQUEST, "decision_failed", msg)
+                return
+
+            get_security_audit_logger().record_event(
+                event_type=SecurityEventType.AUTH_SUCCESS,
+                outcome="success",
+                user_id=user_id,
+                reason=f"Approval {dec_schema.decision}: {dec_schema.reason}",
+                metadata={"approval_id": approval_id, "decision": dec_schema.decision},
+            )
+
+            try:
+                get_metrics_registry().get_counter("aura_approvals_total").inc(labels={"decision": dec_schema.decision})
+            except Exception:
+                pass
+
+            task_id = updated_appr.get("task_id") if updated_appr else None
+            if self.broadcaster and task_id:
+                self.broadcaster.publish(task_id, "approval_decided", {
+                    "task_id": task_id,
+                    "approval_id": approval_id,
+                    "decision": dec_schema.decision,
+                })
+
+            self._send_json_response({
+                "approval_id": approval_id,
+                "status": dec_schema.decision,
+                "task_status": "pending" if dec_schema.decision == "approved" else "failed",
+                "resumed": (dec_schema.decision == "approved"),
+                "reason": dec_schema.reason,
+            })
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
 
@@ -814,6 +1095,27 @@ class AURAHTTPServer:
         self._thread: threading.Thread | None = None
         self._is_running = False
 
+        # M52 Asynchronous Background Subsystem
+        self.broadcaster = TaskEventBroadcaster()
+        self.workflow_orchestrator = WorkflowOrchestrator(
+            task_repo=self.repository_container.tasks,
+            approval_repo=self.repository_container.approvals,
+            broadcaster=self.broadcaster,
+            model_gateway=getattr(self.aura, "model_gateway", None),
+            policy_engine=getattr(self.aura, "policy", None),
+            tool_registry=getattr(self.aura, "tool_registry", None),
+        )
+        if getattr(self.config, "aura_task_worker_enabled", True) and self.repository_container.tasks:
+            self.task_worker = BackgroundTaskWorker(
+                task_repo=self.repository_container.tasks,
+                approval_repo=self.repository_container.approvals,
+                orchestrator=self.workflow_orchestrator,
+                concurrency=getattr(self.config, "aura_task_worker_concurrency", 4),
+                poll_interval_ms=getattr(self.config, "aura_task_poll_interval_ms", 500),
+            )
+        else:
+            self.task_worker = None
+
     def start(self, block: bool = True) -> None:
         """Start the HTTP server on configured host and port."""
         server_address = (self.host, self.port)
@@ -823,7 +1125,13 @@ class AURAHTTPServer:
         self._server.start_time = self.start_time  # type: ignore
         self._server.authenticator = self.authenticator  # type: ignore
         self._server.repository_container = self.repository_container  # type: ignore
+        self._server.broadcaster = self.broadcaster  # type: ignore
+        self._server.workflow_orchestrator = self.workflow_orchestrator  # type: ignore
+        self._server.task_worker = self.task_worker  # type: ignore
         self._is_running = True
+
+        if self.task_worker:
+            self.task_worker.start()
 
         logger.info(
             f"Starting {self.config.aura_app_name} HTTP Server on http://{self.host}:{self.port} (env: {self.config.aura_env})"
@@ -846,6 +1154,12 @@ class AURAHTTPServer:
 
         logger.info("Initiating graceful server shutdown...")
         self._is_running = False
+
+        if getattr(self, "task_worker", None):
+            try:
+                self.task_worker.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping BackgroundTaskWorker: {e}")
 
         # Flush runtime state checkpoint if agentic runtime is available
         if self.aura and self.aura.agentic_runtime:

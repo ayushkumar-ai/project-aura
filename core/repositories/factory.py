@@ -14,22 +14,26 @@ from app.config import Settings, settings
 from core.database import DatabaseConnectionPool, MigrationRunner
 from core.repositories.base import (
     BaseApiTokenRepository,
+    BaseApprovalRepository,
     BaseCheckpointRepository,
     BaseConversationRepository,
     BaseExperienceRepository,
     BaseKnowledgeRepository,
     BaseMemoryRepository,
+    BaseTaskRepository,
     BaseUserPreferencesRepository,
     BaseUserRepository,
     BaseVectorSearchRepository,
 )
 from core.repositories.in_memory import (
     InMemoryApiTokenRepository,
+    InMemoryApprovalRepository,
     InMemoryCheckpointRepository,
     InMemoryConversationRepository,
     InMemoryExperienceRepository,
     InMemoryKnowledgeRepository,
     InMemoryMemoryRepository,
+    InMemoryTaskRepository,
     InMemoryUserPreferencesRepository,
     InMemoryUserRepository,
     InMemoryVectorSearchRepository,
@@ -45,6 +49,8 @@ from core.repositories.postgres import (
     PostgresUserRepository,
     PostgresVectorSearchRepository,
 )
+from core.repositories.postgres_task import PostgresTaskRepository
+from core.repositories.postgres_approval import PostgresApprovalRepository
 
 logger = logging.getLogger("aura.repositories.factory")
 
@@ -62,6 +68,8 @@ class RepositoryContainer:
     checkpoints: BaseCheckpointRepository
     knowledge: BaseKnowledgeRepository
     vectors: BaseVectorSearchRepository
+    tasks: BaseTaskRepository | None = None
+    approvals: BaseApprovalRepository | None = None
     db_pool: DatabaseConnectionPool | None = None
     is_postgres: bool = False
 
@@ -81,6 +89,8 @@ def create_in_memory_repositories() -> RepositoryContainer:
         memory_repo=mem_repo,
         experience_repo=exp_repo,
     )
+    task_repo = InMemoryTaskRepository()
+    approval_repo = InMemoryApprovalRepository(task_repo=task_repo)
 
     return RepositoryContainer(
         users=user_repo,
@@ -92,6 +102,8 @@ def create_in_memory_repositories() -> RepositoryContainer:
         checkpoints=chk_repo,
         knowledge=know_repo,
         vectors=vec_repo,
+        tasks=task_repo,
+        approvals=approval_repo,
         db_pool=None,
         is_postgres=False,
     )
@@ -111,6 +123,8 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
     chk_repo = PostgresCheckpointRepository(db_pool)
     know_repo = PostgresKnowledgeRepository(db_pool)
     vec_repo = PostgresVectorSearchRepository(db_pool)
+    task_repo = PostgresTaskRepository(db_pool)
+    approval_repo = PostgresApprovalRepository(db_pool)
 
     return RepositoryContainer(
         users=user_repo,
@@ -122,6 +136,8 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
         checkpoints=chk_repo,
         knowledge=know_repo,
         vectors=vec_repo,
+        tasks=task_repo,
+        approvals=approval_repo,
         db_pool=db_pool,
         is_postgres=True,
     )

@@ -203,6 +203,14 @@ class Settings(BaseSettings):
     aura_metrics_enabled: bool = True
     aura_security_audit_log_path: str = ""
 
+    # M52 Asynchronous Background Tasks & Human Approval Configuration
+    aura_task_worker_enabled: bool = True
+    aura_task_worker_concurrency: int = 4
+    aura_task_poll_interval_ms: int = 500
+    aura_task_default_timeout_seconds: int = 600
+    aura_approval_default_expiry_seconds: int = 1800
+    aura_task_sse_ping_interval_seconds: int = 15
+
 
     model_config = SettingsConfigDict(
         env_file=".env",

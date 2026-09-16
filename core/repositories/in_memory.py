@@ -33,6 +33,8 @@ from core.repositories.base import (
     BaseUserPreferencesRepository,
     BaseUserRepository,
     BaseVectorSearchRepository,
+    BaseTaskRepository,
+    BaseApprovalRepository,
 )
 
 
@@ -906,3 +908,356 @@ class InMemoryVectorSearchRepository(BaseVectorSearchRepository):
             self._experience_embeddings[experience_id] = (user_id, list(embedding))
             return True
 
+
+
+class InMemoryTaskRepository(BaseTaskRepository):
+    """In-memory thread-safe task and step lifecycle repository."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._tasks: dict[str, dict[str, Any]] = {}
+        self._steps: dict[str, list[dict[str, Any]]] = {}
+        # (user_id, idempotency_key) -> task_id
+        self._idempotency_map: dict[tuple[str, str], str] = {}
+
+    def create_task(
+        self,
+        user_id: str,
+        title: str,
+        goal: str,
+        context: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        timeout_seconds: int = 600,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if idempotency_key and idempotency_key.strip():
+                ik = (user_id, idempotency_key.strip())
+                if ik in self._idempotency_map:
+                    tid = self._idempotency_map[ik]
+                    return dict(self._tasks[tid])
+
+            eff_task_id = (task_id or str(uuid4())).strip()
+            now = time.time()
+            record = {
+                "id": eff_task_id,
+                "user_id": user_id,
+                "title": title.strip(),
+                "goal": goal.strip(),
+                "context": dict(context or {}),
+                "status": "pending",
+                "result": None,
+                "error_message": None,
+                "idempotency_key": idempotency_key.strip() if idempotency_key else None,
+                "timeout_seconds": int(timeout_seconds),
+                "created_at": now,
+                "started_at": None,
+                "completed_at": None,
+                "updated_at": now,
+            }
+            self._tasks[eff_task_id] = record
+            if idempotency_key and idempotency_key.strip():
+                self._idempotency_map[(user_id, idempotency_key.strip())] = eff_task_id
+            return dict(record)
+
+    def get_task(self, task_id: str, user_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            task = self._tasks.get(task_id.strip())
+            if not task or task["user_id"] != user_id:
+                return None
+            return dict(task)
+
+    def list_tasks(
+        self,
+        user_id: str,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            matched = [
+                dict(t) for t in self._tasks.values()
+                if t["user_id"] == user_id and (not status or t["status"] == status.strip().lower())
+            ]
+            matched.sort(key=lambda x: x["created_at"], reverse=True)
+            return matched[offset:offset + limit]
+
+    def update_task_status(
+        self,
+        task_id: str,
+        user_id: str,
+        status: str,
+        error_message: str | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> bool:
+        with self._lock:
+            task = self._tasks.get(task_id.strip())
+            if not task or task["user_id"] != user_id:
+                return False
+
+            status_norm = status.strip().lower()
+            task["status"] = status_norm
+            now = time.time()
+            task["updated_at"] = now
+
+            if status_norm == "running" and not task.get("started_at"):
+                task["started_at"] = now
+            elif status_norm in ("completed", "failed", "cancelled", "timed_out"):
+                task["completed_at"] = now
+
+            if error_message is not None:
+                task["error_message"] = error_message
+            if result is not None:
+                task["result"] = result
+
+            return True
+
+    def acquire_next_pending_task(
+        self,
+        worker_id: str = "default",
+        lock_timeout_seconds: int = 600,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            pending_tasks = [t for t in self._tasks.values() if t["status"] == "pending"]
+            if not pending_tasks:
+                return None
+            pending_tasks.sort(key=lambda x: x["created_at"])
+            target = pending_tasks[0]
+            now = time.time()
+            target["status"] = "running"
+            target["started_at"] = target.get("started_at") or now
+            target["updated_at"] = now
+            return dict(target)
+
+    def create_or_update_step(
+        self,
+        task_id: str,
+        user_id: str,
+        step_index: int,
+        name: str,
+        status: str,
+        tool_name: str | None = None,
+        tool_input: dict[str, Any] | None = None,
+        tool_output: dict[str, Any] | None = None,
+        error_message: str | None = None,
+        step_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            task = self._tasks.get(task_id.strip())
+            if not task or task["user_id"] != user_id:
+                raise ValueError(f"Task '{task_id}' not found for user '{user_id}'")
+
+            steps = self._steps.setdefault(task_id.strip(), [])
+            existing_step = next((s for s in steps if s["step_index"] == int(step_index)), None)
+            now = time.time()
+            status_norm = status.strip().lower()
+
+            if existing_step:
+                existing_step["status"] = status_norm
+                if tool_name is not None:
+                    existing_step["tool_name"] = tool_name
+                if tool_input is not None:
+                    existing_step["tool_input"] = tool_input
+                if tool_output is not None:
+                    existing_step["tool_output"] = tool_output
+                if error_message is not None:
+                    existing_step["error_message"] = error_message
+                if status_norm == "running" and not existing_step.get("started_at"):
+                    existing_step["started_at"] = now
+                elif status_norm in ("completed", "failed", "skipped"):
+                    existing_step["completed_at"] = now
+                return dict(existing_step)
+            else:
+                eff_step_id = (step_id or str(uuid4())).strip()
+                record = {
+                    "id": eff_step_id,
+                    "task_id": task_id.strip(),
+                    "user_id": user_id,
+                    "step_index": int(step_index),
+                    "name": name.strip(),
+                    "status": status_norm,
+                    "tool_name": tool_name,
+                    "tool_input": dict(tool_input or {}) if tool_input is not None else None,
+                    "tool_output": tool_output,
+                    "error_message": error_message,
+                    "started_at": now if status_norm == "running" else None,
+                    "completed_at": now if status_norm in ("completed", "failed", "skipped") else None,
+                    "created_at": now,
+                }
+                steps.append(record)
+                return dict(record)
+
+    def get_steps(self, task_id: str, user_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            task = self._tasks.get(task_id.strip())
+            if not task or task["user_id"] != user_id:
+                return []
+            steps = list(self._steps.get(task_id.strip(), []))
+            steps.sort(key=lambda s: s["step_index"])
+            return [dict(s) for s in steps]
+
+    def cancel_task(self, task_id: str, user_id: str) -> bool:
+        with self._lock:
+            task = self._tasks.get(task_id.strip())
+            if not task or task["user_id"] != user_id:
+                return False
+            if task["status"] in ("pending", "running", "awaiting_approval"):
+                task["status"] = "cancelled"
+                now = time.time()
+                task["completed_at"] = now
+                task["updated_at"] = now
+                return True
+            return False
+
+    def recover_stale_tasks(self, stale_threshold_seconds: float = 300.0) -> list[str]:
+        with self._lock:
+            now = time.time()
+            recovered = []
+            for t in self._tasks.values():
+                if t["status"] == "running" and (now - t["updated_at"]) > stale_threshold_seconds:
+                    t["status"] = "failed"
+                    t["error_message"] = "Worker crashed during execution"
+                    t["completed_at"] = now
+                    t["updated_at"] = now
+                    recovered.append(t["id"])
+            return recovered
+
+
+class InMemoryApprovalRepository(BaseApprovalRepository):
+    """In-memory thread-safe human approval repository with cryptographic nonce validation."""
+
+    def __init__(self, task_repo: BaseTaskRepository | None = None) -> None:
+        self._lock = threading.RLock()
+        self._approvals: dict[str, dict[str, Any]] = {}
+        self._task_repo = task_repo
+
+    def set_task_repo(self, task_repo: BaseTaskRepository) -> None:
+        self._task_repo = task_repo
+
+    def create_approval(
+        self,
+        task_id: str,
+        user_id: str,
+        action_type: str,
+        action_payload: dict[str, Any],
+        justification: str,
+        step_id: str | None = None,
+        risk_level: str = "medium",
+        expires_in_seconds: int = 1800,
+        nonce: str | None = None,
+        approval_id: str | None = None,
+    ) -> dict[str, Any]:
+        import secrets
+        with self._lock:
+            eff_approval_id = (approval_id or str(uuid4())).strip()
+            eff_nonce = nonce.strip() if nonce else secrets.token_urlsafe(32)
+            now = time.time()
+            record = {
+                "id": eff_approval_id,
+                "task_id": task_id.strip(),
+                "step_id": step_id.strip() if step_id else None,
+                "user_id": user_id,
+                "action_type": action_type.strip(),
+                "action_payload": dict(action_payload or {}),
+                "risk_level": risk_level.strip().lower(),
+                "justification": justification.strip(),
+                "status": "pending",
+                "nonce": eff_nonce,
+                "decision_reason": None,
+                "expires_at": now + float(expires_in_seconds),
+                "decided_at": None,
+                "created_at": now,
+            }
+            self._approvals[eff_approval_id] = record
+            return dict(record)
+
+    def get_approval(self, approval_id: str, user_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            appr = self._approvals.get(approval_id.strip())
+            if not appr or appr["user_id"] != user_id:
+                return None
+            return dict(appr)
+
+    def list_pending_approvals(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            now = time.time()
+            matched = [
+                dict(a) for a in self._approvals.values()
+                if a["user_id"] == user_id and a["status"] == "pending" and a["expires_at"] > now
+            ]
+            matched.sort(key=lambda x: x["created_at"], reverse=True)
+            return matched[:limit]
+
+    def get_approval_by_task(
+        self,
+        task_id: str,
+        user_id: str,
+        step_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Find approval request associated with task and optional step."""
+        with self._lock:
+            for a in self._approvals.values():
+                if a["user_id"] == user_id and a["task_id"] == task_id:
+                    if step_id is None or a.get("step_id") == step_id:
+                        return dict(a)
+            return None
+
+    def decide_approval(
+        self,
+        approval_id: str,
+        user_id: str,
+        decision: str,
+        nonce: str,
+        reason: str = "",
+    ) -> tuple[bool, str, dict[str, Any] | None]:
+        import secrets
+        dec_norm = decision.strip().lower()
+        if dec_norm not in ("approved", "rejected"):
+            return False, f"Invalid decision '{decision}'. Must be 'approved' or 'rejected'.", None
+
+        with self._lock:
+            appr = self._approvals.get(approval_id.strip())
+            if not appr or appr["user_id"] != user_id:
+                return False, "Approval request not found.", None
+
+            if appr["status"] != "pending":
+                return False, f"Approval request has already been decided ({appr['status']}).", dict(appr)
+
+            now = time.time()
+            if appr["expires_at"] <= now:
+                appr["status"] = "expired"
+                return False, "Approval request has expired.", dict(appr)
+
+            if not secrets.compare_digest(appr["nonce"], nonce.strip()):
+                return False, "Invalid approval nonce.", None
+
+            appr["status"] = dec_norm
+            appr["decision_reason"] = reason.strip()
+            appr["decided_at"] = now
+
+            # If task_repo is available, update task state
+            if self._task_repo is not None:
+                task_id = appr["task_id"]
+                if dec_norm == "approved":
+                    self._task_repo.update_task_status(task_id, user_id, "pending")
+                else:
+                    self._task_repo.update_task_status(
+                        task_id, user_id, "failed", error_message=f"Approval rejected: {reason.strip()}"
+                    )
+
+            return True, f"Approval successfully {dec_norm}.", dict(appr)
+
+    def expire_stale_approvals(self) -> list[str]:
+        with self._lock:
+            now = time.time()
+            expired = []
+            for a in self._approvals.values():
+                if a["status"] == "pending" and a["expires_at"] <= now:
+                    a["status"] = "expired"
+                    expired.append(a["id"])
+                    if self._task_repo is not None:
+                        self._task_repo.update_task_status(
+                            a["task_id"], a["user_id"], "timed_out",
+                            error_message="Approval request expired without decision"
+                        )
+            return expired

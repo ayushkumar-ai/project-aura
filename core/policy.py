@@ -32,6 +32,7 @@ class Policy:
                 "analysis_tool",
                 "execution_tool",
                 "verification_tool",
+                "web_fetch",
             }
         )
         self.privileged_tools = (

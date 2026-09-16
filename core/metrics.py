@@ -438,6 +438,38 @@ class MetricsRegistry:
             allowed_labels=["provider", "status"],
         )
 
+        # 10. Background Task & Human Approval Gateway Layer (M52)
+        self.register_gauge(
+            "aura_tasks_active",
+            "Active background tasks by status",
+            allowed_labels=["status"],
+        )
+        self.register_counter(
+            "aura_tasks_total",
+            "Total background tasks completed or terminated by status",
+            allowed_labels=["status"],
+        )
+        self.register_histogram(
+            "aura_task_duration_seconds",
+            "Background task duration latency distribution",
+            allowed_labels=["status"],
+        )
+        self.register_counter(
+            "aura_task_steps_total",
+            "Total background task steps executed by status",
+            allowed_labels=["status"],
+        )
+        self.register_counter(
+            "aura_approvals_total",
+            "Total human approval decisions",
+            allowed_labels=["decision"],
+        )
+        self.register_histogram(
+            "aura_approval_duration_seconds",
+            "Human approval latency from creation to resolution",
+            allowed_labels=["decision"],
+        )
+
     def register_counter(
         self,
         name: str,

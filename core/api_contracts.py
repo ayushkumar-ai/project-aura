@@ -173,3 +173,23 @@ class CycleRequestSchema(BaseModel):
     def get_input_text(self) -> str:
         text = self.user_input or self.prompt or self.goal or ""
         return text.strip()
+
+
+class AsyncTaskSubmissionSchema(BaseModel):
+    """Schema for POST /v1/tasks asynchronous submission."""
+    model_config = ConfigDict(extra="ignore")
+
+    title: str = Field(..., min_length=1, max_length=255, description="Short title for the task")
+    goal: str = Field(..., min_length=1, max_length=100000, description="Task objective or instruction")
+    context: dict[str, Any] = Field(default_factory=dict, description="Context parameters or initial state")
+    timeout_seconds: int | None = Field(default=None, ge=1, le=86400, description="Optional task timeout limit in seconds")
+
+
+class ApprovalDecisionRequestSchema(BaseModel):
+    """Schema for POST /v1/approvals/{id}/decide."""
+    model_config = ConfigDict(extra="ignore")
+
+    decision: str = Field(..., description="Decision outcome: approved or rejected")
+    nonce: str = Field(..., min_length=1, max_length=128, description="Cryptographic nonce provided with the approval request")
+    reason: str | None = Field(default="", max_length=2000, description="Optional justification or decision reason")
+
