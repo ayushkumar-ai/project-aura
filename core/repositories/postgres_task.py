@@ -166,6 +166,20 @@ class PostgresTaskRepository(BaseTaskRepository):
         status_norm = status.strip().lower()
         res_json = json.dumps(result) if result is not None else None
 
+        # M52 Hardening: explicit state transition rules enforcing terminal state immutability
+        valid_transitions: dict[str, tuple[str, ...]] = {
+            "running": ("pending", "running"),
+            "awaiting_approval": ("running", "awaiting_approval"),
+            "pending": ("awaiting_approval", "pending", "running"),
+            "completed": ("pending", "running"),
+            "failed": ("pending", "running", "awaiting_approval"),
+            "timed_out": ("pending", "running", "awaiting_approval"),
+            "cancelled": ("pending", "running", "awaiting_approval", "cancelled"),
+        }
+        allowed_sources = valid_transitions.get(status_norm)
+        if not allowed_sources:
+            return False
+
         with self.pool.transaction() as conn:
             with conn.cursor() as cur:
                 if status_norm == "running":
@@ -175,9 +189,9 @@ class PostgresTaskRepository(BaseTaskRepository):
                         SET status = %s,
                             started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = %s AND user_id = %s;
+                        WHERE id = %s AND user_id = %s AND status = ANY(%s);
                         """,
-                        (status_norm, task_id.strip(), user_id),
+                        (status_norm, task_id.strip(), user_id, list(allowed_sources)),
                     )
                 elif status_norm in ("completed", "failed", "cancelled", "timed_out"):
                     cur.execute(
@@ -188,9 +202,9 @@ class PostgresTaskRepository(BaseTaskRepository):
                             result = COALESCE(%s::jsonb, result),
                             completed_at = CURRENT_TIMESTAMP,
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = %s AND user_id = %s;
+                        WHERE id = %s AND user_id = %s AND status = ANY(%s);
                         """,
-                        (status_norm, error_message, res_json, task_id.strip(), user_id),
+                        (status_norm, error_message, res_json, task_id.strip(), user_id, list(allowed_sources)),
                     )
                 else:
                     cur.execute(
@@ -200,9 +214,9 @@ class PostgresTaskRepository(BaseTaskRepository):
                             error_message = COALESCE(%s, error_message),
                             result = COALESCE(%s::jsonb, result),
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = %s AND user_id = %s;
+                        WHERE id = %s AND user_id = %s AND status = ANY(%s);
                         """,
-                        (status_norm, error_message, res_json, task_id.strip(), user_id),
+                        (status_norm, error_message, res_json, task_id.strip(), user_id, list(allowed_sources)),
                     )
                 return cur.rowcount > 0
 

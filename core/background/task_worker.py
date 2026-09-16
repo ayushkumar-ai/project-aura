@@ -149,9 +149,10 @@ class BackgroundTaskWorker:
             self.orchestrator.execute_task(task_record, cancellation_requested=token.is_cancelled)
         except Exception as e:
             logger.error(f"Unhandled exception in background execution for task '{tid}': {e}", exc_info=True)
-            self.task_repo.update_task_status(
-                tid,
-                task_record["user_id"],
-                "failed",
-                error_message=f"Internal worker exception: {e}",
-            )
+            if not token.is_cancelled():
+                self.task_repo.update_task_status(
+                    tid,
+                    task_record["user_id"],
+                    "failed",
+                    error_message=f"Internal worker exception: {e}",
+                )

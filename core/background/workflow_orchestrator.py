@@ -54,6 +54,18 @@ class WorkflowOrchestrator:
         )
         self.sensitive_tools = {"web_fetch", "device_action", "file_delete", "system_write", "shell_exec", "eval"}
 
+    def _is_task_cancelled(self, task_id: str, user_id: str, cancellation_requested: Any = None) -> bool:
+        """Check whether cooperative cancellation has been requested via token or persisted database record."""
+        if cancellation_requested and (callable(cancellation_requested) and cancellation_requested()):
+            return True
+        try:
+            task = self.task_repo.get_task(task_id, user_id)
+            if task and task.get("status") == "cancelled":
+                return True
+        except Exception:
+            pass
+        return False
+
     def execute_task(
         self,
         task_dict: dict[str, Any],
@@ -137,7 +149,7 @@ class WorkflowOrchestrator:
             tool_name = step.get("tool_name") or "analysis_tool"
 
             # Check cooperative cancellation
-            if cancellation_requested and (callable(cancellation_requested) and cancellation_requested()):
+            if self._is_task_cancelled(task_id, user_id, cancellation_requested):
                 logger.info(f"Task '{task_id}' was cancelled by operator")
                 self.task_repo.update_task_status(task_id, user_id, "cancelled")
                 self.broadcaster.publish(task_id, "task_cancelled", {"task_id": task_id})
@@ -265,7 +277,29 @@ class WorkflowOrchestrator:
                     get_metrics_registry().get_counter("aura_task_steps_total").inc(labels={"status": "completed"})
                 except Exception:
                     pass
+
+                # M52 Hardening Fix #1: Post-tool cooperative cancellation check
+                if self._is_task_cancelled(task_id, user_id, cancellation_requested):
+                    logger.info(f"Task '{task_id}' was cancelled during or immediately after step '{step_idx}'")
+                    self.task_repo.update_task_status(task_id, user_id, "cancelled")
+                    self.broadcaster.publish(task_id, "task_cancelled", {"task_id": task_id})
+                    self._record_task_completion("cancelled", start_time)
+                    return {"status": "cancelled", "task_id": task_id}
+
             except Exception as se:
+                # M52 Hardening: Check cancellation before treating exception as fatal workflow failure
+                if self._is_task_cancelled(task_id, user_id, cancellation_requested):
+                    logger.info(f"Task '{task_id}' was cancelled while executing step '{step_idx}' which raised: {se}")
+                    err_msg = f"Step '{step_idx}' interrupted by cancellation: {se}"
+                    self.task_repo.create_or_update_step(
+                        task_id=task_id, user_id=user_id, step_index=step_idx,
+                        name=step_name, status="failed", error_message=err_msg
+                    )
+                    self.task_repo.update_task_status(task_id, user_id, "cancelled")
+                    self.broadcaster.publish(task_id, "task_cancelled", {"task_id": task_id})
+                    self._record_task_completion("cancelled", start_time)
+                    return {"status": "cancelled", "task_id": task_id}
+
                 err_msg = f"Step '{step_idx}' ({tool_name}) failed: {se}"
                 logger.error(err_msg, exc_info=True)
                 self.task_repo.create_or_update_step(
@@ -277,13 +311,37 @@ class WorkflowOrchestrator:
                 self._record_task_completion("failed", start_time)
                 return {"status": "failed", "error": err_msg}
 
+        # Check cancellation before marking task completed
+        if self._is_task_cancelled(task_id, user_id, cancellation_requested):
+            logger.info(f"Task '{task_id}' was cancelled before completion finalization")
+            self.task_repo.update_task_status(task_id, user_id, "cancelled")
+            self.broadcaster.publish(task_id, "task_cancelled", {"task_id": task_id})
+            self._record_task_completion("cancelled", start_time)
+            return {"status": "cancelled", "task_id": task_id}
+
         # 3. Complete task
         final_result = {
             "summary": f"Completed {len(existing_steps)} workflow steps successfully.",
             "steps_count": len(existing_steps),
             "step_outputs": step_results,
         }
-        self.task_repo.update_task_status(task_id, user_id, "completed", result=final_result)
+        updated = self.task_repo.update_task_status(task_id, user_id, "completed", result=final_result)
+        if not updated:
+            # M52 Hardening Fix #3: Detect rejected terminal update
+            cur_task = self.task_repo.get_task(task_id, user_id)
+            cur_status = cur_task.get("status") if cur_task else "unknown"
+            logger.warning(
+                f"Task '{task_id}' completion update rejected by repository; current durable status is '{cur_status}'"
+            )
+            # DO NOT publish task_completed! Preserve DB terminal state consistency
+            if cur_status == "cancelled":
+                self.broadcaster.publish(task_id, "task_cancelled", {"task_id": task_id})
+                self._record_task_completion("cancelled", start_time)
+                return {"status": "cancelled", "task_id": task_id}
+            else:
+                self._record_task_completion(cur_status, start_time)
+                return {"status": cur_status, "task_id": task_id, "error": f"Task already in terminal state '{cur_status}'"}
+
         self.broadcaster.publish(task_id, "task_completed", {
             "task_id": task_id,
             "status": "completed",

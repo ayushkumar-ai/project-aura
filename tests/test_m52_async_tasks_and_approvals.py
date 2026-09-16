@@ -502,8 +502,9 @@ def test_api_submit_task_async(live_m52_server):
 def test_api_cancel_task(live_m52_server):
     """POST /v1/tasks/{id}/cancel marks task cancelled."""
     base_url, repos = live_m52_server
-    # Create task directly in awaiting_approval to avoid race with instant completion
+    # Create task with a sensitive step and set awaiting_approval so it cannot instantly complete
     t = repos.tasks.create_task("dev_user", "Cancel via API", "Some long goal")
+    repos.tasks.create_or_update_step(t["id"], "dev_user", step_index=0, name="Sensitive Step", status="pending", tool_name="web_fetch")
     repos.tasks.update_task_status(t["id"], "dev_user", "awaiting_approval")
 
     cancel_req = urllib.request.Request(
@@ -575,9 +576,9 @@ def test_api_approval_list_and_decide(live_m52_server):
         assert dec_body["status"] == "approved"
         assert dec_body["resumed"] is True
 
-    # 4. Verify task state resumed to pending
+    # 4. Verify task state resumed to pending (or already leased/completed by live worker)
     t_after = repos.tasks.get_task(task["id"], "dev_user")
-    assert t_after["status"] == "pending"
+    assert t_after["status"] in ("pending", "running", "completed")
 
 
 def test_api_sse_stream(live_m52_server):
@@ -593,3 +594,349 @@ def test_api_sse_stream(live_m52_server):
         # Read first event
         first_line = resp.readline().decode("utf-8")
         assert first_line.startswith("event:")
+
+
+# =========================================================================
+# 5. M52 Hardening: Cancellation & Terminal-State Race Condition Tests
+# =========================================================================
+
+class SynchronizedOrchestrator(WorkflowOrchestrator):
+    """WorkflowOrchestrator subclass that supports synchronized callbacks during tool execution."""
+
+    def __init__(self, *args, step_callback=None, **kwargs):
+        if "policy_engine" not in kwargs:
+            from core.policy import Policy
+            all_authorized = set(Policy().authorized_tools) | {
+                "echo_slow", "echo_fast", "tool_a", "tool_b", "tool_0", "tool_1", "tool_2",
+                "tool_final", "step_0", "step_1", "step_2"
+            }
+            kwargs["policy_engine"] = Policy(authorized_tools=all_authorized)
+        super().__init__(*args, **kwargs)
+        self.step_callback = step_callback
+
+    def _execute_step_tool(self, tool_name: str, parameters: dict[str, Any], user_id: str) -> dict[str, Any]:
+        if self.step_callback:
+            return self.step_callback(tool_name, parameters, user_id)
+        return {"result": f"Executed {tool_name}"}
+
+
+def test_critical_race_cancellation_racing_with_final_step_completion(repos):
+    """Critical Race Test (Prompt Section 8):
+    Cancellation racing with final-step completion must preserve durable cancelled state.
+    1. Create task containing at least two workflow steps.
+    2. Make the final step block inside its external tool execution.
+    3. Start the worker/orchestrator.
+    4. Confirm the final step is executing.
+    5. Concurrently invoke task cancellation.
+    6. Confirm the database task becomes: cancelled.
+    7. Release the blocked external tool.
+    8. Allow the worker to finish.
+    9. Assert: tasks.status == cancelled.
+    10. Assert the physically executed final step is recorded as: completed.
+    11. Assert no later workflow step executes.
+    12. Assert a cancellation terminal event is emitted.
+    13. Assert a completion terminal event is NOT emitted after cancellation.
+    14. Assert the worker does not change the durable terminal state.
+    """
+    task_repo = repos.tasks
+    appr_repo = repos.approvals
+    broadcaster = TaskEventBroadcaster()
+
+    task = task_repo.create_task("user_alice", "Multi-Step Race Task", "Perform step 0 then step 1")
+    task_id = task["id"]
+    event_queue = broadcaster.subscribe(task_id)
+    task_repo.create_or_update_step(task_id, "user_alice", 0, "Step 0 - Fast", "pending", tool_name="echo_fast")
+    task_repo.create_or_update_step(task_id, "user_alice", 1, "Step 1 - Blocking Final", "pending", tool_name="echo_slow")
+
+    token = CancellationToken()
+    final_step_executing = threading.Event()
+    final_step_release = threading.Event()
+
+    def step_callback(tool_name, params, uid):
+        if tool_name == "echo_slow":
+            final_step_executing.set()
+            assert final_step_release.wait(timeout=5.0), "Timed out waiting for release"
+            return {"echo_slow_output": "success"}
+        return {"fast_output": "done"}
+
+    orchestrator = SynchronizedOrchestrator(
+        task_repo=task_repo,
+        approval_repo=appr_repo,
+        broadcaster=broadcaster,
+        step_callback=step_callback,
+    )
+
+    task_repo.update_task_status(task_id, "user_alice", "running")
+
+    worker_res = {}
+    def run_worker():
+        worker_res["result"] = orchestrator.execute_task(task, cancellation_requested=token.is_cancelled)
+
+    t = threading.Thread(target=run_worker)
+    t.start()
+
+    # Wait until final step is actively executing
+    assert final_step_executing.wait(timeout=5.0), "Final step did not start executing"
+
+    # Concurrently invoke task cancellation
+    cancelled_ok = task_repo.cancel_task(task_id, "user_alice")
+    assert cancelled_ok is True
+    token.cancel()
+
+    # Confirm the database task becomes: cancelled
+    durable_task = task_repo.get_task(task_id, "user_alice")
+    assert durable_task["status"] == "cancelled"
+
+    # Release the blocked external tool
+    final_step_release.set()
+    t.join(timeout=5.0)
+    assert not t.is_alive(), "Worker thread hung"
+
+    # 9. Assert tasks.status == cancelled
+    final_durable = task_repo.get_task(task_id, "user_alice")
+    assert final_durable["status"] == "cancelled"
+
+    # 10. Assert physically executed final step is recorded as: completed
+    steps = task_repo.get_steps(task_id, "user_alice")
+    assert len(steps) == 2
+    step_0 = next(s for s in steps if s["step_index"] == 0)
+    step_1 = next(s for s in steps if s["step_index"] == 1)
+    assert step_0["status"] == "completed"
+    assert step_1["status"] == "completed"
+    assert step_1["tool_output"] == {"echo_slow_output": "success"}
+
+    # 11. Assert no later workflow step executes (only 2 steps existed)
+    assert len(steps) == 2
+
+    # 12. Assert cancellation terminal event is emitted
+    events_emitted = []
+    while not event_queue.empty():
+        events_emitted.append(event_queue.get_nowait())
+    event_names = [e.get("event") for e in events_emitted]
+    assert "task_cancelled" in event_names
+
+    # 13. Assert completion terminal event is NOT emitted after cancellation
+    assert "task_completed" not in event_names
+
+    # 14. Assert worker return value and durable state are cancelled
+    assert worker_res["result"]["status"] == "cancelled"
+    assert final_durable["status"] == "cancelled"
+
+
+def test_race_validation_a_cancellation_before_tool_returns(repos):
+    """Validation A: Cancellation happens while external tool is executing;
+    when tool finishes, task remains cancelled and step is recorded as completed."""
+    task_repo = repos.tasks
+    appr_repo = repos.approvals
+    broadcaster = TaskEventBroadcaster()
+
+    task = task_repo.create_task("user_alice", "Race A Task", "Goal A")
+    task_id = task["id"]
+    task_repo.create_or_update_step(task_id, "user_alice", 0, "Step 0", "pending", tool_name="tool_a")
+
+    token = CancellationToken()
+    tool_running = threading.Event()
+    tool_release = threading.Event()
+
+    def step_cb(tool_name, params, uid):
+        tool_running.set()
+        tool_release.wait(timeout=5.0)
+        return {"out": "step_done"}
+
+    orch = SynchronizedOrchestrator(
+        task_repo=task_repo, approval_repo=appr_repo, broadcaster=broadcaster, step_callback=step_cb
+    )
+    task_repo.update_task_status(task_id, "user_alice", "running")
+
+    res_box = {}
+    t = threading.Thread(target=lambda: res_box.update(res=orch.execute_task(task, cancellation_requested=token.is_cancelled)))
+    t.start()
+
+    assert tool_running.wait(timeout=5.0)
+    task_repo.cancel_task(task_id, "user_alice")
+    token.cancel()
+    tool_release.set()
+    t.join(timeout=5.0)
+
+    assert res_box["res"]["status"] == "cancelled"
+    task_db = task_repo.get_task(task_id, "user_alice")
+    assert task_db["status"] == "cancelled"
+    steps = task_repo.get_steps(task_id, "user_alice")
+    assert steps[0]["status"] == "completed"
+    assert steps[0]["tool_output"] == {"out": "step_done"}
+
+
+def test_race_validation_b_cancellation_immediately_after_tool_returns(repos):
+    """Validation B: Cancellation happens immediately after tool returns before task completion."""
+    task_repo = repos.tasks
+    appr_repo = repos.approvals
+    broadcaster = TaskEventBroadcaster()
+
+    task = task_repo.create_task("user_alice", "Race B Task", "Goal B")
+    task_id = task["id"]
+    task_repo.create_or_update_step(task_id, "user_alice", 0, "Step 0", "pending", tool_name="tool_b")
+
+    token = CancellationToken()
+
+    def step_cb(tool_name, params, uid):
+        task_repo.cancel_task(task_id, "user_alice")
+        token.cancel()
+        return {"out": "b_done"}
+
+    orch = SynchronizedOrchestrator(
+        task_repo=task_repo, approval_repo=appr_repo, broadcaster=broadcaster, step_callback=step_cb
+    )
+    task_repo.update_task_status(task_id, "user_alice", "running")
+
+    res = orch.execute_task(task, cancellation_requested=token.is_cancelled)
+    assert res["status"] == "cancelled"
+    task_db = task_repo.get_task(task_id, "user_alice")
+    assert task_db["status"] == "cancelled"
+    steps = task_repo.get_steps(task_id, "user_alice")
+    assert steps[0]["status"] == "completed"
+
+
+def test_race_validation_c_cancellation_while_final_step_is_executing(repos):
+    """Validation C: Multi-step task where cancellation occurs during final step execution."""
+    task_repo = repos.tasks
+    appr_repo = repos.approvals
+    broadcaster = TaskEventBroadcaster()
+
+    task = task_repo.create_task("user_alice", "Race C Task", "Goal C")
+    task_id = task["id"]
+    task_repo.create_or_update_step(task_id, "user_alice", 0, "Step 0", "pending", tool_name="tool_0")
+    task_repo.create_or_update_step(task_id, "user_alice", 1, "Step 1", "pending", tool_name="tool_1")
+    task_repo.create_or_update_step(task_id, "user_alice", 2, "Step 2", "pending", tool_name="tool_final")
+
+    token = CancellationToken()
+    final_step_started = threading.Event()
+    final_step_unblock = threading.Event()
+
+    def step_cb(tool_name, params, uid):
+        if tool_name == "tool_final":
+            final_step_started.set()
+            final_step_unblock.wait(timeout=5.0)
+            return {"final": True}
+        return {"intermediate": True}
+
+    orch = SynchronizedOrchestrator(
+        task_repo=task_repo, approval_repo=appr_repo, broadcaster=broadcaster, step_callback=step_cb
+    )
+    task_repo.update_task_status(task_id, "user_alice", "running")
+
+    res_box = {}
+    t = threading.Thread(target=lambda: res_box.update(res=orch.execute_task(task, cancellation_requested=token.is_cancelled)))
+    t.start()
+
+    assert final_step_started.wait(timeout=5.0)
+    task_repo.cancel_task(task_id, "user_alice")
+    token.cancel()
+    final_step_unblock.set()
+    t.join(timeout=5.0)
+
+    assert res_box["res"]["status"] == "cancelled"
+    task_db = task_repo.get_task(task_id, "user_alice")
+    assert task_db["status"] == "cancelled"
+    steps = task_repo.get_steps(task_id, "user_alice")
+    assert all(s["status"] == "completed" for s in steps)
+
+
+def test_race_validation_d_cancellation_while_intermediate_step_is_executing(repos):
+    """Validation D: Cancellation occurs during intermediate step;
+    intermediate step completes, subsequent steps NEVER execute, task remains cancelled."""
+    task_repo = repos.tasks
+    appr_repo = repos.approvals
+    broadcaster = TaskEventBroadcaster()
+
+    task = task_repo.create_task("user_alice", "Race D Task", "Goal D")
+    task_id = task["id"]
+    task_repo.create_or_update_step(task_id, "user_alice", 0, "Step 0", "pending", tool_name="step_0")
+    task_repo.create_or_update_step(task_id, "user_alice", 1, "Step 1", "pending", tool_name="step_1")
+    task_repo.create_or_update_step(task_id, "user_alice", 2, "Step 2", "pending", tool_name="step_2")
+
+    token = CancellationToken()
+    step_1_started = threading.Event()
+    step_1_unblock = threading.Event()
+    step_2_executed = threading.Event()
+
+    def step_cb(tool_name, params, uid):
+        if tool_name == "step_1":
+            step_1_started.set()
+            step_1_unblock.wait(timeout=5.0)
+            return {"step_1": "done"}
+        elif tool_name == "step_2":
+            step_2_executed.set()
+            return {"step_2": "done"}
+        return {"step_0": "done"}
+
+    orch = SynchronizedOrchestrator(
+        task_repo=task_repo, approval_repo=appr_repo, broadcaster=broadcaster, step_callback=step_cb
+    )
+    task_repo.update_task_status(task_id, "user_alice", "running")
+
+    res_box = {}
+    t = threading.Thread(target=lambda: res_box.update(res=orch.execute_task(task, cancellation_requested=token.is_cancelled)))
+    t.start()
+
+    assert step_1_started.wait(timeout=5.0)
+    task_repo.cancel_task(task_id, "user_alice")
+    token.cancel()
+    step_1_unblock.set()
+    t.join(timeout=5.0)
+
+    assert res_box["res"]["status"] == "cancelled"
+    assert not step_2_executed.is_set(), "Step 2 executed after cancellation!"
+
+    task_db = task_repo.get_task(task_id, "user_alice")
+    assert task_db["status"] == "cancelled"
+
+    steps = {s["step_index"]: s for s in task_repo.get_steps(task_id, "user_alice")}
+    assert steps[0]["status"] == "completed"
+    assert steps[1]["status"] == "completed"
+    assert steps[2]["status"] == "pending"
+
+
+def test_race_validation_e_cancellation_when_task_is_already_terminal(repos):
+    """Validation E: Cancellation requested when task has already reached terminal status."""
+    task_repo = repos.tasks
+
+    for terminal_status in ("completed", "failed", "timed_out", "cancelled"):
+        task = task_repo.create_task("user_alice", f"Terminal {terminal_status}", "Goal")
+        task_repo.update_task_status(task["id"], "user_alice", "running")
+        task_repo.update_task_status(task["id"], "user_alice", terminal_status, error_message="orig", result={"r": 1})
+
+        # Attempt to cancel
+        cancel_res = task_repo.cancel_task(task["id"], "user_alice")
+        assert cancel_res is False, f"cancel_task should return False for already terminal {terminal_status}"
+
+        # Attempt update_task_status to cancelled
+        upd_res = task_repo.update_task_status(task["id"], "user_alice", "cancelled")
+        if terminal_status != "cancelled":
+            assert upd_res is False, f"Cannot overwrite terminal state {terminal_status} with cancelled"
+            assert task_repo.get_task(task["id"], "user_alice")["status"] == terminal_status
+        else:
+            assert task_repo.get_task(task["id"], "user_alice")["status"] == "cancelled"
+
+
+def test_race_validation_f_concurrent_cancellation_requests(repos):
+    """Validation F: Concurrent cancellation requests from multiple threads."""
+    task_repo = repos.tasks
+    task = task_repo.create_task("user_alice", "Concurrent Cancel", "Goal")
+    task_repo.update_task_status(task["id"], "user_alice", "running")
+
+    results = []
+    def do_cancel():
+        res = task_repo.cancel_task(task["id"], "user_alice")
+        results.append(res)
+
+    threads = [threading.Thread(target=do_cancel) for _ in range(10)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=5.0)
+
+    # Exactly one thread should have succeeded in transitioning pending/running -> cancelled
+    assert results.count(True) == 1
+    assert results.count(False) == 9
+    assert task_repo.get_task(task["id"], "user_alice")["status"] == "cancelled"
+

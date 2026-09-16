@@ -990,12 +990,28 @@ class InMemoryTaskRepository(BaseTaskRepository):
         error_message: str | None = None,
         result: dict[str, Any] | None = None,
     ) -> bool:
+        status_norm = status.strip().lower()
+        valid_transitions: dict[str, tuple[str, ...]] = {
+            "running": ("pending", "running"),
+            "awaiting_approval": ("running", "awaiting_approval"),
+            "pending": ("awaiting_approval", "pending", "running"),
+            "completed": ("pending", "running"),
+            "failed": ("pending", "running", "awaiting_approval"),
+            "timed_out": ("pending", "running", "awaiting_approval"),
+            "cancelled": ("pending", "running", "awaiting_approval", "cancelled"),
+        }
+        allowed_sources = valid_transitions.get(status_norm)
+        if not allowed_sources:
+            return False
+
         with self._lock:
             task = self._tasks.get(task_id.strip())
             if not task or task["user_id"] != user_id:
                 return False
 
-            status_norm = status.strip().lower()
+            if task.get("status") not in allowed_sources:
+                return False
+
             task["status"] = status_norm
             now = time.time()
             task["updated_at"] = now
@@ -1003,7 +1019,8 @@ class InMemoryTaskRepository(BaseTaskRepository):
             if status_norm == "running" and not task.get("started_at"):
                 task["started_at"] = now
             elif status_norm in ("completed", "failed", "cancelled", "timed_out"):
-                task["completed_at"] = now
+                if not task.get("completed_at"):
+                    task["completed_at"] = now
 
             if error_message is not None:
                 task["error_message"] = error_message

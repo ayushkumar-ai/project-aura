@@ -235,3 +235,90 @@ def test_postgres_crash_recovery_sweep(pg_pool, pg_repos):
     updated = task_repo.get_task(task["id"], user_id)
     assert updated["status"] == "failed"
     assert "crashed" in updated["error_message"].lower()
+
+
+def test_postgres_terminal_state_immutability(pg_repos):
+    """M52 Hardening (Section 10): PostgreSQL enforces terminal state immutability at DB level."""
+    task_repo, _, user_id = pg_repos
+
+    # 1. cancelled task cannot be overwritten by completed, failed, timed_out
+    t_cancel = task_repo.create_task(user_id, "PG Cancelled Task", "Cannot be overwritten")
+    task_repo.update_task_status(t_cancel["id"], user_id, "running")
+    ok = task_repo.cancel_task(t_cancel["id"], user_id)
+    assert ok is True
+
+    assert task_repo.update_task_status(t_cancel["id"], user_id, "completed", result={"val": 1}) is False
+    assert task_repo.update_task_status(t_cancel["id"], user_id, "failed", error_message="stale err") is False
+    assert task_repo.update_task_status(t_cancel["id"], user_id, "timed_out", error_message="stale timeout") is False
+    assert task_repo.get_task(t_cancel["id"], user_id)["status"] == "cancelled"
+
+    # 2. failed task cannot be overwritten by completed, cancelled, timed_out
+    t_fail = task_repo.create_task(user_id, "PG Failed Task", "Cannot be overwritten")
+    task_repo.update_task_status(t_fail["id"], user_id, "running")
+    assert task_repo.update_task_status(t_fail["id"], user_id, "failed", error_message="initial failure") is True
+    assert task_repo.update_task_status(t_fail["id"], user_id, "completed", result={"val": 2}) is False
+    assert task_repo.cancel_task(t_fail["id"], user_id) is False
+    assert task_repo.update_task_status(t_fail["id"], user_id, "timed_out") is False
+    assert task_repo.get_task(t_fail["id"], user_id)["status"] == "failed"
+
+    # 3. timed_out task cannot be overwritten by completed, failed, cancelled
+    t_timeout = task_repo.create_task(user_id, "PG Timed Out Task", "Cannot be overwritten")
+    task_repo.update_task_status(t_timeout["id"], user_id, "running")
+    assert task_repo.update_task_status(t_timeout["id"], user_id, "timed_out", error_message="initial timeout") is True
+    assert task_repo.update_task_status(t_timeout["id"], user_id, "completed") is False
+    assert task_repo.update_task_status(t_timeout["id"], user_id, "failed") is False
+    assert task_repo.cancel_task(t_timeout["id"], user_id) is False
+    assert task_repo.get_task(t_timeout["id"], user_id)["status"] == "timed_out"
+
+    # 4. completed task cannot be overwritten by failed, cancelled, timed_out, or repeated completed
+    t_comp = task_repo.create_task(user_id, "PG Completed Task", "Cannot be overwritten")
+    task_repo.update_task_status(t_comp["id"], user_id, "running")
+    assert task_repo.update_task_status(t_comp["id"], user_id, "completed", result={"summary": "done"}) is True
+    assert task_repo.update_task_status(t_comp["id"], user_id, "failed") is False
+    assert task_repo.cancel_task(t_comp["id"], user_id) is False
+    assert task_repo.update_task_status(t_comp["id"], user_id, "timed_out") is False
+    assert task_repo.update_task_status(t_comp["id"], user_id, "completed") is False
+    assert task_repo.get_task(t_comp["id"], user_id)["status"] == "completed"
+
+    # 5. Verify all legitimate state transitions remain functional
+    t_legit = task_repo.create_task(user_id, "PG Legit Transitions", "Lifecycle test")
+    assert t_legit["status"] == "pending"
+
+    # pending -> running
+    assert task_repo.update_task_status(t_legit["id"], user_id, "running") is True
+    assert task_repo.get_task(t_legit["id"], user_id)["status"] == "running"
+
+    # running -> awaiting_approval
+    assert task_repo.update_task_status(t_legit["id"], user_id, "awaiting_approval") is True
+    assert task_repo.get_task(t_legit["id"], user_id)["status"] == "awaiting_approval"
+
+    # awaiting_approval -> pending
+    assert task_repo.update_task_status(t_legit["id"], user_id, "pending") is True
+    assert task_repo.get_task(t_legit["id"], user_id)["status"] == "pending"
+
+    # pending -> running
+    assert task_repo.update_task_status(t_legit["id"], user_id, "running") is True
+    assert task_repo.get_task(t_legit["id"], user_id)["status"] == "running"
+
+    # running -> completed
+    assert task_repo.update_task_status(t_legit["id"], user_id, "completed", result={"final": True}) is True
+    assert task_repo.get_task(t_legit["id"], user_id)["status"] == "completed"
+
+    # Separate task for running -> failed
+    t_fail_legit = task_repo.create_task(user_id, "PG Running to Failed", "Legit")
+    task_repo.update_task_status(t_fail_legit["id"], user_id, "running")
+    assert task_repo.update_task_status(t_fail_legit["id"], user_id, "failed", error_message="intentional fail") is True
+    assert task_repo.get_task(t_fail_legit["id"], user_id)["status"] == "failed"
+
+    # Separate task for running -> cancelled
+    t_cancel_legit = task_repo.create_task(user_id, "PG Running to Cancelled", "Legit")
+    task_repo.update_task_status(t_cancel_legit["id"], user_id, "running")
+    assert task_repo.cancel_task(t_cancel_legit["id"], user_id) is True
+    assert task_repo.get_task(t_cancel_legit["id"], user_id)["status"] == "cancelled"
+
+    # Separate task for running -> timed_out
+    t_timeout_legit = task_repo.create_task(user_id, "PG Running to Timed Out", "Legit")
+    task_repo.update_task_status(t_timeout_legit["id"], user_id, "running")
+    assert task_repo.update_task_status(t_timeout_legit["id"], user_id, "timed_out", error_message="timed out") is True
+    assert task_repo.get_task(t_timeout_legit["id"], user_id)["status"] == "timed_out"
+
