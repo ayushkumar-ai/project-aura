@@ -42,7 +42,17 @@ pytestmark = pytest.mark.skipif(not _is_postgres_available(), reason="PostgreSQL
 @pytest.fixture(scope="module")
 def pg_pool():
     pool = DatabaseConnectionPool(DB_URL, min_size=1, max_size=5, is_production=False)
+    with pool.transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM automation_runs WHERE automation_id IN (SELECT id FROM automations WHERE user_id LIKE 'user_%');")
+            cur.execute("DELETE FROM automations WHERE user_id LIKE 'user_%';")
+            cur.execute("DELETE FROM users WHERE id LIKE 'user_%';")
     yield pool
+    with pool.transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM automation_runs WHERE automation_id IN (SELECT id FROM automations WHERE user_id LIKE 'user_%');")
+            cur.execute("DELETE FROM automations WHERE user_id LIKE 'user_%';")
+            cur.execute("DELETE FROM users WHERE id LIKE 'user_%';")
     pool.close()
 
 
@@ -62,7 +72,14 @@ def repo_pair(pg_pool):
             )
     auto_repo = PostgresAutomationRepository(pg_pool)
     task_repo = PostgresTaskRepository(pg_pool)
-    return auto_repo, task_repo, test_user_a, test_user_b
+    try:
+        yield auto_repo, task_repo, test_user_a, test_user_b
+    finally:
+        with pg_pool.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM automation_runs WHERE automation_id IN (SELECT id FROM automations WHERE user_id IN (%s, %s));", (test_user_a, test_user_b))
+                cur.execute("DELETE FROM automations WHERE user_id IN (%s, %s);", (test_user_a, test_user_b))
+                cur.execute("DELETE FROM users WHERE id IN (%s, %s);", (test_user_a, test_user_b))
 
 
 def test_postgres_automation_crud_and_isolation(repo_pair):
