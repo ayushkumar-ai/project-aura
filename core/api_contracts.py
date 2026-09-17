@@ -222,3 +222,69 @@ class AutomationUpdateSchema(BaseModel):
     max_runs: int | None = Field(default=None, ge=1)
     cooldown_seconds: int | None = Field(default=None, ge=0)
     metadata: dict[str, Any] | None = None
+
+
+class WebhookEndpointCreateSchema(BaseModel):
+    """Schema for POST /v1/webhooks/endpoints."""
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(..., min_length=1, max_length=255, description="Human readable endpoint name")
+    description: str = Field(default="", max_length=2000, description="Optional endpoint description")
+    secret: str | None = Field(default=None, min_length=16, max_length=256, description="Optional raw shared secret for HMAC")
+    is_active: bool = Field(default=True, description="Active status")
+    allowed_events: list[str] = Field(default_factory=list, description="List of allowed event types or glob patterns")
+    rate_limit_per_minute: int = Field(default=60, ge=1, le=10000, description="Max inbound requests per minute")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary endpoint metadata")
+
+
+class WebhookEndpointUpdateSchema(BaseModel):
+    """Schema for PATCH /v1/webhooks/endpoints/{id}."""
+    model_config = ConfigDict(extra="ignore")
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    is_active: bool | None = None
+    allowed_events: list[str] | None = None
+    rate_limit_per_minute: int | None = Field(default=None, ge=1, le=10000)
+    metadata: dict[str, Any] | None = None
+
+
+class EventSubscriptionCreateSchema(BaseModel):
+    """Schema for POST /v1/events/subscriptions."""
+    model_config = ConfigDict(extra="ignore")
+
+    event_type: str = Field(..., min_length=1, max_length=255, description="Event type or wildcard pattern to subscribe to")
+    target_url: str = Field(..., min_length=1, max_length=2048, description="HTTPS target URL for delivery")
+    secret: str | None = Field(default=None, min_length=16, max_length=256, description="Shared secret for signing outbound payloads")
+    max_retries: int = Field(default=5, ge=0, le=20, description="Maximum retry attempts")
+    backoff_initial_seconds: float = Field(default=1.0, ge=0.1, le=60.0, description="Initial retry backoff delay")
+    backoff_max_seconds: float = Field(default=300.0, ge=1.0, le=86400.0, description="Maximum retry backoff delay")
+    timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0, description="HTTP request timeout")
+    custom_headers: dict[str, str] = Field(default_factory=dict, description="Custom static HTTP headers")
+    is_active: bool = Field(default=True, description="Active status")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary metadata")
+
+
+class EventSubscriptionUpdateSchema(BaseModel):
+    """Schema for PATCH /v1/events/subscriptions/{id}."""
+    model_config = ConfigDict(extra="ignore")
+
+    event_type: str | None = Field(default=None, min_length=1, max_length=255)
+    target_url: str | None = Field(default=None, min_length=1, max_length=2048)
+    max_retries: int | None = Field(default=None, ge=0, le=20)
+    backoff_initial_seconds: float | None = Field(default=None, ge=0.1, le=60.0)
+    backoff_max_seconds: float | None = Field(default=None, ge=1.0, le=86400.0)
+    timeout_seconds: float | None = Field(default=None, ge=1.0, le=60.0)
+    custom_headers: dict[str, str] | None = None
+    is_active: bool | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class DeadLetterReplaySchema(BaseModel):
+    """Schema for POST /v1/events/dead-letter/{id}/replay."""
+    model_config = ConfigDict(extra="ignore")
+
+    target_url_override: str | None = Field(default=None, max_length=2048, description="Optional URL override for delivery replay")
+    reason: str = Field(default="Manual operator replay", max_length=1000, description="Audit reason for replay")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary replay context metadata")
+

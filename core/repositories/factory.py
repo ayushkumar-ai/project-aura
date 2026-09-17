@@ -54,6 +54,9 @@ from core.repositories.postgres import (
 from core.repositories.postgres_task import PostgresTaskRepository
 from core.repositories.postgres_approval import PostgresApprovalRepository
 from core.repositories.postgres_automation import PostgresAutomationRepository
+from core.repositories.base_webhook import BaseWebhookRepository
+from core.repositories.in_memory_webhook import InMemoryWebhookRepository
+from core.repositories.postgres_webhook import PostgresWebhookRepository
 
 logger = logging.getLogger("aura.repositories.factory")
 
@@ -74,6 +77,7 @@ class RepositoryContainer:
     tasks: BaseTaskRepository | None = None
     approvals: BaseApprovalRepository | None = None
     automations: BaseAutomationRepository | None = None
+    webhooks: BaseWebhookRepository | None = None
     db_pool: DatabaseConnectionPool | None = None
     is_postgres: bool = False
 
@@ -96,6 +100,7 @@ def create_in_memory_repositories() -> RepositoryContainer:
     task_repo = InMemoryTaskRepository()
     approval_repo = InMemoryApprovalRepository(task_repo=task_repo)
     automation_repo = InMemoryAutomationRepository(task_repo=task_repo)
+    webhook_repo = InMemoryWebhookRepository()
 
     return RepositoryContainer(
         users=user_repo,
@@ -110,6 +115,7 @@ def create_in_memory_repositories() -> RepositoryContainer:
         tasks=task_repo,
         approvals=approval_repo,
         automations=automation_repo,
+        webhooks=webhook_repo,
         db_pool=None,
         is_postgres=False,
     )
@@ -132,6 +138,7 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
     task_repo = PostgresTaskRepository(db_pool)
     approval_repo = PostgresApprovalRepository(db_pool)
     automation_repo = PostgresAutomationRepository(db_pool)
+    webhook_repo = PostgresWebhookRepository(db_pool)
 
     return RepositoryContainer(
         users=user_repo,
@@ -146,6 +153,7 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
         tasks=task_repo,
         approvals=approval_repo,
         automations=automation_repo,
+        webhooks=webhook_repo,
         db_pool=db_pool,
         is_postgres=True,
     )

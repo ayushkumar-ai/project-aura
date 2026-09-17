@@ -15,8 +15,11 @@ from core.repositories.base import (
     BaseVectorSearchRepository,
 )
 from core.repositories.base_automation import BaseAutomationRepository
+from core.repositories.base_webhook import BaseWebhookRepository
 from core.repositories.in_memory_automation import InMemoryAutomationRepository
+from core.repositories.in_memory_webhook import InMemoryWebhookRepository
 from core.repositories.postgres_automation import PostgresAutomationRepository
+from core.repositories.postgres_webhook import PostgresWebhookRepository
 from core.repositories.postgres_task import PostgresTaskRepository
 from core.repositories.postgres_approval import PostgresApprovalRepository
 from core.repositories.factory import (
@@ -63,6 +66,7 @@ __all__ = [
     "BaseTaskRepository",
     "BaseApprovalRepository",
     "BaseAutomationRepository",
+    "BaseWebhookRepository",
     "InMemoryUserRepository",
     "InMemoryUserPreferencesRepository",
     "InMemoryApiTokenRepository",
@@ -75,6 +79,7 @@ __all__ = [
     "InMemoryTaskRepository",
     "InMemoryApprovalRepository",
     "InMemoryAutomationRepository",
+    "InMemoryWebhookRepository",
     "PostgresUserRepository",
     "PostgresUserPreferencesRepository",
     "PostgresApiTokenRepository",
@@ -87,6 +92,7 @@ __all__ = [
     "PostgresTaskRepository",
     "PostgresApprovalRepository",
     "PostgresAutomationRepository",
+    "PostgresWebhookRepository",
     "RepositoryContainer",
     "create_in_memory_repositories",
     "create_postgres_repositories",

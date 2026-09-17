@@ -68,6 +68,21 @@ from core.api_contracts import (
 from core.background import BackgroundTaskWorker, TaskEventBroadcaster, WorkflowOrchestrator
 from core.automations import AutonomousSupervisor, validate_cron, calculate_next_fire
 from core.repositories.base import BaseApprovalRepository, BaseTaskRepository, BaseAutomationRepository
+from core.repositories.base_webhook import BaseWebhookRepository
+from core.webhooks import (
+    WebhookIngressService,
+    EventDispatcherService,
+    OutboundDeliveryWorker,
+    DeadLetterReplayService,
+    WebhookMaintenanceService,
+)
+from core.api_contracts import (
+    WebhookEndpointCreateSchema,
+    WebhookEndpointUpdateSchema,
+    EventSubscriptionCreateSchema,
+    EventSubscriptionUpdateSchema,
+    DeadLetterReplaySchema,
+)
 import queue
 from core.config_validator import validate_production_config
 
@@ -153,6 +168,83 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
     @property
     def supervisor(self) -> AutonomousSupervisor | None:
         return getattr(self.server, "supervisor", None)
+
+    @property
+    def webhook_repo(self) -> BaseWebhookRepository | None:
+        rc = getattr(self.server, "repository_container", None)
+        return getattr(rc, "webhooks", None) if rc else None
+
+    @property
+    def ingress_service(self) -> WebhookIngressService | None:
+        srv = getattr(self.server, "ingress_service", None)
+        if srv is None and self.webhook_repo is not None:
+            master_key = getattr(self.config, "aura_webhook_master_key", "aura-default-master-key-32bytes!!")
+            srv = WebhookIngressService(
+                webhook_repo=self.webhook_repo,
+                task_repo=self.task_repo,
+                automation_repo=self.automation_repo,
+                master_key=master_key,
+            )
+            setattr(self.server, "ingress_service", srv)
+        return srv
+
+    @property
+    def dispatcher_service(self) -> EventDispatcherService | None:
+        srv = getattr(self.server, "dispatcher_service", None)
+        if srv is None and self.webhook_repo is not None:
+            master_key = getattr(self.config, "aura_webhook_master_key", "aura-default-master-key-32bytes!!")
+            srv = EventDispatcherService(
+                webhook_repo=self.webhook_repo,
+                master_key=master_key,
+            )
+            setattr(self.server, "dispatcher_service", srv)
+        return srv
+
+    @property
+    def replay_service(self) -> DeadLetterReplayService | None:
+        srv = getattr(self.server, "replay_service", None)
+        if srv is None and self.webhook_repo is not None:
+            master_key = getattr(self.config, "aura_webhook_master_key", "aura-default-master-key-32bytes!!")
+            srv = DeadLetterReplayService(
+                webhook_repo=self.webhook_repo,
+                master_key=master_key,
+            )
+            setattr(self.server, "replay_service", srv)
+        return srv
+
+    @property
+    def delivery_worker(self) -> OutboundDeliveryWorker | None:
+        return getattr(self.server, "delivery_worker", None)
+
+    def _read_raw_body(self) -> bytes | None:
+        """Safely read raw binary body within size limits (M54)."""
+        content_length_header = self.headers.get("Content-Length")
+        if not content_length_header:
+            self._send_error_response(HTTPStatus.BAD_REQUEST, "missing_content_length", "Content-Length header required")
+            return None
+
+        try:
+            length = int(content_length_header)
+        except ValueError:
+            self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_content_length", "Invalid Content-Length header")
+            return None
+
+        max_bytes = getattr(self.config, "aura_webhook_max_payload_bytes", 1048576)
+        if length > max_bytes:
+            self._send_error_response(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "payload_too_large",
+                f"Payload size {length} bytes exceeds limit of {max_bytes} bytes",
+            )
+            return None
+
+        try:
+            raw_data = self.rfile.read(length)
+            self._body_read = True
+            return raw_data
+        except Exception as e:
+            self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "read_error", f"Failed to read payload: {e}")
+            return None
 
     def _setup_request_context(self) -> tuple[str, str, Any]:
         """Initialize correlation context from headers (X-Request-ID, W3C traceparent)."""
@@ -795,6 +887,206 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response(auto)
             return
 
+        # ============================================================
+        # M54: Enterprise Webhooks & Event Gateway (GET Routes)
+        # ============================================================
+
+        # M54: List Webhook Endpoints
+        if path == "/v1/webhooks/endpoints":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            limit = int(params.get("limit", [50])[0])
+            offset = int(params.get("offset", [0])[0])
+            endpoints = self.webhook_repo.list_endpoints(tenant_id=user_id, limit=limit, offset=offset)
+            self._send_json_response({"endpoints": [ep.to_dict() if hasattr(ep, "to_dict") else ep for ep in endpoints], "count": len(endpoints)})
+            return
+
+        # M54: Get Webhook Endpoint Detail
+        if path.startswith("/v1/webhooks/endpoints/"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            ep_id = path[len("/v1/webhooks/endpoints/"):].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            ep = self.webhook_repo.get_endpoint(ep_id, tenant_id=user_id)
+            if not ep:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "endpoint_not_found", f"Webhook endpoint '{ep_id}' not found")
+                return
+            self._send_json_response(ep.to_dict() if hasattr(ep, "to_dict") else ep)
+            return
+
+        # M54: List Event Subscriptions
+        if path == "/v1/events/subscriptions":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            limit = int(params.get("limit", [50])[0])
+            offset = int(params.get("offset", [0])[0])
+            event_type = params.get("event_type", [None])[0]
+            subs = self.webhook_repo.list_subscriptions(tenant_id=user_id, event_type=event_type, limit=limit, offset=offset)
+            self._send_json_response({"subscriptions": [s.to_dict() if hasattr(s, "to_dict") else s for s in subs], "count": len(subs)})
+            return
+
+        # M54: Get Event Subscription Detail
+        if path.startswith("/v1/events/subscriptions/"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            sub_id = path[len("/v1/events/subscriptions/"):].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            sub = self.webhook_repo.get_subscription(sub_id, tenant_id=user_id)
+            if not sub:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "subscription_not_found", f"Subscription '{sub_id}' not found")
+                return
+            self._send_json_response(sub.to_dict() if hasattr(sub, "to_dict") else sub)
+            return
+
+        # M54: List Event Deliveries
+        if path == "/v1/events/deliveries":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            limit = int(params.get("limit", [50])[0])
+            offset = int(params.get("offset", [0])[0])
+            subscription_id = params.get("subscription_id", [None])[0]
+            status_filter = params.get("status", [None])[0]
+            dels = self.webhook_repo.list_deliveries(tenant_id=user_id, subscription_id=subscription_id, status=status_filter, limit=limit, offset=offset)
+            self._send_json_response({"deliveries": [d.to_dict() if hasattr(d, "to_dict") else d for d in dels], "count": len(dels)})
+            return
+
+        # M54: Get Event Delivery Detail
+        if path.startswith("/v1/events/deliveries/"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            del_id = path[len("/v1/events/deliveries/"):].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            delivery = self.webhook_repo.get_delivery(del_id, tenant_id=user_id)
+            if not delivery:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "delivery_not_found", f"Delivery '{del_id}' not found")
+                return
+            self._send_json_response(delivery.to_dict() if hasattr(delivery, "to_dict") else delivery)
+            return
+
+        # M54: List Inbound Events
+        if path == "/v1/events/inbound":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            limit = int(params.get("limit", [50])[0])
+            offset = int(params.get("offset", [0])[0])
+            endpoint_id = params.get("endpoint_id", [None])[0]
+            status_filter = params.get("status", [None])[0]
+            inbounds = self.webhook_repo.list_inbound_events(tenant_id=user_id, endpoint_id=endpoint_id, status=status_filter, limit=limit, offset=offset)
+            self._send_json_response({"inbound_events": [ev.to_dict() if hasattr(ev, "to_dict") else ev for ev in inbounds], "count": len(inbounds)})
+            return
+
+        # M54: Get Inbound Event Detail
+        if path.startswith("/v1/events/inbound/"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            ev_id = path[len("/v1/events/inbound/"):].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            ev = self.webhook_repo.get_inbound_event(ev_id, tenant_id=user_id)
+            if not ev:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "event_not_found", f"Inbound event '{ev_id}' not found")
+                return
+            self._send_json_response(ev.to_dict() if hasattr(ev, "to_dict") else ev)
+            return
+
+        # M54: List Dead-Letter Replays for a specific dead letter
+        if path.startswith("/v1/events/dead-letter/") and path.endswith("/replays"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            dl_id = path[len("/v1/events/dead-letter/"):-len("/replays")].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            replays = self.webhook_repo.list_dead_letter_replays(dead_letter_id=dl_id, tenant_id=user_id)
+            self._send_json_response({"replays": [r.to_dict() if hasattr(r, "to_dict") else r for r in replays], "count": len(replays)})
+            return
+
+        # M54: List Dead-Letter Events
+        if path == "/v1/events/dead-letter":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            limit = int(params.get("limit", [50])[0])
+            offset = int(params.get("offset", [0])[0])
+            dead_letter_type = params.get("type", [None])[0]
+            dls = self.webhook_repo.list_dead_letters(tenant_id=user_id, dead_letter_type=dead_letter_type, limit=limit, offset=offset)
+            self._send_json_response({"dead_letter_events": [dl.to_dict() if hasattr(dl, "to_dict") else dl for dl in dls], "count": len(dls)})
+            return
+
+        # M54: Get Dead-Letter Event Detail
+        if path.startswith("/v1/events/dead-letter/"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            dl_id = path[len("/v1/events/dead-letter/"):].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            dl = self.webhook_repo.get_dead_letter(dl_id, tenant_id=user_id)
+            if not dl:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "dead_letter_not_found", f"Dead-letter event '{dl_id}' not found")
+                return
+            self._send_json_response(dl.to_dict() if hasattr(dl, "to_dict") else dl)
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_POST(self) -> None:
@@ -804,7 +1096,40 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         path = parsed_url.path.rstrip("/")
 
-        # Check authentication
+        # M54: Public Webhook Ingress (POST /v1/webhooks/{endpoint_id})
+        # Note: Must bypass AURA user Bearer token auth; validated via endpoint HMAC / signatures
+        if path.startswith("/v1/webhooks/") and not path.startswith("/v1/webhooks/endpoints"):
+            ep_id = path[len("/v1/webhooks/"):].strip()
+            if not ep_id:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_endpoint_id", "Endpoint ID required")
+                return
+            if not self.webhook_repo or not self.ingress_service:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook ingress service unavailable")
+                return
+
+            raw_bytes = self._read_raw_body()
+            if raw_bytes is None:
+                return
+
+            params = {k: (v[0] if len(v) == 1 else v) for k, v in parse_qs(parsed_url.query).items()}
+            headers_dict = dict(self.headers)
+            client_ip = self.client_address[0] if self.client_address else "127.0.0.1"
+
+            try:
+                resp = self.ingress_service.handle_inbound_request(
+                    endpoint_id=ep_id,
+                    payload_bytes=raw_bytes,
+                    headers=headers_dict,
+                    query_params=params,
+                    client_ip=client_ip,
+                )
+                self._send_json_response(resp.to_dict(), status=HTTPStatus(resp.status_code))
+            except Exception as e:
+                logger.error(f"Error handling webhook ingress: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "ingress_error", str(e))
+            return
+
+        # Check authentication for all authenticated endpoints
         is_auth, identity, err_msg, status_code = self._resolve_identity()
         if not is_auth:
             self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
@@ -1220,6 +1545,157 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response({"id": auto_id, "status": "triggered", "automation": updated})
             return
 
+        # ============================================================
+        # M54: Enterprise Webhooks & Event Gateway (POST Routes)
+        # ============================================================
+
+        # M54: Create Webhook Endpoint
+        if path == "/v1/webhooks/endpoints":
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            try:
+                schema = WebhookEndpointCreateSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+            try:
+                master_key = getattr(self.config, "aura_webhook_master_key", "aura-default-master-key-32bytes!!")
+                created = self.webhook_repo.create_endpoint(
+                    tenant_id=user_id,
+                    name=schema.name,
+                    description=schema.description,
+                    raw_secret=schema.secret,
+                    is_active=schema.is_active,
+                    allowed_events=schema.allowed_events,
+                    rate_limit_per_minute=schema.rate_limit_per_minute,
+                    metadata=schema.metadata,
+                    master_key=master_key,
+                )
+                self._send_json_response(created.to_dict() if hasattr(created, "to_dict") else created, status=HTTPStatus.CREATED)
+            except Exception as e:
+                logger.error(f"Error creating webhook endpoint: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "endpoint_creation_error", str(e))
+            return
+
+        # M54: Rotate Endpoint Secret
+        if path.startswith("/v1/webhooks/endpoints/") and path.endswith("/rotate-secret"):
+            ep_id = path[len("/v1/webhooks/endpoints/"):-len("/rotate-secret")].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            try:
+                master_key = getattr(self.config, "aura_webhook_master_key", "aura-default-master-key-32bytes!!")
+                raw_secret = body.get("new_secret") if isinstance(body, dict) else None
+                new_key = self.webhook_repo.rotate_signing_key(
+                    endpoint_id=ep_id,
+                    tenant_id=user_id,
+                    new_raw_secret=raw_secret,
+                    master_key=master_key,
+                )
+                self._send_json_response(new_key.to_dict() if hasattr(new_key, "to_dict") else new_key)
+            except Exception as e:
+                logger.error(f"Error rotating webhook signing key: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "key_rotation_error", str(e))
+            return
+
+        # M54: Create Event Subscription
+        if path == "/v1/events/subscriptions":
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            try:
+                schema = EventSubscriptionCreateSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+            try:
+                master_key = getattr(self.config, "aura_webhook_master_key", "aura-default-master-key-32bytes!!")
+                created = self.webhook_repo.create_subscription(
+                    tenant_id=user_id,
+                    event_type=schema.event_type,
+                    target_url=schema.target_url,
+                    raw_secret=schema.secret,
+                    max_retries=schema.max_retries,
+                    backoff_initial_seconds=schema.backoff_initial_seconds,
+                    backoff_max_seconds=schema.backoff_max_seconds,
+                    timeout_seconds=schema.timeout_seconds,
+                    custom_headers=schema.custom_headers,
+                    is_active=schema.is_active,
+                    metadata=schema.metadata,
+                    master_key=master_key,
+                )
+                self._send_json_response(created.to_dict() if hasattr(created, "to_dict") else created, status=HTTPStatus.CREATED)
+            except Exception as e:
+                logger.error(f"Error creating subscription: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "subscription_creation_error", str(e))
+            return
+
+        # M54: Redeliver Event Delivery
+        if path.startswith("/v1/events/deliveries/") and path.endswith("/redeliver"):
+            del_id = path[len("/v1/events/deliveries/"):-len("/redeliver")].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            try:
+                redelivered = self.webhook_repo.redeliver_event(delivery_id=del_id, tenant_id=user_id)
+                if not redelivered:
+                    self._send_error_response(HTTPStatus.NOT_FOUND, "delivery_not_found", f"Delivery '{del_id}' not found")
+                    return
+                self._send_json_response(redelivered.to_dict() if hasattr(redelivered, "to_dict") else redelivered, status=HTTPStatus.ACCEPTED)
+            except Exception as e:
+                logger.error(f"Error redelivering event: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "redelivery_error", str(e))
+            return
+
+        # M54: Retry Inbound Event
+        if path.startswith("/v1/events/inbound/") and path.endswith("/retry"):
+            ev_id = path[len("/v1/events/inbound/"):-len("/retry")].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            try:
+                ev = self.webhook_repo.get_inbound_event(ev_id, tenant_id=user_id)
+                if not ev:
+                    self._send_error_response(HTTPStatus.NOT_FOUND, "event_not_found", f"Inbound event '{ev_id}' not found")
+                    return
+                # Transition status back to processing for replay
+                retried = self.webhook_repo.update_inbound_event(
+                    event_id=ev_id,
+                    tenant_id=user_id,
+                    status="processing",
+                )
+                self._send_json_response(retried.to_dict() if hasattr(retried, "to_dict") else retried, status=HTTPStatus.ACCEPTED)
+            except Exception as e:
+                logger.error(f"Error retrying inbound event: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "retry_error", str(e))
+            return
+
+        # M54: Replay Dead-Letter Event
+        if path.startswith("/v1/events/dead-letter/") and path.endswith("/replay"):
+            dl_id = path[len("/v1/events/dead-letter/"):-len("/replay")].strip()
+            if not self.webhook_repo or not self.replay_service:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Dead-letter replay service unavailable")
+                return
+            try:
+                schema = DeadLetterReplaySchema.model_validate(body if isinstance(body, dict) else {})
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+            try:
+                replay_rec = self.replay_service.replay_dead_letter(
+                    dead_letter_id=dl_id,
+                    tenant_id=user_id,
+                    replayed_by=f"user:{user_id}",
+                    reason=schema.reason,
+                    target_url_override=schema.target_url_override,
+                )
+                self._send_json_response(replay_rec.to_dict() if hasattr(replay_rec, "to_dict") else replay_rec, status=HTTPStatus.ACCEPTED)
+            except Exception as e:
+                logger.error(f"Error replaying dead-letter event: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "replay_error", str(e))
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
 
@@ -1268,6 +1744,52 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response(updated)
             return
 
+        # M54: Update Webhook Endpoint
+        if path.startswith("/v1/webhooks/endpoints/"):
+            ep_id = path[len("/v1/webhooks/endpoints/"):].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            try:
+                update_schema = WebhookEndpointUpdateSchema.model_validate(body)
+                update_dict = {k: v for k, v in update_schema.model_dump().items() if v is not None}
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+            try:
+                updated = self.webhook_repo.update_endpoint(ep_id, tenant_id=user_id, **update_dict)
+                if not updated:
+                    self._send_error_response(HTTPStatus.NOT_FOUND, "endpoint_not_found", f"Webhook endpoint '{ep_id}' not found")
+                    return
+                self._send_json_response(updated.to_dict() if hasattr(updated, "to_dict") else updated)
+            except Exception as e:
+                logger.error(f"Error updating webhook endpoint: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "endpoint_update_error", str(e))
+            return
+
+        # M54: Update Event Subscription
+        if path.startswith("/v1/events/subscriptions/"):
+            sub_id = path[len("/v1/events/subscriptions/"):].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            try:
+                update_schema = EventSubscriptionUpdateSchema.model_validate(body)
+                update_dict = {k: v for k, v in update_schema.model_dump().items() if v is not None}
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+            try:
+                updated = self.webhook_repo.update_subscription(sub_id, tenant_id=user_id, **update_dict)
+                if not updated:
+                    self._send_error_response(HTTPStatus.NOT_FOUND, "subscription_not_found", f"Subscription '{sub_id}' not found")
+                    return
+                self._send_json_response(updated.to_dict() if hasattr(updated, "to_dict") else updated)
+            except Exception as e:
+                logger.error(f"Error updating subscription: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "subscription_update_error", str(e))
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_DELETE(self) -> None:
@@ -1294,6 +1816,32 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_error_response(HTTPStatus.NOT_FOUND, "automation_not_found", "Automation not found")
                 return
             self._send_json_response({"id": auto_id, "deleted": True})
+            return
+
+        # M54: Delete Webhook Endpoint
+        if path.startswith("/v1/webhooks/endpoints/"):
+            ep_id = path[len("/v1/webhooks/endpoints/"):].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            deleted = self.webhook_repo.delete_endpoint(ep_id, tenant_id=user_id)
+            if not deleted:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "endpoint_not_found", f"Webhook endpoint '{ep_id}' not found")
+                return
+            self._send_json_response({"id": ep_id, "deleted": True})
+            return
+
+        # M54: Delete Event Subscription
+        if path.startswith("/v1/events/subscriptions/"):
+            sub_id = path[len("/v1/events/subscriptions/"):].strip()
+            if not self.webhook_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Webhook repository unavailable")
+                return
+            deleted = self.webhook_repo.delete_subscription(sub_id, tenant_id=user_id)
+            if not deleted:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "subscription_not_found", f"Subscription '{sub_id}' not found")
+                return
+            self._send_json_response({"id": sub_id, "deleted": True})
             return
 
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
@@ -1369,6 +1917,34 @@ class AURAHTTPServer:
         else:
             self.supervisor = None
 
+        # M54 Webhook Services and Outbound Delivery Worker
+        if getattr(self.config, "aura_webhooks_enabled", True) and self.repository_container.webhooks:
+            master_key = getattr(self.config, "aura_webhook_master_key", "aura-default-master-key-32bytes!!")
+            self.delivery_worker = OutboundDeliveryWorker(
+                webhook_repo=self.repository_container.webhooks,
+                concurrency=getattr(self.config, "aura_webhook_delivery_concurrency", 4),
+                poll_interval=getattr(self.config, "aura_webhook_delivery_poll_interval_seconds", 0.5),
+            )
+            self.ingress_service = WebhookIngressService(
+                webhook_repo=self.repository_container.webhooks,
+                task_repo=self.repository_container.tasks,
+                automation_repo=self.repository_container.automations,
+                master_key=master_key,
+            )
+            self.dispatcher_service = EventDispatcherService(
+                webhook_repo=self.repository_container.webhooks,
+                task_repo=self.repository_container.tasks,
+                automation_repo=self.repository_container.automations,
+            )
+            self.replay_service = DeadLetterReplayService(
+                webhook_repo=self.repository_container.webhooks,
+            )
+        else:
+            self.delivery_worker = None
+            self.ingress_service = None
+            self.dispatcher_service = None
+            self.replay_service = None
+
     def start(self, block: bool = True) -> None:
         """Start the HTTP server on configured host and port."""
         server_address = (self.host, self.port)
@@ -1382,10 +1958,16 @@ class AURAHTTPServer:
         self._server.workflow_orchestrator = self.workflow_orchestrator  # type: ignore
         self._server.task_worker = self.task_worker  # type: ignore
         self._server.supervisor = self.supervisor  # type: ignore
+        self._server.delivery_worker = self.delivery_worker  # type: ignore
+        self._server.ingress_service = self.ingress_service  # type: ignore
+        self._server.dispatcher_service = self.dispatcher_service  # type: ignore
+        self._server.replay_service = self.replay_service  # type: ignore
         self._is_running = True
 
         if self.task_worker:
             self.task_worker.start()
+        if self.delivery_worker:
+            self.delivery_worker.start()
 
         logger.info(
             f"Starting {self.config.aura_app_name} HTTP Server on http://{self.host}:{self.port} (env: {self.config.aura_env})"
@@ -1414,6 +1996,12 @@ class AURAHTTPServer:
                 self.task_worker.stop()
             except Exception as e:
                 logger.warning(f"Error stopping BackgroundTaskWorker: {e}")
+
+        if getattr(self, "delivery_worker", None):
+            try:
+                self.delivery_worker.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping OutboundDeliveryWorker: {e}")
 
         # Flush runtime state checkpoint if agentic runtime is available
         if self.aura and self.aura.agentic_runtime:

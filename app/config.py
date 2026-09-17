@@ -228,6 +228,16 @@ class Settings(BaseSettings):
     aura_automation_statement_timeout_ms: int = 3000
     aura_automation_transaction_deadline_seconds: float = 5.0
 
+    # M54 Enterprise Webhooks & Inbound/Outbound Event Gateway Configuration
+    aura_webhooks_enabled: bool = True
+    aura_webhook_master_key: str = "aura-default-master-key-32bytes!!"
+    aura_webhook_max_payload_bytes: int = 1048576
+    aura_webhook_delivery_concurrency: int = 4
+    aura_webhook_delivery_poll_interval_seconds: float = 0.5
+    aura_webhook_tenant_max_in_flight: int = 100
+    aura_webhook_tenant_max_endpoints: int = 25
+    aura_webhook_tenant_max_subscriptions: int = 50
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
