@@ -6,6 +6,7 @@ monotonic fencing token increments, split-brain rejection, and crash recovery.
 """
 
 from datetime import datetime, timedelta, timezone
+import os
 import threading
 import time
 import uuid
@@ -25,11 +26,29 @@ from core.repositories.postgres_task import PostgresTaskRepository
 from core.repositories.postgres import PostgresUserRepository
 from core.identity import UserIdentity, UserRole
 
+DB_URL = os.getenv("AURA_DATABASE_URL", "postgresql://aura_user:aura_password@127.0.0.1:5432/aura_db")
+
+
+def _is_postgres_available() -> bool:
+    try:
+        pool = DatabaseConnectionPool(DB_URL, min_size=1, max_size=1, is_production=False, timeout=2.0)
+        if not pool.is_active:
+            return False
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1;")
+                return bool(cur.fetchone())
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(not _is_postgres_available(), reason="PostgreSQL 16 live instance unavailable")
+
 
 @pytest.fixture(scope="module")
 def db_pool():
     pool = DatabaseConnectionPool(
-        connection_url="postgresql://aura_user:aura_password@127.0.0.1:5432/aura_db",
+        connection_url=DB_URL,
         min_size=2,
         max_size=10,
         is_production=True,
