@@ -69,6 +69,19 @@ from core.background import BackgroundTaskWorker, TaskEventBroadcaster, Workflow
 from core.automations import AutonomousSupervisor, validate_cron, calculate_next_fire
 from core.repositories.base import BaseApprovalRepository, BaseTaskRepository, BaseAutomationRepository
 from core.repositories.base_webhook import BaseWebhookRepository
+from core.repositories.base_fleet import BaseFleetRepository
+from core.fleet import (
+    DistributedFleetWorker,
+    WorkerFleetCoordinator,
+    TenantFairnessScheduler,
+    FleetRecoveryService,
+    HeartbeatManager,
+    WorkerStatus,
+)
+from core.api_contracts import (
+    TenantQuotaUpdateSchema,
+    FleetDrainRequestSchema,
+)
 from core.webhooks import (
     WebhookIngressService,
     EventDispatcherService,
@@ -215,6 +228,19 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
     @property
     def delivery_worker(self) -> OutboundDeliveryWorker | None:
         return getattr(self.server, "delivery_worker", None)
+
+    @property
+    def fleet_repo(self) -> BaseFleetRepository | None:
+        rc = getattr(self.server, "repository_container", None)
+        return getattr(rc, "fleet", None) if rc else None
+
+    @property
+    def fleet_coordinator(self) -> WorkerFleetCoordinator | None:
+        return getattr(self.server, "fleet_coordinator", None)
+
+    @property
+    def fleet_worker(self) -> DistributedFleetWorker | None:
+        return getattr(self.server, "fleet_worker", None)
 
     def _read_raw_body(self) -> bytes | None:
         """Safely read raw binary body within size limits (M54)."""
@@ -1087,6 +1113,58 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response(dl.to_dict() if hasattr(dl, "to_dict") else dl)
             return
 
+
+        # ============================================================
+        # M55: Distributed Worker Fleet & Coordination (GET Routes)
+        # ============================================================
+
+        if path == "/v1/fleet/status":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            if not (identity and (identity.has_role(UserRole.ADMIN) or identity.has_scope(UserScope.ADMIN.value))):
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Administrative privileges required to view fleet status")
+                return
+            if not self.fleet_coordinator:
+                self._send_error_response(HTTPStatus.NOT_IMPLEMENTED, "fleet_disabled", "Fleet coordinator is not active")
+                return
+            self._send_json_response(self.fleet_coordinator.get_fleet_status())
+            return
+
+        if path == "/v1/fleet/workers":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            if not (identity and (identity.has_role(UserRole.ADMIN) or identity.has_scope(UserScope.ADMIN.value))):
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Administrative privileges required to list workers")
+                return
+            if not self.fleet_repo:
+                self._send_error_response(HTTPStatus.NOT_IMPLEMENTED, "fleet_disabled", "Fleet repository is not active")
+                return
+            workers = self.fleet_repo.list_workers()
+            self._send_json_response({"workers": [w.to_dict() for w in workers], "count": len(workers)})
+            return
+
+        if path.startswith("/v1/fleet/tenants/") and path.endswith("/quota"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            tenant_id = path[len("/v1/fleet/tenants/"): -len("/quota")].strip()
+            # Allow user to view their own quota, or admin to view any
+            is_admin = identity and (identity.has_role(UserRole.ADMIN) or identity.has_scope(UserScope.ADMIN.value))
+            if not is_admin and identity and identity.user_id != tenant_id:
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Cannot view quota for other tenants")
+                return
+            if not self.fleet_repo:
+                self._send_error_response(HTTPStatus.NOT_IMPLEMENTED, "fleet_disabled", "Fleet repository is not active")
+                return
+            limits = self.fleet_repo.get_tenant_limits(tenant_id)
+            self._send_json_response(limits.to_dict())
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_POST(self) -> None:
@@ -1696,9 +1774,91 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "replay_error", str(e))
             return
 
+
+        # ============================================================
+        # M55: Distributed Worker Fleet & Coordination (POST Routes)
+        # ============================================================
+
+        if path.startswith("/v1/fleet/workers/") and path.endswith("/drain"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            if not (identity and (identity.has_role(UserRole.ADMIN) or identity.has_scope(UserScope.ADMIN.value))):
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Administrative privileges required to drain workers")
+                return
+            if not self.fleet_coordinator:
+                self._send_error_response(HTTPStatus.NOT_IMPLEMENTED, "fleet_disabled", "Fleet coordinator is not active")
+                return
+            worker_id = path[len("/v1/fleet/workers/"): -len("/drain")].strip()
+            success = self.fleet_coordinator.drain_worker(worker_id)
+            if not success:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "worker_not_found", f"Worker '{worker_id}' not found")
+                return
+            self._send_json_response({"status": "draining", "worker_id": worker_id})
+            return
+
+        if path == "/v1/fleet/sweep":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            if not (identity and (identity.has_role(UserRole.ADMIN) or identity.has_scope(UserScope.ADMIN.value))):
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Administrative privileges required to trigger recovery sweep")
+                return
+            if not self.fleet_coordinator:
+                self._send_error_response(HTTPStatus.NOT_IMPLEMENTED, "fleet_disabled", "Fleet coordinator is not active")
+                return
+            res = self.fleet_coordinator.trigger_recovery_sweep()
+            self._send_json_response(res)
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
 
+
+
+    def do_PUT(self) -> None:
+        """Route PUT requests with authentication and administrative validation."""
+        req_start = time.time()
+        self._setup_request_context()
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path.rstrip("/")
+
+        is_auth, identity, err_msg, status_code = self._resolve_identity()
+        if not is_auth:
+            self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+            return
+
+        body = self._read_json_body()
+        if body is None:
+            return
+
+        # M55: Configure Tenant Concurrency Quota
+        if path.startswith("/v1/fleet/tenants/") and path.endswith("/quota"):
+            if not (identity and (identity.has_role(UserRole.ADMIN) or identity.has_scope(UserScope.ADMIN.value))):
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Administrative privileges required to update tenant quotas")
+                return
+            if not self.fleet_repo:
+                self._send_error_response(HTTPStatus.NOT_IMPLEMENTED, "fleet_disabled", "Fleet repository is not active")
+                return
+            tenant_id = path[len("/v1/fleet/tenants/"): -len("/quota")].strip()
+            try:
+                schema = TenantQuotaUpdateSchema.model_validate(body)
+                from core.fleet.types import TenantWorkerLimitRecord
+                record = TenantWorkerLimitRecord(
+                    tenant_id=tenant_id,
+                    max_active_tasks=schema.max_active_tasks,
+                    guaranteed_slots=schema.guaranteed_slots,
+                    burst_capacity=schema.burst_capacity,
+                )
+                saved = self.fleet_repo.set_tenant_limits(record)
+                self._send_json_response(saved.to_dict())
+            except Exception as e:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_quota_payload", str(e))
+            return
+
+        self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_PATCH(self) -> None:
         """Route PATCH requests with authentication and tenant isolation."""
@@ -1945,6 +2105,30 @@ class AURAHTTPServer:
             self.dispatcher_service = None
             self.replay_service = None
 
+        # M55 Distributed Worker Fleet & Coordination
+        if getattr(self.config, "aura_fleet_enabled", False) and self.repository_container.fleet and self.repository_container.tasks:
+            self.fleet_coordinator = WorkerFleetCoordinator(
+                fleet_repo=self.repository_container.fleet,
+                sweep_interval_seconds=getattr(self.config, "aura_fleet_recovery_sweep_interval_seconds", 10.0),
+                worker_expiry_seconds=getattr(self.config, "aura_fleet_worker_expiry_seconds", 15.0),
+                lease_expiry_seconds=getattr(self.config, "aura_fleet_lease_duration_seconds", 30.0),
+            )
+            self.fleet_worker = DistributedFleetWorker(
+                fleet_repo=self.repository_container.fleet,
+                task_repo=self.repository_container.tasks,
+                approval_repo=self.repository_container.approvals,
+                orchestrator=self.workflow_orchestrator,
+                concurrency=getattr(self.config, "aura_fleet_worker_concurrency", 4),
+                poll_interval_ms=getattr(self.config, "aura_task_poll_interval_ms", 500),
+                heartbeat_interval_seconds=getattr(self.config, "aura_fleet_heartbeat_interval_seconds", 5.0),
+                missed_heartbeats_threshold=getattr(self.config, "aura_fleet_missed_heartbeats_threshold", 3),
+                lease_duration_seconds=getattr(self.config, "aura_fleet_lease_duration_seconds", 30.0),
+                drain_timeout_seconds=getattr(self.config, "aura_fleet_drain_timeout_seconds", 30.0),
+            )
+        else:
+            self.fleet_coordinator = None
+            self.fleet_worker = None
+
     def start(self, block: bool = True) -> None:
         """Start the HTTP server on configured host and port."""
         server_address = (self.host, self.port)
@@ -1962,12 +2146,18 @@ class AURAHTTPServer:
         self._server.ingress_service = self.ingress_service  # type: ignore
         self._server.dispatcher_service = self.dispatcher_service  # type: ignore
         self._server.replay_service = self.replay_service  # type: ignore
+        self._server.fleet_coordinator = self.fleet_coordinator  # type: ignore
+        self._server.fleet_worker = self.fleet_worker  # type: ignore
         self._is_running = True
 
         if self.task_worker:
             self.task_worker.start()
         if self.delivery_worker:
             self.delivery_worker.start()
+        if self.fleet_coordinator:
+            self.fleet_coordinator.start()
+        if self.fleet_worker:
+            self.fleet_worker.start()
 
         logger.info(
             f"Starting {self.config.aura_app_name} HTTP Server on http://{self.host}:{self.port} (env: {self.config.aura_env})"
@@ -2002,6 +2192,18 @@ class AURAHTTPServer:
                 self.delivery_worker.stop()
             except Exception as e:
                 logger.warning(f"Error stopping OutboundDeliveryWorker: {e}")
+
+        if getattr(self, "fleet_worker", None):
+            try:
+                self.fleet_worker.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping DistributedFleetWorker: {e}")
+
+        if getattr(self, "fleet_coordinator", None):
+            try:
+                self.fleet_coordinator.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping WorkerFleetCoordinator: {e}")
 
         # Flush runtime state checkpoint if agentic runtime is available
         if self.aura and self.aura.agentic_runtime:

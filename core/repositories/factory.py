@@ -1,4 +1,4 @@
-"""M42/M52/M53 — Repository Factory & Dependency Resolution for Project AURA.
+"""M42/M52/M53/M54/M55 — Repository Factory & Dependency Resolution for Project AURA.
 
 Constructs and wires appropriate repository implementations (PostgreSQL vs In-Memory)
 based on runtime configuration and environment settings.
@@ -26,6 +26,8 @@ from core.repositories.base import (
     BaseUserRepository,
     BaseVectorSearchRepository,
 )
+from core.repositories.base_webhook import BaseWebhookRepository
+from core.repositories.base_fleet import BaseFleetRepository
 from core.repositories.in_memory import (
     InMemoryApiTokenRepository,
     InMemoryApprovalRepository,
@@ -40,6 +42,8 @@ from core.repositories.in_memory import (
     InMemoryVectorSearchRepository,
 )
 from core.repositories.in_memory_automation import InMemoryAutomationRepository
+from core.repositories.in_memory_webhook import InMemoryWebhookRepository
+from core.repositories.in_memory_fleet import InMemoryFleetRepository
 from core.repositories.postgres import (
     PostgresApiTokenRepository,
     PostgresCheckpointRepository,
@@ -54,9 +58,8 @@ from core.repositories.postgres import (
 from core.repositories.postgres_task import PostgresTaskRepository
 from core.repositories.postgres_approval import PostgresApprovalRepository
 from core.repositories.postgres_automation import PostgresAutomationRepository
-from core.repositories.base_webhook import BaseWebhookRepository
-from core.repositories.in_memory_webhook import InMemoryWebhookRepository
 from core.repositories.postgres_webhook import PostgresWebhookRepository
+from core.repositories.postgres_fleet import PostgresFleetRepository
 
 logger = logging.getLogger("aura.repositories.factory")
 
@@ -78,6 +81,7 @@ class RepositoryContainer:
     approvals: BaseApprovalRepository | None = None
     automations: BaseAutomationRepository | None = None
     webhooks: BaseWebhookRepository | None = None
+    fleet: BaseFleetRepository | None = None
     db_pool: DatabaseConnectionPool | None = None
     is_postgres: bool = False
 
@@ -101,6 +105,7 @@ def create_in_memory_repositories() -> RepositoryContainer:
     approval_repo = InMemoryApprovalRepository(task_repo=task_repo)
     automation_repo = InMemoryAutomationRepository(task_repo=task_repo)
     webhook_repo = InMemoryWebhookRepository()
+    fleet_repo = InMemoryFleetRepository(task_repo=task_repo)
 
     return RepositoryContainer(
         users=user_repo,
@@ -116,6 +121,7 @@ def create_in_memory_repositories() -> RepositoryContainer:
         approvals=approval_repo,
         automations=automation_repo,
         webhooks=webhook_repo,
+        fleet=fleet_repo,
         db_pool=None,
         is_postgres=False,
     )
@@ -139,6 +145,7 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
     approval_repo = PostgresApprovalRepository(db_pool)
     automation_repo = PostgresAutomationRepository(db_pool)
     webhook_repo = PostgresWebhookRepository(db_pool)
+    fleet_repo = PostgresFleetRepository(db_pool)
 
     return RepositoryContainer(
         users=user_repo,
@@ -154,6 +161,7 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
         approvals=approval_repo,
         automations=automation_repo,
         webhooks=webhook_repo,
+        fleet=fleet_repo,
         db_pool=db_pool,
         is_postgres=True,
     )

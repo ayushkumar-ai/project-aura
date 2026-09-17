@@ -288,3 +288,19 @@ class DeadLetterReplaySchema(BaseModel):
     reason: str = Field(default="Manual operator replay", max_length=1000, description="Audit reason for replay")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary replay context metadata")
 
+
+
+class TenantQuotaUpdateSchema(BaseModel):
+    """Schema for PUT /v1/fleet/tenants/{id}/quota."""
+    model_config = ConfigDict(extra="ignore")
+
+    max_active_tasks: int = Field(..., ge=1, le=1000, description="Maximum concurrent active tasks")
+    guaranteed_slots: int = Field(default=2, ge=0, le=100, description="Guaranteed concurrency slots")
+    burst_capacity: int = Field(default=20, ge=1, le=2000, description="Maximum burst task capacity")
+
+
+class FleetDrainRequestSchema(BaseModel):
+    """Schema for POST /v1/fleet/workers/{id}/drain."""
+    model_config = ConfigDict(extra="ignore")
+
+    reason: str = Field(default="Operator graceful drain", max_length=500, description="Reason for draining worker")

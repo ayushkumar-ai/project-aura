@@ -238,6 +238,18 @@ class Settings(BaseSettings):
     aura_webhook_tenant_max_endpoints: int = 25
     aura_webhook_tenant_max_subscriptions: int = 50
 
+
+    # M55 Distributed Execution Scaling & Worker Fleet Coordination Configuration
+    aura_fleet_enabled: bool = False
+    aura_fleet_worker_concurrency: int = 4
+    aura_fleet_heartbeat_interval_seconds: float = 5.0
+    aura_fleet_missed_heartbeats_threshold: int = 3
+    aura_fleet_lease_duration_seconds: float = 30.0
+    aura_fleet_drain_timeout_seconds: float = 30.0
+    aura_fleet_recovery_sweep_interval_seconds: float = 10.0
+    aura_fleet_worker_expiry_seconds: float = 15.0
+    aura_tenant_default_max_active_tasks: int = 10
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

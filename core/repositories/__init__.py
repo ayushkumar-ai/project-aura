@@ -1,4 +1,4 @@
-"""M42/M52/M53 — Repositories package for Project AURA."""
+"""M42/M52/M53/M54/M55 — Repositories package for Project AURA."""
 
 from core.repositories.base import (
     BaseApiTokenRepository,
@@ -16,10 +16,13 @@ from core.repositories.base import (
 )
 from core.repositories.base_automation import BaseAutomationRepository
 from core.repositories.base_webhook import BaseWebhookRepository
+from core.repositories.base_fleet import BaseFleetRepository
 from core.repositories.in_memory_automation import InMemoryAutomationRepository
 from core.repositories.in_memory_webhook import InMemoryWebhookRepository
+from core.repositories.in_memory_fleet import InMemoryFleetRepository
 from core.repositories.postgres_automation import PostgresAutomationRepository
 from core.repositories.postgres_webhook import PostgresWebhookRepository
+from core.repositories.postgres_fleet import PostgresFleetRepository
 from core.repositories.postgres_task import PostgresTaskRepository
 from core.repositories.postgres_approval import PostgresApprovalRepository
 from core.repositories.factory import (
@@ -67,6 +70,7 @@ __all__ = [
     "BaseApprovalRepository",
     "BaseAutomationRepository",
     "BaseWebhookRepository",
+    "BaseFleetRepository",
     "InMemoryUserRepository",
     "InMemoryUserPreferencesRepository",
     "InMemoryApiTokenRepository",
@@ -80,6 +84,7 @@ __all__ = [
     "InMemoryApprovalRepository",
     "InMemoryAutomationRepository",
     "InMemoryWebhookRepository",
+    "InMemoryFleetRepository",
     "PostgresUserRepository",
     "PostgresUserPreferencesRepository",
     "PostgresApiTokenRepository",
@@ -93,6 +98,7 @@ __all__ = [
     "PostgresApprovalRepository",
     "PostgresAutomationRepository",
     "PostgresWebhookRepository",
+    "PostgresFleetRepository",
     "RepositoryContainer",
     "create_in_memory_repositories",
     "create_postgres_repositories",
