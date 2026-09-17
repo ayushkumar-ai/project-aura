@@ -304,3 +304,61 @@ class FleetDrainRequestSchema(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     reason: str = Field(default="Operator graceful drain", max_length=500, description="Reason for draining worker")
+
+
+# -----------------------------------------------------------------------------
+# M56 Cognitive Memory, Continuous Learning & Personalization Schemas
+# -----------------------------------------------------------------------------
+
+class CognitiveMemoryRecordSchema(BaseModel):
+    """Schema for POST /v1/cognitive-memory/record."""
+    model_config = ConfigDict(extra="ignore")
+
+    content: str = Field(..., min_length=1, max_length=100000, description="Memory content text")
+    memory_type: str = Field(default="semantic", description="Memory type (episodic, semantic, preference, experience, user_profile)")
+    category: str = Field(default="general", max_length=64, description="Domain/category classification")
+    key: str = Field(default="", max_length=256, description="Canonical memory key or identifier")
+    structured_data: dict[str, Any] = Field(default_factory=dict, description="Structured attributes")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="Confidence score [0.0, 1.0]")
+    provenance_type: str = Field(default="system_derived", description="Source provenance (user_explicit, tool_observed, system_derived, model_inferred, external_imported)")
+    tags: list[str] = Field(default_factory=list, description="Categorization tags")
+    source_urls: list[str] = Field(default_factory=list, description="Originating source URLs")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Sanitized metadata dictionary")
+    auto_resolve_contradictions: bool = Field(default=True, description="Whether to auto-detect and resolve contradictions")
+
+
+class CognitiveMemoryUpdateSchema(BaseModel):
+    """Schema for PATCH /v1/cognitive-memory/{id}."""
+    model_config = ConfigDict(extra="ignore")
+
+    lifecycle_state: str | None = Field(default=None, description="Target lifecycle state (active, stale, superseded, archived, deleted)")
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0, description="Updated confidence score [0.0, 1.0]")
+    reason: str = Field(default="", max_length=500, description="Audit reason for state transition")
+
+
+class CognitiveProfileUpdateSchema(BaseModel):
+    """Schema for PUT /v1/cognitive-memory/profile."""
+    model_config = ConfigDict(extra="ignore")
+
+    preferences: dict[str, Any] | None = Field(default=None, description="Explicit user preferences map")
+    inferred_traits: dict[str, Any] | None = Field(default=None, description="Inferred behavioral/cognitive traits map")
+    interaction_metrics: dict[str, Any] | None = Field(default=None, description="Interaction metrics and counters")
+
+
+class MemoryFeedbackRequestSchema(BaseModel):
+    """Schema for POST /v1/cognitive-memory/feedback."""
+    model_config = ConfigDict(extra="ignore")
+
+    target_memory_id: str | None = Field(default=None, max_length=128, description="Target memory ID")
+    feedback_type: str = Field(default="positive", description="Feedback classification (positive, negative, correction, override)")
+    correction_content: str | None = Field(default=None, max_length=100000, description="Corrected memory content")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Feedback context metadata")
+
+
+class ContradictionResolveRequestSchema(BaseModel):
+    """Schema for POST /v1/cognitive-memory/contradictions/{id}/resolve."""
+    model_config = ConfigDict(extra="ignore")
+
+    winning_memory_id: str = Field(..., min_length=1, max_length=128, description="Winning active memory ID")
+    resolution_strategy: str = Field(default="provenance_precedence", description="Resolution strategy")
+    reason: str = Field(default="Manual resolution", max_length=500, description="Resolution rationale")

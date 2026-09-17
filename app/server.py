@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, urlparse
 
 from enum import Enum
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 from app.aura import AURA
 from app.config import Settings, settings
 from app.main import create_aura
@@ -95,6 +95,26 @@ from core.api_contracts import (
     EventSubscriptionCreateSchema,
     EventSubscriptionUpdateSchema,
     DeadLetterReplaySchema,
+    CognitiveMemoryRecordSchema,
+    CognitiveMemoryUpdateSchema,
+    CognitiveProfileUpdateSchema,
+    MemoryFeedbackRequestSchema,
+    ContradictionResolveRequestSchema,
+)
+from core.repositories.base_cognitive_memory import BaseCognitiveMemoryRepository
+from core.cognitive_memory import (
+    CognitiveMemory,
+    CognitiveMemoryType,
+    ProvenanceType,
+    LifecycleState,
+    ContradictionStatus,
+    ResolutionStrategy,
+    FeedbackType,
+    PersonalizationEngine,
+    FeedbackLearningLoop,
+    MemoryConsolidationEngine,
+    MemoryFeedbackEvent,
+    UserCognitiveProfile,
 )
 import queue
 from core.config_validator import validate_production_config
@@ -241,6 +261,35 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
     @property
     def fleet_worker(self) -> DistributedFleetWorker | None:
         return getattr(self.server, "fleet_worker", None)
+
+    @property
+    def cognitive_memory_repo(self) -> BaseCognitiveMemoryRepository | None:
+        rc = getattr(self.server, "repository_container", None)
+        return getattr(rc, "cognitive_memories", None) if rc else None
+
+    @property
+    def personalization_engine(self) -> PersonalizationEngine:
+        pe = getattr(self.server, "personalization_engine", None)
+        if pe is None:
+            pe = PersonalizationEngine()
+            setattr(self.server, "personalization_engine", pe)
+        return pe
+
+    @property
+    def feedback_loop(self) -> FeedbackLearningLoop:
+        fl = getattr(self.server, "feedback_loop", None)
+        if fl is None:
+            fl = FeedbackLearningLoop()
+            setattr(self.server, "feedback_loop", fl)
+        return fl
+
+    @property
+    def consolidation_engine(self) -> MemoryConsolidationEngine:
+        ce = getattr(self.server, "consolidation_engine", None)
+        if ce is None:
+            ce = MemoryConsolidationEngine()
+            setattr(self.server, "consolidation_engine", ce)
+        return ce
 
     def _read_raw_body(self) -> bytes | None:
         """Safely read raw binary body within size limits (M54)."""
@@ -1165,6 +1214,136 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response(limits.to_dict())
             return
 
+        # ============================================================
+        # M56: Cognitive Memory & Continuous Learning (GET Routes)
+        # ============================================================
+
+        if path == "/v1/cognitive-memory/query":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            m_type = params.get("memory_type", [None])[0]
+            category = params.get("category", [None])[0]
+            key = params.get("key", [None])[0]
+            lifecycle_state = params.get("lifecycle_state", ["active"])[0]
+            min_conf = float(params.get("min_confidence", [0.0])[0])
+            query_str = params.get("query", [""])[0]
+            limit = int(params.get("limit", [50])[0])
+            offset = int(params.get("offset", [0])[0])
+
+            mems = self.cognitive_memory_repo.query_memories(
+                tenant_id=user_id,
+                memory_type=m_type,
+                category=category,
+                key=key,
+                lifecycle_state=lifecycle_state,
+                min_confidence=min_conf,
+                query=query_str,
+                limit=limit,
+                offset=offset,
+            )
+            self._send_json_response({"memories": [m.to_dict() for m in mems], "count": len(mems)})
+            return
+
+        if path == "/v1/cognitive-memory/profile":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            prof = self.cognitive_memory_repo.get_profile(tenant_id=user_id)
+            if not prof:
+                prof = UserCognitiveProfile(profile_id=str(uuid4()), tenant_id=user_id)
+            self._send_json_response(prof.to_dict())
+            return
+
+        if path == "/v1/cognitive-memory/contradictions":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            status_param = params.get("status", [None])[0]
+            limit = int(params.get("limit", [50])[0])
+            contras = self.cognitive_memory_repo.list_contradictions(tenant_id=user_id, status=status_param, limit=limit)
+            self._send_json_response({"contradictions": [c.to_dict() for c in contras], "count": len(contras)})
+            return
+
+        if path == "/v1/cognitive-memory/experience-patterns":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            limit = int(params.get("limit", [50])[0])
+            patterns = self.cognitive_memory_repo.list_experience_patterns(tenant_id=user_id, limit=limit)
+            self._send_json_response({"experience_patterns": [p.to_dict() for p in patterns], "count": len(patterns)})
+            return
+
+        if path == "/v1/cognitive-memory/context":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            q_text = params.get("query", [""])[0]
+            prof = self.cognitive_memory_repo.get_profile(tenant_id=user_id)
+            active_mems = self.cognitive_memory_repo.query_memories(tenant_id=user_id, lifecycle_state="active", limit=20)
+            patterns = self.cognitive_memory_repo.list_experience_patterns(tenant_id=user_id, limit=10)
+            ctx = self.personalization_engine.build_personalization_context(
+                tenant_id=user_id,
+                profile=prof,
+                memories=active_mems,
+                experience_patterns=patterns,
+                query=q_text,
+            )
+            self._send_json_response({
+                "context": ctx.formatted_prompt_block,
+                "explicit_preferences": ctx.explicit_preferences,
+                "inferred_traits": ctx.inferred_traits,
+                "relevant_facts": ctx.relevant_facts,
+                "recommended_tools": ctx.recommended_tools,
+            })
+            return
+
+        if path.startswith("/v1/cognitive-memory/"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            m_id = path[len("/v1/cognitive-memory/"):].strip()
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            mem = self.cognitive_memory_repo.get_memory(m_id, tenant_id=user_id)
+            if not mem:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "memory_not_found", f"Cognitive memory '{m_id}' not found")
+                return
+            self._send_json_response(mem.to_dict())
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_POST(self) -> None:
@@ -1813,6 +1992,171 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response(res)
             return
 
+        # ============================================================
+        # M56: Cognitive Memory & Continuous Learning (POST Routes)
+        # ============================================================
+
+        if path == "/v1/cognitive-memory/record":
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            try:
+                schema = CognitiveMemoryRecordSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                mem, contra = self.cognitive_memory_repo.record_memory(
+                    tenant_id=user_id,
+                    content=schema.content,
+                    memory_type=schema.memory_type,
+                    category=schema.category,
+                    key=schema.key,
+                    structured_data=schema.structured_data,
+                    confidence=schema.confidence,
+                    provenance_type=schema.provenance_type,
+                    tags=schema.tags,
+                    source_urls=schema.source_urls,
+                    metadata=schema.metadata,
+                    auto_resolve_contradictions=schema.auto_resolve_contradictions,
+                )
+                resp = {
+                    "memory": mem.to_dict(),
+                    "contradiction": contra.to_dict() if contra else None,
+                }
+                self._send_json_response(resp, status=HTTPStatus.CREATED)
+            except Exception as e:
+                logger.error(f"Error recording cognitive memory: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "record_error", str(e))
+            return
+
+        if path == "/v1/cognitive-memory/feedback":
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            try:
+                schema = MemoryFeedbackRequestSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                target_mem = None
+                if schema.target_memory_id:
+                    target_mem = self.cognitive_memory_repo.get_memory(schema.target_memory_id, tenant_id=user_id)
+
+                event = MemoryFeedbackEvent(
+                    event_id=str(uuid4()),
+                    tenant_id=user_id,
+                    target_memory_id=schema.target_memory_id,
+                    feedback_type=FeedbackType(schema.feedback_type),
+                    correction_content=schema.correction_content,
+                    metadata=schema.metadata,
+                )
+
+                updated_target, new_mem, applied_event = self.feedback_loop.process_feedback(event, target_memory=target_mem)
+
+                # Persist state changes
+                if updated_target is not None:
+                    self.cognitive_memory_repo.update_memory_state(
+                        memory_id=updated_target.memory_id,
+                        tenant_id=user_id,
+                        lifecycle_state=updated_target.lifecycle_state,
+                        confidence=updated_target.confidence,
+                        reason=f"feedback:{event.feedback_type.value}",
+                    )
+                if new_mem is not None:
+                    self.cognitive_memory_repo.record_memory(
+                        tenant_id=user_id,
+                        content=new_mem.content,
+                        memory_type=new_mem.memory_type,
+                        category=new_mem.category,
+                        key=new_mem.key,
+                        structured_data=new_mem.structured_data,
+                        confidence=new_mem.confidence,
+                        provenance_type=new_mem.provenance_type,
+                        lifecycle_state=new_mem.lifecycle_state,
+                        tags=list(new_mem.tags),
+                        source_urls=list(new_mem.source_urls),
+                        metadata=new_mem.metadata,
+                        auto_resolve_contradictions=False,
+                    )
+                self.cognitive_memory_repo.record_feedback(applied_event)
+
+                self._send_json_response({
+                    "feedback_event": applied_event.to_dict(),
+                    "updated_target_memory": updated_target.to_dict() if updated_target else None,
+                    "new_memory": new_mem.to_dict() if new_mem else None,
+                })
+            except Exception as e:
+                logger.error(f"Error processing memory feedback: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "feedback_error", str(e))
+            return
+
+        if path.startswith("/v1/cognitive-memory/contradictions/") and path.endswith("/resolve"):
+            contra_id = path[len("/v1/cognitive-memory/contradictions/"): -len("/resolve")].strip()
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            try:
+                schema = ContradictionResolveRequestSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                success = self.cognitive_memory_repo.resolve_contradiction(
+                    contradiction_id=contra_id,
+                    tenant_id=user_id,
+                    resolution_strategy=schema.resolution_strategy,
+                    resolved_by=f"user:{user_id}",
+                    winning_memory_id=schema.winning_memory_id,
+                )
+                if not success:
+                    self._send_error_response(HTTPStatus.NOT_FOUND, "contradiction_not_found", f"Contradiction '{contra_id}' not found")
+                    return
+                self._send_json_response({"contradiction_id": contra_id, "resolved": True})
+            except Exception as e:
+                logger.error(f"Error resolving contradiction: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "contradiction_resolution_error", str(e))
+            return
+
+        if path == "/v1/cognitive-memory/consolidate":
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            try:
+                episodes = self.cognitive_memory_repo.query_memories(
+                    tenant_id=user_id,
+                    memory_type=CognitiveMemoryType.EPISODIC,
+                    lifecycle_state=LifecycleState.ACTIVE,
+                    limit=50,
+                )
+                synthesized = self.consolidation_engine.extract_semantic_facts_from_episodes(
+                    tenant_id=user_id,
+                    episodes=episodes,
+                )
+                for fact in synthesized:
+                    self.cognitive_memory_repo.record_memory(
+                        tenant_id=fact.tenant_id,
+                        content=fact.content,
+                        memory_type=fact.memory_type,
+                        category=fact.category,
+                        key=fact.key,
+                        structured_data=fact.structured_data,
+                        confidence=fact.confidence,
+                        provenance_type=fact.provenance_type,
+                        lifecycle_state=fact.lifecycle_state,
+                        tags=list(fact.tags),
+                        auto_resolve_contradictions=True,
+                    )
+                self._send_json_response({"synthesized_facts_count": len(synthesized)})
+            except Exception as e:
+                logger.error(f"Error consolidating cognitive memory: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "consolidation_error", str(e))
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
 
@@ -1856,6 +2200,42 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_json_response(saved.to_dict())
             except Exception as e:
                 self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_quota_payload", str(e))
+            return
+
+        # M56: Update Cognitive User Profile
+        if path == "/v1/cognitive-memory/profile":
+            user_id = identity.user_id if identity else "default"
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            try:
+                schema = CognitiveProfileUpdateSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                prof = self.cognitive_memory_repo.get_profile(tenant_id=user_id)
+                if not prof:
+                    prof = UserCognitiveProfile(
+                        profile_id=str(uuid4()),
+                        tenant_id=user_id,
+                        preferences=schema.preferences or {},
+                        inferred_traits=schema.inferred_traits or {},
+                        interaction_metrics=schema.interaction_metrics or {},
+                    )
+                else:
+                    if schema.preferences is not None:
+                        prof.preferences.update(schema.preferences)
+                    if schema.inferred_traits is not None:
+                        prof.inferred_traits.update(schema.inferred_traits)
+                    if schema.interaction_metrics is not None:
+                        prof.interaction_metrics.update(schema.interaction_metrics)
+                saved = self.cognitive_memory_repo.save_profile(prof)
+                self._send_json_response(saved.to_dict())
+            except Exception as e:
+                logger.error(f"Error updating cognitive profile: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "profile_update_error", str(e))
             return
 
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
@@ -1950,6 +2330,34 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "subscription_update_error", str(e))
             return
 
+        # M56: Update Cognitive Memory State
+        if path.startswith("/v1/cognitive-memory/"):
+            m_id = path[len("/v1/cognitive-memory/"):].strip()
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            try:
+                schema = CognitiveMemoryUpdateSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+            try:
+                updated = self.cognitive_memory_repo.update_memory_state(
+                    memory_id=m_id,
+                    tenant_id=user_id,
+                    lifecycle_state=schema.lifecycle_state or "active",
+                    confidence=schema.confidence,
+                    reason=schema.reason,
+                )
+                if not updated:
+                    self._send_error_response(HTTPStatus.NOT_FOUND, "memory_not_found", f"Cognitive memory '{m_id}' not found")
+                    return
+                self._send_json_response(updated.to_dict())
+            except Exception as e:
+                logger.error(f"Error updating cognitive memory: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "memory_update_error", str(e))
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_DELETE(self) -> None:
@@ -2002,6 +2410,30 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_error_response(HTTPStatus.NOT_FOUND, "subscription_not_found", f"Subscription '{sub_id}' not found")
                 return
             self._send_json_response({"id": sub_id, "deleted": True})
+            return
+
+        # M56: Purge Tenant Cognitive Memories (GDPR compliance)
+        if path == "/v1/cognitive-memory/purge":
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            purged = self.cognitive_memory_repo.clear_tenant_memories(tenant_id=user_id)
+            self._send_json_response({"purged_count": purged, "tenant_id": user_id, "success": True})
+            return
+
+        # M56: Delete Single Cognitive Memory
+        if path.startswith("/v1/cognitive-memory/"):
+            m_id = path[len("/v1/cognitive-memory/"):].strip()
+            if not self.cognitive_memory_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Cognitive memory repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            hard = params.get("hard", ["false"])[0].lower() in ("true", "1")
+            deleted = self.cognitive_memory_repo.delete_memory(m_id, tenant_id=user_id, hard_delete=hard)
+            if not deleted:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "memory_not_found", f"Cognitive memory '{m_id}' not found")
+                return
+            self._send_json_response({"memory_id": m_id, "deleted": True, "hard_delete": hard})
             return
 
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")

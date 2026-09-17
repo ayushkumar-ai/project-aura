@@ -551,3 +551,4 @@ class BaseApprovalRepository(ABC):
 
 
 from core.repositories.base_automation import BaseAutomationRepository
+from core.repositories.base_cognitive_memory import BaseCognitiveMemoryRepository
