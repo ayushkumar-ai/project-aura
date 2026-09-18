@@ -362,3 +362,41 @@ class ContradictionResolveRequestSchema(BaseModel):
     winning_memory_id: str = Field(..., min_length=1, max_length=128, description="Winning active memory ID")
     resolution_strategy: str = Field(default="provenance_precedence", description="Resolution strategy")
     reason: str = Field(default="Manual resolution", max_length=500, description="Resolution rationale")
+
+
+# -----------------------------------------------------------------------------
+# M57 Multimodal Processing & Rich Interaction Schemas
+# -----------------------------------------------------------------------------
+
+class MultimodalArtifactUploadSchema(BaseModel):
+    """Schema for POST /v1/multimodal/artifacts."""
+    model_config = ConfigDict(extra="ignore")
+
+    content_base64: str | None = Field(default=None, description="Base64 encoded binary payload")
+    content_text: str | None = Field(default=None, description="Plain text / JSON payload")
+    filename: str = Field(default="", max_length=256, description="Original filename")
+    media_type: str = Field(default="image", description="Media type (image, audio, document, structured_data, binary_artifact)")
+    format: str = Field(default="image/png", description="MIME format")
+    provenance: str = Field(default="user_upload", description="Source provenance (user_upload, tool_output, etc.)")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Custom metadata dictionary")
+
+
+class MultimodalProcessRequestSchema(BaseModel):
+    """Schema for POST /v1/multimodal/process."""
+    model_config = ConfigDict(extra="ignore")
+
+    artifact_id: str = Field(..., min_length=1, max_length=128, description="Target multimodal artifact ID")
+    operation: str = Field(default="understand", max_length=64, description="Processing operation (understand, ocr, transcribe, extract_document)")
+    user_prompt: str = Field(default="", max_length=10000, description="Optional user guidance prompt")
+    idempotency_key: str | None = Field(default=None, max_length=128, description="Idempotent execution key")
+    admit_to_memory: bool = Field(default=False, description="Whether to bridge result into M56 cognitive memory")
+    user_confirmed_memory: bool = Field(default=False, description="Whether user explicitly confirmed memory admission")
+
+
+class MultimodalArtifactUpdateSchema(BaseModel):
+    """Schema for PATCH /v1/multimodal/artifacts/{id}."""
+    model_config = ConfigDict(extra="ignore")
+
+    lifecycle_state: str | None = Field(default=None, description="Updated lifecycle state")
+    security_classification: str | None = Field(default=None, description="Updated security classification")
+    reason: str = Field(default="", max_length=500, description="Reason for update")

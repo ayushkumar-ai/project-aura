@@ -100,8 +100,28 @@ from core.api_contracts import (
     CognitiveProfileUpdateSchema,
     MemoryFeedbackRequestSchema,
     ContradictionResolveRequestSchema,
+    MultimodalArtifactUploadSchema,
+    MultimodalProcessRequestSchema,
+    MultimodalArtifactUpdateSchema,
 )
 from core.repositories.base_cognitive_memory import BaseCognitiveMemoryRepository
+from core.repositories.base_multimodal import BaseMultimodalRepository
+from core.multimodal import (
+    MultimodalProcessor,
+    IObjectStorageService,
+    LocalStorageService,
+    InMemoryStorageService,
+    MultimodalCapabilityRegistry,
+    MultimodalMemoryBridge,
+    MultimodalDeletionCascade,
+    MultimodalArtifact,
+    MultimodalResult,
+    MultimodalMediaType,
+    MediaFormat,
+    ArtifactLifecycleState,
+    MultimodalProvenance,
+    SecurityClassification,
+)
 from core.cognitive_memory import (
     CognitiveMemory,
     CognitiveMemoryType,
@@ -290,6 +310,54 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             ce = MemoryConsolidationEngine()
             setattr(self.server, "consolidation_engine", ce)
         return ce
+
+    @property
+    def multimodal_repo(self) -> BaseMultimodalRepository | None:
+        rc = getattr(self.server, "repository_container", None)
+        return getattr(rc, "multimodal", None) if rc else None
+
+    @property
+    def multimodal_storage(self) -> IObjectStorageService:
+        st = getattr(self.server, "multimodal_storage", None)
+        if st is None:
+            st = InMemoryStorageService()
+            setattr(self.server, "multimodal_storage", st)
+        return st
+
+    @property
+    def multimodal_processor(self) -> MultimodalProcessor:
+        mp = getattr(self.server, "multimodal_processor", None)
+        if mp is None:
+            mp = MultimodalProcessor(
+                repository=self.multimodal_repo,
+                storage=self.multimodal_storage,
+                model_gateway=getattr(self.server.aura, "model_gateway", None) if hasattr(self.server, "aura") else None,
+            )
+            setattr(self.server, "multimodal_processor", mp)
+        return mp
+
+    @property
+    def multimodal_bridge(self) -> MultimodalMemoryBridge:
+        mb = getattr(self.server, "multimodal_bridge", None)
+        if mb is None:
+            mb = MultimodalMemoryBridge(
+                memory_repo=self.cognitive_memory_repo,
+                multimodal_repo=self.multimodal_repo,
+            )
+            setattr(self.server, "multimodal_bridge", mb)
+        return mb
+
+    @property
+    def multimodal_deletion_cascade(self) -> MultimodalDeletionCascade:
+        dc = getattr(self.server, "multimodal_deletion_cascade", None)
+        if dc is None:
+            dc = MultimodalDeletionCascade(
+                multimodal_repo=self.multimodal_repo,
+                memory_repo=self.cognitive_memory_repo,
+                storage=self.multimodal_storage,
+            )
+            setattr(self.server, "multimodal_deletion_cascade", dc)
+        return dc
 
     def _read_raw_body(self) -> bytes | None:
         """Safely read raw binary body within size limits (M54)."""
@@ -1344,6 +1412,69 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response(mem.to_dict())
             return
 
+        # M57: List Multimodal Capabilities
+        if path == "/v1/multimodal/capabilities":
+            registry = MultimodalCapabilityRegistry()
+            caps = registry.list_capabilities()
+            self._send_json_response({"capabilities": [c.to_dict() for c in caps]})
+            return
+
+        # M57: List Multimodal Artifacts
+        if path == "/v1/multimodal/artifacts":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.multimodal_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Multimodal repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            state_filter = params.get("lifecycle_state", [None])[0]
+            limit = int(params.get("limit", [50])[0])
+            offset = int(params.get("offset", [0])[0])
+            artifacts = self.multimodal_repo.list_artifacts(tenant_id=user_id, lifecycle_state=state_filter, limit=limit, offset=offset)
+            self._send_json_response({"artifacts": [a.to_dict() for a in artifacts], "count": len(artifacts)})
+            return
+
+        # M57: Get Single Multimodal Artifact
+        if path.startswith("/v1/multimodal/artifacts/"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            art_id = path[len("/v1/multimodal/artifacts/"):].strip()
+            if not self.multimodal_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Multimodal repository unavailable")
+                return
+            art = self.multimodal_repo.get_artifact(art_id, tenant_id=user_id)
+            if not art:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "artifact_not_found", f"Artifact '{art_id}' not found")
+                return
+            self._send_json_response(art.to_dict())
+            return
+
+        # M57: List Multimodal Results
+        if path == "/v1/multimodal/results":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            params = parse_qs(parsed_url.query)
+            art_id = params.get("artifact_id", [""])[0]
+            if not art_id:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "missing_artifact_id", "artifact_id query parameter is required")
+                return
+            if not self.multimodal_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Multimodal repository unavailable")
+                return
+            results = self.multimodal_repo.list_results(art_id, tenant_id=user_id)
+            self._send_json_response({"results": [r.to_dict() for r in results], "count": len(results)})
+            return
+
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_POST(self) -> None:
@@ -2157,6 +2288,89 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "consolidation_error", str(e))
             return
 
+        # M57: Upload Multimodal Artifact
+        if path == "/v1/multimodal/artifacts":
+            if not self.multimodal_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Multimodal repository unavailable")
+                return
+            try:
+                schema = MultimodalArtifactUploadSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            import base64
+            if schema.content_base64:
+                try:
+                    raw_bytes = base64.b64decode(schema.content_base64)
+                except Exception:
+                    self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_base64", "Invalid base64 payload")
+                    return
+            elif schema.content_text:
+                raw_bytes = schema.content_text.encode("utf-8")
+            else:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "missing_content", "Either content_base64 or content_text must be provided")
+                return
+
+            try:
+                artifact = self.multimodal_processor.ingest_artifact(
+                    tenant_id=user_id,
+                    data=raw_bytes,
+                    filename=schema.filename,
+                    declared_format=schema.format,
+                    provenance=schema.provenance,
+                    metadata=schema.metadata,
+                )
+                self._send_json_response(artifact.to_dict(), status=HTTPStatus.CREATED)
+            except ValueError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "validation_failed", str(ve))
+            except Exception as e:
+                logger.error(f"Error ingesting multimodal artifact: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "ingestion_error", str(e))
+            return
+
+        # M57: Process Multimodal Artifact
+        if path == "/v1/multimodal/process":
+            if not self.multimodal_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Multimodal repository unavailable")
+                return
+            try:
+                schema = MultimodalProcessRequestSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                result, job = self.multimodal_processor.process_artifact(
+                    tenant_id=user_id,
+                    artifact_id=schema.artifact_id,
+                    operation=schema.operation,
+                    user_prompt=schema.user_prompt,
+                    idempotency_key=schema.idempotency_key,
+                )
+                if schema.admit_to_memory and result and self.multimodal_bridge and self.multimodal_repo:
+                    art = self.multimodal_repo.get_artifact(schema.artifact_id, tenant_id=user_id)
+                    if art:
+                        self.multimodal_bridge.admit_to_cognitive_memory(
+                            tenant_id=user_id,
+                            artifact=art,
+                            result=result,
+                            explicit_user_confirmed=schema.user_confirmed_memory,
+                        )
+
+                self._send_json_response({
+                    "job": job.to_dict() if job else None,
+                    "result": result.to_dict() if result else None,
+                })
+            except ValueError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_process_request", str(ve))
+            except PermissionError as pe:
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", str(pe))
+            except Exception as e:
+                logger.error(f"Error processing multimodal artifact: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "processing_error", str(e))
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
 
@@ -2358,6 +2572,34 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "memory_update_error", str(e))
             return
 
+        # M57: Update Multimodal Artifact State
+        if path.startswith("/v1/multimodal/artifacts/"):
+            art_id = path[len("/v1/multimodal/artifacts/"):].strip()
+            if not self.multimodal_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Multimodal repository unavailable")
+                return
+            try:
+                schema = MultimodalArtifactUpdateSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+            try:
+                updated = self.multimodal_repo.update_artifact_state(
+                    artifact_id=art_id,
+                    tenant_id=user_id,
+                    lifecycle_state=schema.lifecycle_state,
+                    security_classification=schema.security_classification,
+                    reason=schema.reason,
+                )
+                if not updated:
+                    self._send_error_response(HTTPStatus.NOT_FOUND, "artifact_not_found", f"Multimodal artifact '{art_id}' not found")
+                    return
+                self._send_json_response(updated.to_dict())
+            except Exception as e:
+                logger.error(f"Error updating multimodal artifact: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "artifact_update_error", str(e))
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_DELETE(self) -> None:
@@ -2435,6 +2677,34 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json_response({"memory_id": m_id, "deleted": True, "hard_delete": hard})
             return
+
+        # M57: Purge Tenant Multimodal Data (GDPR compliance)
+        if path.startswith("/v1/multimodal/tenants/") and path.endswith("/purge"):
+            t_id = path[len("/v1/multimodal/tenants/"): -len("/purge")].strip()
+            if not self.multimodal_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Multimodal repository unavailable")
+                return
+            if t_id != user_id and not (identity and (identity.has_role(UserRole.ADMIN) or identity.has_scope(UserScope.ADMIN.value))):
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Cannot purge another tenant's data")
+                return
+            purged = self.multimodal_repo.purge_tenant_data(tenant_id=t_id)
+            self.multimodal_storage.purge_tenant(tenant_id=t_id)
+            self._send_json_response({"purged_count": purged, "tenant_id": t_id, "success": True})
+            return
+
+        # M57: Delete Single Multimodal Artifact (Cascading)
+        if path.startswith("/v1/multimodal/artifacts/"):
+            art_id = path[len("/v1/multimodal/artifacts/"):].strip()
+            if not self.multimodal_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Multimodal repository unavailable")
+                return
+            deleted = self.multimodal_deletion_cascade.delete_artifact_cascade(tenant_id=user_id, artifact_id=art_id)
+            if not deleted:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "artifact_not_found", f"Artifact '{art_id}' not found")
+                return
+            self._send_json_response({"artifact_id": art_id, "deleted": True})
+            return
+
 
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 

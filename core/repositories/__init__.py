@@ -17,12 +17,18 @@ from core.repositories.base import (
 from core.repositories.base_automation import BaseAutomationRepository
 from core.repositories.base_webhook import BaseWebhookRepository
 from core.repositories.base_fleet import BaseFleetRepository
+from core.repositories.base_cognitive_memory import BaseCognitiveMemoryRepository
+from core.repositories.base_multimodal import BaseMultimodalRepository
 from core.repositories.in_memory_automation import InMemoryAutomationRepository
 from core.repositories.in_memory_webhook import InMemoryWebhookRepository
 from core.repositories.in_memory_fleet import InMemoryFleetRepository
+from core.repositories.in_memory_cognitive_memory import InMemoryCognitiveMemoryRepository
+from core.repositories.in_memory_multimodal import InMemoryMultimodalRepository
 from core.repositories.postgres_automation import PostgresAutomationRepository
 from core.repositories.postgres_webhook import PostgresWebhookRepository
 from core.repositories.postgres_fleet import PostgresFleetRepository
+from core.repositories.postgres_cognitive_memory import PostgresCognitiveMemoryRepository
+from core.repositories.postgres_multimodal import PostgresMultimodalRepository
 from core.repositories.postgres_task import PostgresTaskRepository
 from core.repositories.postgres_approval import PostgresApprovalRepository
 from core.repositories.factory import (
@@ -71,6 +77,8 @@ __all__ = [
     "BaseAutomationRepository",
     "BaseWebhookRepository",
     "BaseFleetRepository",
+    "BaseCognitiveMemoryRepository",
+    "BaseMultimodalRepository",
     "InMemoryUserRepository",
     "InMemoryUserPreferencesRepository",
     "InMemoryApiTokenRepository",
@@ -85,6 +93,8 @@ __all__ = [
     "InMemoryAutomationRepository",
     "InMemoryWebhookRepository",
     "InMemoryFleetRepository",
+    "InMemoryCognitiveMemoryRepository",
+    "InMemoryMultimodalRepository",
     "PostgresUserRepository",
     "PostgresUserPreferencesRepository",
     "PostgresApiTokenRepository",
@@ -99,6 +109,8 @@ __all__ = [
     "PostgresAutomationRepository",
     "PostgresWebhookRepository",
     "PostgresFleetRepository",
+    "PostgresCognitiveMemoryRepository",
+    "PostgresMultimodalRepository",
     "RepositoryContainer",
     "create_in_memory_repositories",
     "create_postgres_repositories",
