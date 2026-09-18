@@ -5,62 +5,96 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AURA — Autonomous Personal Intelligence</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✨</text></svg>">
 </head>
 <body>
-  <div class="aura-app">
+  <div class="aura-app chat-workspace">
     <!-- Header -->
-    <header class="aura-header">
+    <header class="aura-header" role="banner">
       <div class="brand-group">
-        <div class="aura-logo">
-          <span class="logo-spark">✨</span>
+        <div class="aura-logo" aria-label="Project AURA">
+          <span class="logo-spark" aria-hidden="true">✨</span>
           <span class="logo-text">AURA</span>
         </div>
-        <span class="brand-tagline">Autonomous Personal Intelligence</span>
+        <span class="brand-tagline">Autonomous Intelligence</span>
       </div>
 
-      <!-- Navigation Tabs -->
-      <nav class="header-nav">
-        <button id="nav-chat-btn" class="nav-tab active" data-tab="chat-view">💬 Chat</button>
-        <button id="nav-memory-btn" class="nav-tab" data-tab="memory-view">🧠 Memory</button>
-        <button id="nav-rag-btn" class="nav-tab" data-tab="rag-view">🔍 Knowledge</button>
-        <button id="nav-tools-btn" class="nav-tab" data-tab="tools-view">🛠️ Tools</button>
+      <!-- Primary Navigation Tabs -->
+      <nav class="header-nav" role="navigation" aria-label="Main Navigation">
+        <button id="nav-chat-btn" class="nav-tab active" data-tab="chat-view" aria-controls="chat-view" aria-selected="true">
+          <span class="tab-icon">💬</span><span class="tab-label">Chat</span>
+        </button>
+        <button id="nav-runs-btn" class="nav-tab" data-tab="runs-view" aria-controls="runs-view" aria-selected="false">
+          <span class="tab-icon">🚀</span><span class="tab-label">Runs</span>
+          <span id="runs-badge" class="nav-badge hidden">0</span>
+        </button>
+        <button id="nav-approvals-btn" class="nav-tab" data-tab="approvals-view" aria-controls="approvals-view" aria-selected="false">
+          <span class="tab-icon">🛡️</span><span class="tab-label">Approvals</span>
+          <span id="approvals-badge" class="nav-badge alert hidden">0</span>
+        </button>
+        <button id="nav-tasks-btn" class="nav-tab" data-tab="tasks-view" aria-controls="tasks-view" aria-selected="false">
+          <span class="tab-icon">⚡</span><span class="tab-label">Tasks</span>
+        </button>
+        <button id="nav-memory-btn" class="nav-tab" data-tab="memory-view" aria-controls="memory-view" aria-selected="false">
+          <span class="tab-icon">🧠</span><span class="tab-label">Memory</span>
+        </button>
+        <button id="nav-files-btn" class="nav-tab" data-tab="files-view" aria-controls="files-view" aria-selected="false">
+          <span class="tab-icon">📁</span><span class="tab-label">Files</span>
+        </button>
+        <button id="nav-devices-btn" class="nav-tab" data-tab="devices-view" aria-controls="devices-view" aria-selected="false">
+          <span class="tab-icon">💻</span><span class="tab-label">Devices</span>
+        </button>
+        <button id="nav-settings-btn" class="nav-tab" data-tab="settings-view" aria-controls="settings-view" aria-selected="false">
+          <span class="tab-icon">⚙️</span><span class="tab-label">Settings</span>
+        </button>
       </nav>
 
       <div class="header-actions">
-        <div id="connection-status" class="status-pill status-checking">
+        <div id="connection-status" class="status-pill status-checking" title="Backend Connection Status" role="status">
           <span class="status-dot"></span>
           <span id="status-text">Connecting...</span>
         </div>
-        <button id="settings-btn" class="icon-btn" title="Client & Auth Settings" aria-label="Settings">⚙️</button>
+        <button id="header-settings-btn" class="icon-btn" title="Quick Connection Settings" aria-label="Settings">⚙️</button>
       </div>
     </header>
 
-    <!-- Main Workspace -->
-    <main class="main-workspace">
-      <!-- 1. Chat Workspace View -->
-      <section id="chat-view" class="view-panel active">
-        <div id="messages-container" class="messages-container">
+    <!-- Main Workspace Panels -->
+    <main class="main-workspace chat-workspace" role="main">
+      
+      <!-- 1. CHAT VIEW (Primary Conversational Experience) -->
+      <section id="chat-view" class="view-panel active" aria-labelledby="nav-chat-btn">
+        <!-- Live Status Progress Banner -->
+        <div id="chat-status-bar" class="chat-status-bar hidden" role="status">
+          <span class="status-spinner"></span>
+          <span id="chat-status-msg">AURA is reasoning...</span>
+          <span id="chat-phase-tag" class="phase-tag">INTENT</span>
+        </div>
+
+        <div id="messages-container" class="messages-container chat-messages" aria-live="polite">
           <div class="welcome-card" id="welcome-card">
             <div class="welcome-icon">🔮</div>
             <h2>Welcome to Project AURA</h2>
-            <p>Your policy-governed, autonomous personal intelligence system.</p>
+            <p>Unified Autonomous Agent Runtime & Policy-Governed Personal Intelligence.</p>
             
             <div class="suggestions-grid">
-              <button class="suggestion-chip" data-prompt="What is Project AURA and what capabilities do you have?">
-                💡 What is Project AURA?
+              <button class="suggestion-chip" data-prompt="What can you do as AURA?">
+                💡 What can you do?
               </button>
-              <button class="suggestion-chip" data-prompt="Calculate 256 * 1024 / 8">
-                🧮 Calculate 256 * 1024 / 8
+              <button class="suggestion-chip" data-prompt="Analyze system resources and active device connections">
+                💻 Inspect device state
               </button>
-              <button class="suggestion-chip" data-prompt="Hello AURA. Reply with: AURA CLIENT LIVE TEST">
-                ⚡ Test Connection
+              <button class="suggestion-chip" data-prompt="Remember that my preferred coding language is Python and I prefer concise explanations.">
+                🧠 Store preference in memory
+              </button>
+              <button class="suggestion-chip" data-prompt="Hello AURA! Test connection and report runtime readiness.">
+                ⚡ Test connection
               </button>
             </div>
           </div>
         </div>
 
-        <!-- Typing / Loading Indicator -->
-        <div id="loading-indicator" class="loading-indicator hidden">
+        <!-- Typing Indicator -->
+        <div id="loading-indicator" class="loading-indicator hidden" aria-hidden="true">
           <div class="aura-avatar">✨</div>
           <div class="typing-bubble">
             <span class="dot"></span>
@@ -71,18 +105,22 @@
 
         <!-- Bottom Input Dock -->
         <footer class="input-dock">
-          <form id="chat-form" class="chat-form">
+          <form id="chat-form" class="chat-form" autocomplete="off">
             <button type="button" id="clear-btn" class="action-btn secondary" title="Clear Chat History" aria-label="Clear Chat">
               🗑️
+            </button>
+            <button type="button" id="launch-run-btn" class="action-btn secondary" title="Launch Autonomous Agent Run" aria-label="Launch Run">
+              🚀 Run
             </button>
             <div class="textarea-wrapper">
               <textarea 
                 id="user-input" 
-                placeholder="Message AURA... (Enter to send, Shift+Enter for newline)" 
+                placeholder="Ask AURA anything... (Enter to send, Shift+Enter for newline)" 
                 rows="1" 
                 required
                 autocomplete="off"
                 spellcheck="true"
+                aria-label="User Message"
               ></textarea>
             </div>
             <button type="submit" id="send-btn" class="action-btn primary" title="Send Message" aria-label="Send">
@@ -90,117 +128,569 @@
             </button>
           </form>
           <div class="footer-note">
-            <span>AURA Runtime v0.28.0 • Multi-Tenant Isolation • Safe Policy Execution</span>
+            <span>AURA v0.28.0 • Multi-Tenant Isolation • Bounded Autonomy • M48 Approval Protection</span>
           </div>
         </footer>
       </section>
 
-      <!-- 2. Memory & Preferences View -->
-      <section id="memory-view" class="view-panel hidden">
+      <!-- 2. RUNS VIEW (M59 Autonomous Agent Runs & Intelligence Mesh) -->
+      <section id="runs-view" class="view-panel hidden" aria-labelledby="nav-runs-btn">
         <div class="panel-header">
-          <h2>🧠 User-Scoped Memory & Preferences</h2>
-          <p>Manage your persistent preferences, privacy settings, and custom instructions.</p>
+          <div class="panel-title-group">
+            <h2>Autonomous Agent Runs</h2>
+            <p>16-Phase Deterministic Execution Loop & Hierarchical Intelligence Mesh</p>
+          </div>
+          <div class="panel-actions">
+            <button id="refresh-runs-btn" class="action-btn secondary">🔄 Refresh</button>
+            <button id="new-run-modal-btn" class="action-btn primary">➕ New Agent Run</button>
+          </div>
         </div>
-        <div class="panel-content">
-          <form id="preferences-form" class="card-form">
-            <div class="form-grid">
-              <div class="form-field">
-                <label for="pref-name">Preferred Name</label>
-                <input type="text" id="pref-name" placeholder="e.g. Alex">
-              </div>
-              <div class="form-field">
-                <label for="pref-style">Communication Style</label>
-                <select id="pref-style">
-                  <option value="concise">Concise & Direct</option>
-                  <option value="detailed">Detailed & Analytical</option>
-                  <option value="technical">Deep Technical / Engineering</option>
-                  <option value="creative">Creative & Exploratory</option>
-                </select>
-              </div>
-              <div class="form-field">
-                <label for="pref-privacy">Privacy Mode</label>
-                <select id="pref-privacy">
-                  <option value="standard">Standard (Persistent memory enabled)</option>
-                  <option value="high">High (Ephemeral only, zero retention)</option>
-                </select>
-              </div>
-              <div class="form-field">
-                <label for="pref-proactivity">Proactivity Level</label>
-                <select id="pref-proactivity">
-                  <option value="balanced">Balanced</option>
-                  <option value="reactive">Reactive (Action on explicit request only)</option>
-                  <option value="proactive">Proactive (Autonomous suggestions)</option>
-                </select>
-              </div>
-            </div>
-            <div class="form-field full-width">
-              <label for="pref-instructions">Custom Directives / Instructions</label>
-              <textarea id="pref-instructions" rows="4" placeholder="Add specific guidance or constraints for AURA..."></textarea>
-            </div>
-            <div class="form-actions">
-              <button type="submit" id="save-prefs-btn" class="action-btn primary">Save Preferences</button>
-              <span id="prefs-status-msg" class="status-msg"></span>
-            </div>
-          </form>
-        </div>
-      </section>
 
-      <!-- 3. Knowledge & RAG View -->
-      <section id="rag-view" class="view-panel hidden">
-        <div class="panel-header">
-          <h2>🔍 Knowledge & Vector Retrieval (RAG)</h2>
-          <p>Search your indexed documents, knowledge base, and episodic memory.</p>
-        </div>
-        <div class="panel-content">
-          <form id="rag-search-form" class="search-bar-form">
-            <input type="text" id="rag-query-input" placeholder="Search knowledge base (e.g. quantum architecture, project roadmap)..." required>
-            <button type="submit" class="action-btn primary">Query Knowledge</button>
-          </form>
-          <div id="rag-results-container" class="results-container">
-            <div class="empty-state">Enter a query above to retrieve contextual knowledge chunks.</div>
+        <div class="two-column-layout">
+          <!-- Runs List Column -->
+          <div class="column-list">
+            <div class="list-filter-bar">
+              <input type="text" id="runs-search" class="search-input" placeholder="Filter runs by intent...">
+              <select id="runs-status-filter" class="filter-select">
+                <option value="">All Statuses</option>
+                <option value="running">Running</option>
+                <option value="waiting_approval">Waiting Approval</option>
+                <option value="paused">Paused</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </div>
+            <div id="runs-list-container" class="cards-list">
+              <div class="empty-state">Loading agent runs...</div>
+            </div>
+          </div>
+
+          <!-- Run Detail Column -->
+          <div class="column-detail" id="run-detail-container">
+            <div class="empty-state">Select an agent run to view execution timeline and step progression.</div>
           </div>
         </div>
       </section>
 
-      <!-- 4. Tools & Capabilities View -->
-      <section id="tools-view" class="view-panel hidden">
+      <!-- 3. APPROVALS VIEW (M48 / M59 Security-Critical Approval Center) -->
+      <section id="approvals-view" class="view-panel hidden" aria-labelledby="nav-approvals-btn">
         <div class="panel-header">
-          <h2>🛠️ Tool Ecosystem & Execution</h2>
-          <p>Inspect registered system tools, execution policies, and run test executions.</p>
+          <div class="panel-title-group">
+            <h2>Approval Center</h2>
+            <p>Fail-closed authorization gating for High and Critical risk operations</p>
+          </div>
+          <div class="panel-actions">
+            <button id="refresh-approvals-btn" class="action-btn secondary">🔄 Refresh</button>
+          </div>
         </div>
-        <div class="panel-content">
-          <div id="tools-catalog-container" class="tools-grid">
-            <div class="empty-state">Loading tool catalog...</div>
+
+        <div id="approvals-container" class="approvals-container">
+          <div class="empty-state">Loading pending approvals...</div>
+        </div>
+      </section>
+
+      <!-- 4. TASKS VIEW (M52 Background Tasks & M53 Automations) -->
+      <section id="tasks-view" class="view-panel hidden" aria-labelledby="nav-tasks-btn">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2>Background Tasks & Automations</h2>
+            <p>Durable async workflows, scheduled cron triggers, and worker fleet status</p>
+          </div>
+          <div class="panel-actions">
+            <button id="refresh-tasks-btn" class="action-btn secondary">🔄 Refresh</button>
+            <button id="new_task_modal_btn" class="action-btn primary">➕ Submit Task</button>
+          </div>
+        </div>
+
+        <div class="two-column-layout">
+          <div class="column-list">
+            <div class="tab-subnav">
+              <button class="subtab-btn active" data-subtab="tasks-subtab">Async Tasks</button>
+              <button class="subtab-btn" data-subtab="automations-subtab">Automations (Cron)</button>
+            </div>
+            <div id="tasks-list-container" class="cards-list">
+              <div class="empty-state">Loading background tasks...</div>
+            </div>
+          </div>
+
+          <div class="column-detail" id="task_detail_container">
+            <div class="empty-state">Select a task or automation to inspect execution graph and events.</div>
           </div>
         </div>
       </section>
+
+      <!-- 5. MEMORY VIEW (M56 Cognitive Memory, Continuous Learning & Contradictions) -->
+      <section id="memory-view" class="view-panel hidden" aria-labelledby="nav-memory-btn">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2>Cognitive Memory Center</h2>
+            <p>Episodic, Semantic, and Working Memory with Contradiction Resolution</p>
+          </div>
+          <div class="panel-actions">
+            <button id="refresh-memory-btn" class="action-btn secondary">🔄 Refresh</button>
+            <button id="consolidate-memory-btn" class="action-btn secondary" title="Synthesize semantic facts from episodic history">⚡ Consolidate</button>
+            <button id="new-memory-modal-btn" class="action-btn primary">➕ Record Memory</button>
+          </div>
+        </div>
+
+        <div class="tab-subnav">
+          <button class="subtab-btn active" data-subtab="memories-subtab">Memories Explorer</button>
+          <button class="subtab-btn" data-subtab="contradictions-subtab">Contradictions <span id="contradictions-badge" class="badge-mini hidden">0</span></button>
+          <button class="subtab-btn" data-subtab="profile-subtab">Cognitive Profile & Preferences</button>
+        </div>
+
+        <div id="memory-subtab-content">
+          <!-- 5A. Memories Explorer Subtab -->
+          <div id="memories-subtab" class="subtab-panel active">
+            <div class="memory-filter-bar">
+              <input type="text" id="memory-search-input" class="search-input" placeholder="Search cognitive memory...">
+              <select id="memory-type-filter" class="filter-select">
+                <option value="">All Memory Types</option>
+                <option value="semantic">Semantic (Facts)</option>
+                <option value="episodic">Episodic (Experiences)</option>
+                <option value="working">Working Memory</option>
+                <option value="procedural">Procedural</option>
+              </select>
+              <select id="memory-state-filter" class="filter-select">
+                <option value="active">Active</option>
+                <option value="archived">Archived</option>
+                <option value="superseded">Superseded</option>
+              </select>
+            </div>
+            <div id="memories-list-container" class="memory-grid">
+              <div class="empty-state">Loading cognitive memories...</div>
+            </div>
+          </div>
+
+          <!-- 5B. Contradictions Subtab -->
+          <div id="contradictions-subtab" class="subtab-panel hidden">
+            <div id="contradictions-list-container" class="cards-list">
+              <div class="empty-state">No unresolved contradictions detected.</div>
+            </div>
+          </div>
+
+          <!-- 5C. Cognitive Profile Subtab -->
+          <div id="profile-subtab" class="subtab-panel hidden">
+            <form id="profile-form" class="config-form">
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="prof-comm-style">Communication Style</label>
+                  <select id="prof-comm-style" class="form-control">
+                    <option value="concise">Concise & Direct</option>
+                    <option value="detailed">Detailed & Technical</option>
+                    <option value="conversational">Conversational</option>
+                    <option value="academic">Academic & Rigorous</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="prof-proactivity">Proactivity Level</label>
+                  <select id="prof-proactivity" class="form-control">
+                    <option value="low">Low (Explicit requests only)</option>
+                    <option value="medium">Medium (Propose related actions)</option>
+                    <option value="high">High (Proactive goal suggestions)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="prof-instructions">Custom System Directives</label>
+                <textarea id="prof-instructions" class="form-control" rows="4" placeholder="Directives for AURA's planning and response synthesis..."></textarea>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="action-btn primary">💾 Save Cognitive Profile</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6. FILES & MULTIMODAL VIEW (M57 Multimodal Ingestion & Artifacts) -->
+      <section id="files-view" class="view-panel hidden" aria-labelledby="nav-files-btn">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2>Files & Multimodal Artifacts</h2>
+            <p>PDF/Document OCR, Vision Analysis, Audio Processing & Verified Storage</p>
+          </div>
+          <div class="panel-actions">
+            <button id="refresh-files-btn" class="action-btn secondary">🔄 Refresh</button>
+          </div>
+        </div>
+
+        <div class="files-layout">
+          <!-- Upload Dropzone Card -->
+          <div class="upload-card">
+            <div id="file-dropzone" class="dropzone" tabindex="0" role="region" aria-label="File Upload Dropzone">
+              <div class="dropzone-icon">📤</div>
+              <div class="dropzone-text">
+                <strong>Drag & drop documents, images, or audio here</strong>
+                <span>or click to browse from your device (PDF, PNG, JPG, MP3, WAV, TXT)</span>
+              </div>
+              <input type="file" id="file-input" class="hidden-file-input" accept=".pdf,.png,.jpg,.jpeg,.mp3,.wav,.txt,.json,.md,.csv">
+            </div>
+            <div id="upload-progress-container" class="upload-progress hidden">
+              <div class="progress-bar-wrapper">
+                <div id="upload-progress-bar" class="progress-bar-fill" style="width: 0%;"></div>
+              </div>
+              <span id="upload-progress-text" class="progress-text">Uploading and processing...</span>
+            </div>
+          </div>
+
+          <!-- Artifacts Grid -->
+          <div class="artifacts-section">
+            <div class="section-title-row">
+              <h3>Ingested Documents & Processed Artifacts</h3>
+            </div>
+            <div id="files-grid-container" class="artifacts-grid">
+              <div class="empty-state">Loading multimodal artifacts...</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 7. DEVICES VIEW (M58 Real-World Device Center & Platform Mesh) -->
+      <section id="devices-view" class="view-panel hidden" aria-labelledby="nav-devices-btn">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2>Device Center & Platform Mesh</h2>
+            <p>Cross-Platform Device Nodes, Cryptographic Trust & Capability Dispatch</p>
+          </div>
+          <div class="panel-actions">
+            <button id="refresh-devices-btn" class="action-btn secondary">🔄 Refresh</button>
+            <button id="register-device-modal-btn" class="action-btn primary">➕ Register Device</button>
+          </div>
+        </div>
+
+        <div class="devices-layout">
+          <!-- Device Overview Stats -->
+          <div class="device-stats-bar">
+            <div class="stat-item">
+              <span class="stat-value" id="devices-total-count">0</span>
+              <span class="stat-label">Registered Devices</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value text-success" id="devices-online-count">0</span>
+              <span class="stat-label">Online / Active</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value text-accent" id="devices-trusted-count">0</span>
+              <span class="stat-label">Trusted Nodes</span>
+            </div>
+          </div>
+
+          <!-- Devices Cards Grid -->
+          <div id="devices-grid-container" class="devices-grid">
+            <div class="empty-state">Loading registered platform devices...</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 8. SETTINGS VIEW (Runtime Configuration & Diagnostic Telemetry) -->
+      <section id="settings-view" class="view-panel hidden" aria-labelledby="nav-settings-btn">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2>Settings & Diagnostics</h2>
+            <p>Multi-tenant authorization, session security, system health & preferences</p>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <!-- User Preferences Card -->
+          <div class="settings-card">
+            <h3>👤 User Preferences</h3>
+            <form id="preferences-form">
+              <div class="form-group">
+                <label for="pref-name">Display Name</label>
+                <input type="text" id="pref-name" class="form-control" placeholder="Your name (e.g. Aura User)">
+              </div>
+              <div class="form-group">
+                <label for="pref-instructions">Personal Directives</label>
+                <textarea id="pref-instructions" class="form-control" rows="3" placeholder="Custom instructions and formatting preferences for AURA..."></textarea>
+              </div>
+              <button type="button" id="save-pref-btn" class="action-btn primary small">💾 Save Preferences</button>
+            </form>
+          </div>
+
+          <!-- Session & Auth Card -->
+          <div class="settings-card">
+            <h3>🔐 Session & Authentication</h3>
+            <form id="auth-config-form">
+              <div class="form-group">
+                <label for="auth-token-input-main">AURA Bearer Token / API Key</label>
+                <input type="password" id="auth-token-input-main" class="form-control" placeholder="Optional Bearer token for protected environments...">
+                <span class="form-hint">Stored securely in browser sessionStorage only.</span>
+              </div>
+              <div class="form-group">
+                <label for="auth-tenant-id">Active Tenant ID</label>
+                <input type="text" id="auth-tenant-id" class="form-control" value="default" placeholder="Tenant identifier">
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="action-btn primary">Save Auth Settings</button>
+                <button type="button" id="clear-auth-btn" class="action-btn secondary">Clear Token</button>
+              </div>
+            </form>
+          </div>
+
+          <!-- Active Identity & Scopes Card -->
+          <div class="settings-card">
+            <h3>🛡️ Security Context & Scopes</h3>
+            <div class="identity-info-grid">
+              <div class="metric-row">
+                <span class="metric-label">User ID / Tenant:</span>
+                <span id="ident-user-id" class="metric-value font-mono">default</span>
+              </div>
+              <div class="metric-row">
+                <span class="metric-label">Username:</span>
+                <span id="ident-username" class="metric-value">Guest User</span>
+              </div>
+              <div class="metric-row">
+                <span class="metric-label">Assigned Roles:</span>
+                <span id="ident-roles" class="metric-value badge">user</span>
+              </div>
+              <div class="metric-row">
+                <span class="metric-label">Authorized Scopes:</span>
+                <span id="ident-scopes" class="metric-value font-mono text-sm">aura:run, aura:state:read</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- System Diagnostics Card -->
+          <div class="settings-card full-width">
+            <div class="card-header-flex">
+              <h3>⚡ System Health & Diagnostics</h3>
+              <button id="refresh-telemetry-btn" class="action-btn secondary small">🔄 Check Health</button>
+            </div>
+            <div id="telemetry-display" class="telemetry-grid">
+              <div class="telemetry-box">
+                <div class="telemetry-metric" id="diag-status">Checking...</div>
+                <div class="telemetry-label">System Health</div>
+              </div>
+              <div class="telemetry-box">
+                <div class="telemetry-metric" id="diag-env">-</div>
+                <div class="telemetry-label">Environment</div>
+              </div>
+              <div class="telemetry-box">
+                <div class="telemetry-metric" id="diag-uptime">-</div>
+                <div class="telemetry-label">Uptime</div>
+              </div>
+              <div class="telemetry-box">
+                <div class="telemetry-metric" id="diag-db">-</div>
+                <div class="telemetry-label">Persistence / DB</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Danger Zone Card -->
+          <div class="settings-card full-width danger-card">
+            <h3>⚠️ Danger Zone: Tenant Data Purge (GDPR)</h3>
+            <p>Permanently delete all agent runs, execution steps, cognitive memories, and multimodal artifacts for this tenant. This action is irreversible.</p>
+            <button id="purge-tenant-modal-btn" class="action-btn danger">🗑️ Purge All Tenant Data</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 9. RAG VIEW (Knowledge Base & Semantic Search) -->
+      <section id="rag-view" class="view-panel hidden" aria-labelledby="nav-rag-btn">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2>Knowledge Base & Semantic Search</h2>
+            <p>Vector embeddings, document ingestion, and contextual knowledge retrieval</p>
+          </div>
+        </div>
+        <div class="rag-container" style="padding: 20px;">
+          <div class="form-group">
+            <label for="rag-query-input">Semantic Knowledge Search</label>
+            <div style="display: flex; gap: 8px;">
+              <input type="text" id="rag-query-input" class="form-control" placeholder="Search indexed knowledge documents...">
+              <button id="rag-search-btn" class="action-btn primary">Search</button>
+            </div>
+          </div>
+          <div id="rag-results-container" class="cards-list" style="margin-top: 16px;">
+            <div class="empty-state">Enter a query to search semantic knowledge.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 10. TOOLS VIEW (Tool Registry & Catalog) -->
+      <section id="tools-view" class="view-panel hidden" aria-labelledby="nav-tools-btn">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2>Tools Registry & Catalog</h2>
+            <p>Available tools, capabilities, and execution policies</p>
+          </div>
+          <div class="panel-actions">
+            <button id="refresh-tools-btn" class="action-btn secondary">🔄 Refresh Tools</button>
+          </div>
+        </div>
+        <div id="tools-list-container" class="tools-grid" style="padding: 20px;">
+          <div class="empty-state">Loading registered tools catalog...</div>
+        </div>
+      </section>
+
     </main>
 
-    <!-- Settings & Auth Modal -->
-    <div id="settings-modal" class="modal-backdrop hidden">
-      <div class="modal-card">
+    <!-- Global Toast Notifications -->
+    <div id="toast-container" class="toast-container" aria-live="assertive" role="alert"></div>
+
+    <!-- MODALS -->
+
+    <!-- Modal: New Autonomous Agent Run -->
+    <div id="new-run-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-run-title">
+      <div class="modal-dialog">
         <div class="modal-header">
-          <h3>Client & Authentication Settings</h3>
-          <button id="close-settings-btn" class="icon-btn" aria-label="Close">✕</button>
+          <h3 id="modal-run-title">🚀 Launch Autonomous Agent Run</h3>
+          <button class="modal-close-btn" data-modal="new-run-modal" aria-label="Close">✕</button>
+        </div>
+        <form id="new-run-form">
+          <div class="modal-body">
+            <div class="form-group">
+              <label for="run-intent-input">Goal / Task Intent</label>
+              <textarea id="run-intent-input" class="form-control" rows="3" placeholder="Describe the goal for AURA to plan and execute autonomously..." required></textarea>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="run-role-select">Agent Mesh Role</label>
+                <select id="run-role-select" class="form-control">
+                  <option value="generalist">Generalist (Default)</option>
+                  <option value="research">Researcher (Context & Knowledge)</option>
+                  <option value="planning">Planner (Strategic Decomposition)</option>
+                  <option value="execution">Operator (Tools & Device)</option>
+                  <option value="verification">Auditor (Outcome Verification)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="run-timeout-input">Timeout (Seconds)</label>
+                <input type="number" id="run-timeout-input" class="form-control" value="300" min="10" max="1800">
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="action-btn secondary" data-modal="new-run-modal">Cancel</button>
+            <button type="submit" class="action-btn primary">🚀 Start Execution</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal: Register Device -->
+    <div id="register-device-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-dev-title">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3 id="modal-dev-title">💻 Register New Device</h3>
+          <button class="modal-close-btn" data-modal="register-device-modal" aria-label="Close">✕</button>
+        </div>
+        <form id="register-device-form">
+          <div class="modal-body">
+            <div class="form-group">
+              <label for="dev-name-input">Device Name</label>
+              <input type="text" id="dev-name-input" class="form-control" placeholder="e.g. Workstation-Primary" required>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="dev-type-select">Device Type</label>
+                <select id="dev-type-select" class="form-control">
+                  <option value="desktop">Desktop / Workstation</option>
+                  <option value="mobile">Mobile Device</option>
+                  <option value="server">Edge / Server</option>
+                  <option value="iot">IoT Peripheral</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="dev-platform-select">Platform</label>
+                <select id="dev-platform-select" class="form-control">
+                  <option value="windows">Windows OS</option>
+                  <option value="wsl2">WSL2 Linux</option>
+                  <option value="linux">Linux</option>
+                  <option value="macos">macOS</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="action-btn secondary" data-modal="register-device-modal">Cancel</button>
+            <button type="submit" class="action-btn primary">Register Device</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal: Record Memory -->
+    <div id="record-memory-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-mem-title">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3 id="modal-mem-title">🧠 Record Cognitive Memory</h3>
+          <button class="modal-close-btn" data-modal="record-memory-modal" aria-label="Close">✕</button>
+        </div>
+        <form id="record-memory-form">
+          <div class="modal-body">
+            <div class="form-group">
+              <label for="mem-content-input">Memory Content</label>
+              <textarea id="mem-content-input" class="form-control" rows="3" placeholder="Fact, preference, or observation to commit to memory..." required></textarea>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="mem-type-select">Memory Type</label>
+                <select id="mem-type-select" class="form-control">
+                  <option value="semantic">Semantic (Fact / Knowledge)</option>
+                  <option value="episodic">Episodic (Experience / Trace)</option>
+                  <option value="working">Working Memory</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="mem-category-input">Category</label>
+                <input type="text" id="mem-category-input" class="form-control" placeholder="e.g. preferences, project, technical" value="general">
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="action-btn secondary" data-modal="record-memory-modal">Cancel</button>
+            <button type="submit" class="action-btn primary">Save Memory</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal: Purge Tenant Confirmation -->
+    <div id="purge-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-purge-title">
+      <div class="modal-dialog">
+        <div class="modal-header danger-header">
+          <h3 id="modal-purge-title">⚠️ Confirm Complete Data Purge</h3>
+          <button class="modal-close-btn" data-modal="purge-modal" aria-label="Close">✕</button>
         </div>
         <div class="modal-body">
-          <div class="form-field">
-            <label for="server-url-input">AURA Server Base URL</label>
-            <input type="url" id="server-url-input" placeholder="http://127.0.0.1:8000" value="">
-            <span class="field-hint">Leave blank to use current browser origin.</span>
-          </div>
-          <div class="form-field">
-            <label for="auth-token-input">Bearer Authentication Token</label>
-            <input type="password" id="auth-token-input" placeholder="Bearer API token">
-            <span class="field-hint">Required in production or when AURA_API_KEY_AUTH_ENABLED is true. Stored in session memory only.</span>
+          <p class="text-danger font-bold">This operation is irreversible.</p>
+          <p>All agent runs, execution steps, cognitive memory records, and multimodal files belonging to your tenant will be permanently wiped from persistence.</p>
+          <div class="form-group" style="margin-top: 12px;">
+            <label for="purge-confirm-input">Type <code>PURGE</code> to confirm:</label>
+            <input type="text" id="purge-confirm-input" class="form-control" placeholder="PURGE">
           </div>
         </div>
         <div class="modal-footer">
-          <button type="button" id="logout-btn" class="action-btn secondary">Clear Session</button>
-          <button type="button" id="save-settings-btn" class="action-btn primary">Save & Connect</button>
+          <button type="button" class="action-btn secondary" data-modal="purge-modal">Cancel</button>
+          <button type="button" id="confirm-purge-btn" class="action-btn danger" disabled>Hard Purge Everything</button>
         </div>
       </div>
     </div>
+
+    <!-- Modal: Quick Connection Settings (M46 Compatibility) -->
+    <div id="settings-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-settings-title">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3 id="modal-settings-title">⚙️ Connection Settings</h3>
+          <button class="modal-close-btn" data-modal="settings-modal" aria-label="Close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="auth-token-input">AURA Authorization Token</label>
+            <input type="password" id="auth-token-input" class="form-control" placeholder="Enter session Bearer token...">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="action-btn secondary" data-modal="settings-modal">Close</button>
+          <button type="button" id="modal-save-token-btn" class="action-btn primary" data-modal="settings-modal">Save</button>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <script src="/static/app.js"></script>

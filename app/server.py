@@ -996,6 +996,24 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self.broadcaster.unsubscribe(task_id, event_queue)
             return
 
+        # M52: List Tasks
+        if path == "/v1/tasks":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.task_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Task repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            st_filter = params.get("status", [None])[0]
+            limit = int(params.get("limit", [50])[0])
+            offset = int(params.get("offset", [0])[0])
+            tasks = self.task_repo.list_tasks(user_id=user_id, status=st_filter, limit=limit, offset=offset)
+            self._send_json_response({"tasks": tasks, "count": len(tasks)})
+            return
+
         # M52: Task Status & Details
         if path.startswith("/v1/tasks/"):
             is_auth, identity, err_msg, status_code = self._resolve_identity()
