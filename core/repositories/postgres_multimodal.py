@@ -120,23 +120,23 @@ class PostgresMultimodalRepository(BaseMultimodalRepository):
                     return self._row_to_artifact(row)
         return artifact
 
-    def _row_to_artifact(self, row: tuple) -> MultimodalArtifact:
+    def _row_to_artifact(self, row: dict[str, Any]) -> MultimodalArtifact:
         return MultimodalArtifact(
-            artifact_id=row[0],
-            tenant_id=row[1],
-            media_type=MultimodalMediaType(row[2]),
-            format=MediaFormat(row[3]) if row[3] in [f.value for f in MediaFormat] else row[3],
-            size_bytes=int(row[4]),
-            checksum_sha256=row[5],
-            storage_uri=row[6],
-            lifecycle_state=ArtifactLifecycleState(row[7]),
-            provenance=MultimodalProvenance(row[8]),
-            security_classification=SecurityClassification(row[9]),
-            filename=row[10],
-            metadata=_json_loads(row[11]),
-            created_at=_to_timestamp(row[12]),
-            updated_at=_to_timestamp(row[13]),
-            expires_at=_to_timestamp(row[14]) if row[14] is not None else None,
+            artifact_id=str(row["artifact_id"]),
+            tenant_id=str(row["tenant_id"]),
+            media_type=MultimodalMediaType(row["media_type"]),
+            format=MediaFormat(row["format"]) if row["format"] in [f.value for f in MediaFormat] else row["format"],
+            size_bytes=int(row["size_bytes"]),
+            checksum_sha256=str(row["checksum_sha256"]),
+            storage_uri=str(row["storage_uri"]),
+            lifecycle_state=ArtifactLifecycleState(row["lifecycle_state"]),
+            provenance=MultimodalProvenance(row["provenance"]),
+            security_classification=SecurityClassification(row["security_classification"]),
+            filename=str(row.get("filename", "")),
+            metadata=_json_loads(row.get("metadata")),
+            created_at=_to_timestamp(row.get("created_at")),
+            updated_at=_to_timestamp(row.get("updated_at")),
+            expires_at=_to_timestamp(row["expires_at"]) if row.get("expires_at") is not None else None,
         )
 
     def get_artifact(self, artifact_id: str, tenant_id: str) -> MultimodalArtifact | None:
@@ -144,8 +144,9 @@ class PostgresMultimodalRepository(BaseMultimodalRepository):
         SELECT artifact_id, tenant_id, media_type, format, size_bytes,
                checksum_sha256, storage_uri, lifecycle_state, provenance,
                security_classification, filename, metadata,
-               EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
-               EXTRACT(EPOCH FROM expires_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at,
+               EXTRACT(EPOCH FROM updated_at) AS updated_at,
+               EXTRACT(EPOCH FROM expires_at) AS expires_at
         FROM multimodal_artifacts
         WHERE artifact_id = %s AND tenant_id = %s;
         """
@@ -177,8 +178,9 @@ class PostgresMultimodalRepository(BaseMultimodalRepository):
         SELECT artifact_id, tenant_id, media_type, format, size_bytes,
                checksum_sha256, storage_uri, lifecycle_state, provenance,
                security_classification, filename, metadata,
-               EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
-               EXTRACT(EPOCH FROM expires_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at,
+               EXTRACT(EPOCH FROM updated_at) AS updated_at,
+               EXTRACT(EPOCH FROM expires_at) AS expires_at
         FROM multimodal_artifacts
         WHERE {where_clause}
         ORDER BY created_at DESC
@@ -214,8 +216,9 @@ class PostgresMultimodalRepository(BaseMultimodalRepository):
         RETURNING artifact_id, tenant_id, media_type, format, size_bytes,
                   checksum_sha256, storage_uri, lifecycle_state, provenance,
                   security_classification, filename, metadata,
-                  EXTRACT(EPOCH FROM created_at), EXTRACT(EPOCH FROM updated_at),
-                  EXTRACT(EPOCH FROM expires_at);
+                  EXTRACT(EPOCH FROM created_at) AS created_at,
+                  EXTRACT(EPOCH FROM updated_at) AS updated_at,
+                  EXTRACT(EPOCH FROM expires_at) AS expires_at;
         """
         with self.db_pool.connection() as conn:
             with conn.cursor() as cur:
@@ -253,8 +256,9 @@ class PostgresMultimodalRepository(BaseMultimodalRepository):
             completed_at = EXCLUDED.completed_at
         RETURNING job_id, tenant_id, artifact_id, operation, capability_id,
                   status, error_detail, attempts, max_attempts, idempotency_key,
-                  EXTRACT(EPOCH FROM started_at), EXTRACT(EPOCH FROM completed_at),
-                  EXTRACT(EPOCH FROM created_at);
+                  EXTRACT(EPOCH FROM started_at) AS started_at,
+                  EXTRACT(EPOCH FROM completed_at) AS completed_at,
+                  EXTRACT(EPOCH FROM created_at) AS created_at;
         """
         params = (
             job.job_id,
@@ -281,29 +285,30 @@ class PostgresMultimodalRepository(BaseMultimodalRepository):
                     return self._row_to_job(row)
         return job
 
-    def _row_to_job(self, row: tuple) -> MultimodalProcessingJob:
+    def _row_to_job(self, row: dict[str, Any]) -> MultimodalProcessingJob:
         return MultimodalProcessingJob(
-            job_id=row[0],
-            tenant_id=row[1],
-            artifact_id=row[2],
-            operation=row[3],
-            capability_id=row[4],
-            status=JobStatus(row[5]),
-            error_detail=row[6],
-            attempts=int(row[7]),
-            max_attempts=int(row[8]),
-            idempotency_key=row[9],
-            started_at=_to_timestamp(row[10]) if row[10] is not None else None,
-            completed_at=_to_timestamp(row[11]) if row[11] is not None else None,
-            created_at=_to_timestamp(row[12]),
+            job_id=str(row["job_id"]),
+            tenant_id=str(row["tenant_id"]),
+            artifact_id=str(row["artifact_id"]),
+            operation=str(row["operation"]),
+            capability_id=str(row["capability_id"]),
+            status=JobStatus(row["status"]),
+            error_detail=str(row["error_detail"]) if row.get("error_detail") is not None else None,
+            attempts=int(row.get("attempts", 0)),
+            max_attempts=int(row.get("max_attempts", 3)),
+            idempotency_key=str(row["idempotency_key"]) if row.get("idempotency_key") is not None else None,
+            started_at=_to_timestamp(row["started_at"]) if row.get("started_at") is not None else None,
+            completed_at=_to_timestamp(row["completed_at"]) if row.get("completed_at") is not None else None,
+            created_at=_to_timestamp(row.get("created_at")),
         )
 
     def get_job(self, job_id: str, tenant_id: str) -> MultimodalProcessingJob | None:
         sql = """
         SELECT job_id, tenant_id, artifact_id, operation, capability_id,
                status, error_detail, attempts, max_attempts, idempotency_key,
-               EXTRACT(EPOCH FROM started_at), EXTRACT(EPOCH FROM completed_at),
-               EXTRACT(EPOCH FROM created_at)
+               EXTRACT(EPOCH FROM started_at) AS started_at,
+               EXTRACT(EPOCH FROM completed_at) AS completed_at,
+               EXTRACT(EPOCH FROM created_at) AS created_at
         FROM multimodal_processing_jobs
         WHERE job_id = %s AND tenant_id = %s;
         """
@@ -319,8 +324,9 @@ class PostgresMultimodalRepository(BaseMultimodalRepository):
         sql = """
         SELECT job_id, tenant_id, artifact_id, operation, capability_id,
                status, error_detail, attempts, max_attempts, idempotency_key,
-               EXTRACT(EPOCH FROM started_at), EXTRACT(EPOCH FROM completed_at),
-               EXTRACT(EPOCH FROM created_at)
+               EXTRACT(EPOCH FROM started_at) AS started_at,
+               EXTRACT(EPOCH FROM completed_at) AS completed_at,
+               EXTRACT(EPOCH FROM created_at) AS created_at
         FROM multimodal_processing_jobs
         WHERE tenant_id = %s AND idempotency_key = %s
         ORDER BY created_at DESC
@@ -351,7 +357,7 @@ class PostgresMultimodalRepository(BaseMultimodalRepository):
             metadata = EXCLUDED.metadata
         RETURNING result_id, tenant_id, artifact_id, job_id, operation,
                   extracted_text, structured_data, confidence, bounding_boxes, metadata,
-                  EXTRACT(EPOCH FROM created_at);
+                  EXTRACT(EPOCH FROM created_at) AS created_at;
         """
         params = (
             result.result_id,
@@ -374,26 +380,26 @@ class PostgresMultimodalRepository(BaseMultimodalRepository):
                     return self._row_to_result(row)
         return result
 
-    def _row_to_result(self, row: tuple) -> MultimodalResult:
+    def _row_to_result(self, row: dict[str, Any]) -> MultimodalResult:
         return MultimodalResult(
-            result_id=row[0],
-            tenant_id=row[1],
-            artifact_id=row[2],
-            job_id=row[3],
-            operation=row[4],
-            extracted_text=row[5],
-            structured_data=_json_loads(row[6]),
-            confidence=float(row[7]),
-            bounding_boxes=_json_loads(row[8]),
-            metadata=_json_loads(row[9]),
-            created_at=_to_timestamp(row[10]),
+            result_id=str(row["result_id"]),
+            tenant_id=str(row["tenant_id"]),
+            artifact_id=str(row["artifact_id"]),
+            job_id=str(row["job_id"]) if row.get("job_id") is not None else None,
+            operation=str(row["operation"]),
+            extracted_text=str(row.get("extracted_text", "")),
+            structured_data=_json_loads(row.get("structured_data")),
+            confidence=float(row.get("confidence", 1.0)),
+            bounding_boxes=_json_loads(row.get("bounding_boxes")),
+            metadata=_json_loads(row.get("metadata")),
+            created_at=_to_timestamp(row.get("created_at")),
         )
 
     def get_result(self, result_id: str, tenant_id: str) -> MultimodalResult | None:
         sql = """
         SELECT result_id, tenant_id, artifact_id, job_id, operation,
                extracted_text, structured_data, confidence, bounding_boxes, metadata,
-               EXTRACT(EPOCH FROM created_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at
         FROM multimodal_results
         WHERE result_id = %s AND tenant_id = %s;
         """
@@ -409,7 +415,7 @@ class PostgresMultimodalRepository(BaseMultimodalRepository):
         sql = """
         SELECT result_id, tenant_id, artifact_id, job_id, operation,
                extracted_text, structured_data, confidence, bounding_boxes, metadata,
-               EXTRACT(EPOCH FROM created_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at
         FROM multimodal_results
         WHERE artifact_id = %s AND tenant_id = %s
         ORDER BY created_at ASC;
@@ -445,7 +451,7 @@ class PostgresMultimodalRepository(BaseMultimodalRepository):
     def list_derivations(self, source_artifact_id: str, tenant_id: str) -> list[MultimodalDerivation]:
         sql = """
         SELECT derivation_id, tenant_id, source_artifact_id, derived_type, derived_id,
-               EXTRACT(EPOCH FROM created_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at
         FROM multimodal_derivations
         WHERE source_artifact_id = %s AND tenant_id = %s;
         """
@@ -456,12 +462,12 @@ class PostgresMultimodalRepository(BaseMultimodalRepository):
                 for row in cur.fetchall():
                     derivations.append(
                         MultimodalDerivation(
-                            derivation_id=row[0],
-                            tenant_id=row[1],
-                            source_artifact_id=row[2],
-                            derived_type=row[3],
-                            derived_id=row[4],
-                            created_at=_to_timestamp(row[5]),
+                            derivation_id=str(row["derivation_id"]),
+                            tenant_id=str(row["tenant_id"]),
+                            source_artifact_id=str(row["source_artifact_id"]),
+                            derived_type=str(row["derived_type"]),
+                            derived_id=str(row["derived_id"]),
+                            created_at=_to_timestamp(row.get("created_at")),
                         )
                     )
         return derivations

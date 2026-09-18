@@ -90,9 +90,9 @@ class PostgresPlatformRepository(BasePlatformRepository):
             updated_at = EXCLUDED.updated_at
         RETURNING device_id, tenant_id, name, device_type, platform,
                   platform_version, trust_state, hostname, metadata,
-                  EXTRACT(EPOCH FROM registered_at),
-                  EXTRACT(EPOCH FROM last_seen_at),
-                  EXTRACT(EPOCH FROM updated_at);
+                  EXTRACT(EPOCH FROM registered_at) AS registered_at,
+                  EXTRACT(EPOCH FROM last_seen_at) AS last_seen_at,
+                  EXTRACT(EPOCH FROM updated_at) AS updated_at;
         """
         params = (
             device.device_id,
@@ -116,29 +116,29 @@ class PostgresPlatformRepository(BasePlatformRepository):
                     return self._row_to_device(row)
         return device
 
-    def _row_to_device(self, row: tuple) -> DeviceRecord:
+    def _row_to_device(self, row: dict[str, Any]) -> DeviceRecord:
         return DeviceRecord(
-            device_id=row[0],
-            tenant_id=row[1],
-            name=row[2],
-            device_type=DeviceType(row[3]),
-            platform=PlatformType(row[4]),
-            platform_version=row[5],
-            trust_state=DeviceTrustState(row[6]),
-            hostname=row[7],
-            metadata=_json_loads(row[8]),
-            registered_at=_to_timestamp(row[9]),
-            last_seen_at=_to_timestamp(row[10]),
-            updated_at=_to_timestamp(row[11]),
+            device_id=str(row["device_id"]),
+            tenant_id=str(row["tenant_id"]),
+            name=str(row["name"]),
+            device_type=DeviceType(row["device_type"]),
+            platform=PlatformType(row["platform"]),
+            platform_version=str(row.get("platform_version", "")),
+            trust_state=DeviceTrustState(row["trust_state"]),
+            hostname=str(row.get("hostname", "")),
+            metadata=_json_loads(row.get("metadata")),
+            registered_at=_to_timestamp(row.get("registered_at")),
+            last_seen_at=_to_timestamp(row.get("last_seen_at")),
+            updated_at=_to_timestamp(row.get("updated_at")),
         )
 
     def get_device(self, device_id: str, tenant_id: str) -> DeviceRecord | None:
         sql = """
         SELECT device_id, tenant_id, name, device_type, platform,
                platform_version, trust_state, hostname, metadata,
-               EXTRACT(EPOCH FROM registered_at),
-               EXTRACT(EPOCH FROM last_seen_at),
-               EXTRACT(EPOCH FROM updated_at)
+               EXTRACT(EPOCH FROM registered_at) AS registered_at,
+               EXTRACT(EPOCH FROM last_seen_at) AS last_seen_at,
+               EXTRACT(EPOCH FROM updated_at) AS updated_at
         FROM devices
         WHERE device_id = %s AND tenant_id = %s;
         """
@@ -154,9 +154,9 @@ class PostgresPlatformRepository(BasePlatformRepository):
         sql = """
         SELECT device_id, tenant_id, name, device_type, platform,
                platform_version, trust_state, hostname, metadata,
-               EXTRACT(EPOCH FROM registered_at),
-               EXTRACT(EPOCH FROM last_seen_at),
-               EXTRACT(EPOCH FROM updated_at)
+               EXTRACT(EPOCH FROM registered_at) AS registered_at,
+               EXTRACT(EPOCH FROM last_seen_at) AS last_seen_at,
+               EXTRACT(EPOCH FROM updated_at) AS updated_at
         FROM devices
         WHERE tenant_id = %s
         ORDER BY registered_at ASC;
@@ -176,9 +176,9 @@ class PostgresPlatformRepository(BasePlatformRepository):
         WHERE device_id = %s AND tenant_id = %s
         RETURNING device_id, tenant_id, name, device_type, platform,
                   platform_version, trust_state, hostname, metadata,
-                  EXTRACT(EPOCH FROM registered_at),
-                  EXTRACT(EPOCH FROM last_seen_at),
-                  EXTRACT(EPOCH FROM updated_at);
+                  EXTRACT(EPOCH FROM registered_at) AS registered_at,
+                  EXTRACT(EPOCH FROM last_seen_at) AS last_seen_at,
+                  EXTRACT(EPOCH FROM updated_at) AS updated_at;
         """
         state_str = trust_state.value if isinstance(trust_state, DeviceTrustState) else str(trust_state)
         with self.db_pool.connection() as conn:
@@ -216,7 +216,7 @@ class PostgresPlatformRepository(BasePlatformRepository):
             updated_at = EXCLUDED.updated_at
         RETURNING capability_id, device_id, tenant_id, name, risk_level,
                   auth_status, description, parameters_schema, requires_approval,
-                  EXTRACT(EPOCH FROM updated_at);
+                  EXTRACT(EPOCH FROM updated_at) AS updated_at;
         """
         params = (
             capability.capability_id,
@@ -238,25 +238,25 @@ class PostgresPlatformRepository(BasePlatformRepository):
                     return self._row_to_capability(row)
         return capability
 
-    def _row_to_capability(self, row: tuple) -> DeviceCapabilityRecord:
+    def _row_to_capability(self, row: dict[str, Any]) -> DeviceCapabilityRecord:
         return DeviceCapabilityRecord(
-            capability_id=row[0],
-            device_id=row[1],
-            tenant_id=row[2],
-            name=row[3],
-            risk_level=CapabilityRiskLevel(row[4]),
-            auth_status=CapabilityAuthStatus(row[5]),
-            description=row[6],
-            parameters_schema=_json_loads(row[7]),
-            requires_approval=bool(row[8]),
-            updated_at=_to_timestamp(row[9]),
+            capability_id=str(row["capability_id"]),
+            device_id=str(row["device_id"]),
+            tenant_id=str(row["tenant_id"]),
+            name=str(row["name"]),
+            risk_level=CapabilityRiskLevel(row["risk_level"]),
+            auth_status=CapabilityAuthStatus(row["auth_status"]),
+            description=str(row.get("description", "")),
+            parameters_schema=_json_loads(row.get("parameters_schema")),
+            requires_approval=bool(row.get("requires_approval", False)),
+            updated_at=_to_timestamp(row.get("updated_at")),
         )
 
     def get_capability(self, capability_id: str, tenant_id: str) -> DeviceCapabilityRecord | None:
         sql = """
         SELECT capability_id, device_id, tenant_id, name, risk_level,
                auth_status, description, parameters_schema, requires_approval,
-               EXTRACT(EPOCH FROM updated_at)
+               EXTRACT(EPOCH FROM updated_at) AS updated_at
         FROM device_capabilities
         WHERE capability_id = %s AND tenant_id = %s;
         """
@@ -272,7 +272,7 @@ class PostgresPlatformRepository(BasePlatformRepository):
         sql = """
         SELECT capability_id, device_id, tenant_id, name, risk_level,
                auth_status, description, parameters_schema, requires_approval,
-               EXTRACT(EPOCH FROM updated_at)
+               EXTRACT(EPOCH FROM updated_at) AS updated_at
         FROM device_capabilities
         WHERE device_id = %s AND name = %s AND tenant_id = %s;
         """
@@ -288,7 +288,7 @@ class PostgresPlatformRepository(BasePlatformRepository):
         sql = """
         SELECT capability_id, device_id, tenant_id, name, risk_level,
                auth_status, description, parameters_schema, requires_approval,
-               EXTRACT(EPOCH FROM updated_at)
+               EXTRACT(EPOCH FROM updated_at) AS updated_at
         FROM device_capabilities
         WHERE device_id = %s AND tenant_id = %s
         ORDER BY name ASC;
@@ -308,7 +308,7 @@ class PostgresPlatformRepository(BasePlatformRepository):
         WHERE capability_id = %s AND tenant_id = %s
         RETURNING capability_id, device_id, tenant_id, name, risk_level,
                   auth_status, description, parameters_schema, requires_approval,
-                  EXTRACT(EPOCH FROM updated_at);
+                  EXTRACT(EPOCH FROM updated_at) AS updated_at;
         """
         status_str = auth_status.value if isinstance(auth_status, CapabilityAuthStatus) else str(auth_status)
         with self.db_pool.connection() as conn:
@@ -352,9 +352,9 @@ class PostgresPlatformRepository(BasePlatformRepository):
     def get_session(self, session_id: str, tenant_id: str) -> DeviceSessionRecord | None:
         sql = """
         SELECT session_id, device_id, tenant_id, status, ip_address,
-               EXTRACT(EPOCH FROM started_at),
-               EXTRACT(EPOCH FROM expires_at),
-               EXTRACT(EPOCH FROM last_heartbeat_at)
+               EXTRACT(EPOCH FROM started_at) AS started_at,
+               EXTRACT(EPOCH FROM expires_at) AS expires_at,
+               EXTRACT(EPOCH FROM last_heartbeat_at) AS last_heartbeat_at
         FROM device_sessions
         WHERE session_id = %s AND tenant_id = %s;
         """
@@ -364,14 +364,14 @@ class PostgresPlatformRepository(BasePlatformRepository):
                 row = cur.fetchone()
                 if row:
                     return DeviceSessionRecord(
-                        session_id=row[0],
-                        device_id=row[1],
-                        tenant_id=row[2],
-                        status=row[3],
-                        ip_address=row[4],
-                        started_at=_to_timestamp(row[5]),
-                        expires_at=_to_timestamp(row[6]) if row[6] is not None else None,
-                        last_heartbeat_at=_to_timestamp(row[7]),
+                        session_id=str(row["session_id"]),
+                        device_id=str(row["device_id"]),
+                        tenant_id=str(row["tenant_id"]),
+                        status=str(row["status"]),
+                        ip_address=str(row.get("ip_address", "")),
+                        started_at=_to_timestamp(row.get("started_at")),
+                        expires_at=_to_timestamp(row["expires_at"]) if row.get("expires_at") is not None else None,
+                        last_heartbeat_at=_to_timestamp(row.get("last_heartbeat_at")),
                     )
         return None
 
@@ -396,8 +396,8 @@ class PostgresPlatformRepository(BasePlatformRepository):
         RETURNING execution_id, tenant_id, device_id, capability_name, risk_level,
                   status, execution_mode, idempotency_key, approval_token,
                   parameters, result, error_detail, duration_ms,
-                  EXTRACT(EPOCH FROM created_at),
-                  EXTRACT(EPOCH FROM completed_at);
+                  EXTRACT(EPOCH FROM created_at) AS created_at,
+                  EXTRACT(EPOCH FROM completed_at) AS completed_at;
         """
         comp = f"TO_TIMESTAMP({execution.completed_at})" if execution.completed_at else None
         params = (
@@ -425,23 +425,23 @@ class PostgresPlatformRepository(BasePlatformRepository):
                     return self._row_to_execution(row)
         return execution
 
-    def _row_to_execution(self, row: tuple) -> DeviceExecutionRecord:
+    def _row_to_execution(self, row: dict[str, Any]) -> DeviceExecutionRecord:
         return DeviceExecutionRecord(
-            execution_id=row[0],
-            tenant_id=row[1],
-            device_id=row[2],
-            capability_name=row[3],
-            risk_level=CapabilityRiskLevel(row[4]),
-            status=ExecutionStatus(row[5]),
-            execution_mode=ExecutionMode(row[6]),
-            idempotency_key=row[7],
-            approval_token=row[8],
-            parameters=_json_loads(row[9]),
-            result=_json_loads(row[10]),
-            error_detail=row[11],
-            duration_ms=float(row[12]),
-            created_at=_to_timestamp(row[13]),
-            completed_at=_to_timestamp(row[14]) if row[14] is not None else None,
+            execution_id=str(row["execution_id"]),
+            tenant_id=str(row["tenant_id"]),
+            device_id=str(row["device_id"]),
+            capability_name=str(row["capability_name"]),
+            risk_level=CapabilityRiskLevel(row["risk_level"]),
+            status=ExecutionStatus(row["status"]),
+            execution_mode=ExecutionMode(row["execution_mode"]),
+            idempotency_key=str(row["idempotency_key"]) if row.get("idempotency_key") is not None else None,
+            approval_token=str(row["approval_token"]) if row.get("approval_token") is not None else None,
+            parameters=_json_loads(row.get("parameters")),
+            result=_json_loads(row.get("result")),
+            error_detail=str(row["error_detail"]) if row.get("error_detail") is not None else None,
+            duration_ms=float(row.get("duration_ms", 0.0)),
+            created_at=_to_timestamp(row.get("created_at")),
+            completed_at=_to_timestamp(row["completed_at"]) if row.get("completed_at") is not None else None,
         )
 
     def get_execution(self, execution_id: str, tenant_id: str) -> DeviceExecutionRecord | None:
@@ -449,8 +449,8 @@ class PostgresPlatformRepository(BasePlatformRepository):
         SELECT execution_id, tenant_id, device_id, capability_name, risk_level,
                status, execution_mode, idempotency_key, approval_token,
                parameters, result, error_detail, duration_ms,
-               EXTRACT(EPOCH FROM created_at),
-               EXTRACT(EPOCH FROM completed_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at,
+               EXTRACT(EPOCH FROM completed_at) AS completed_at
         FROM device_execution_records
         WHERE execution_id = %s AND tenant_id = %s;
         """
@@ -467,8 +467,8 @@ class PostgresPlatformRepository(BasePlatformRepository):
         SELECT execution_id, tenant_id, device_id, capability_name, risk_level,
                status, execution_mode, idempotency_key, approval_token,
                parameters, result, error_detail, duration_ms,
-               EXTRACT(EPOCH FROM created_at),
-               EXTRACT(EPOCH FROM completed_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at,
+               EXTRACT(EPOCH FROM completed_at) AS completed_at
         FROM device_execution_records
         WHERE tenant_id = %s AND idempotency_key = %s
         ORDER BY created_at DESC
@@ -487,8 +487,8 @@ class PostgresPlatformRepository(BasePlatformRepository):
         SELECT execution_id, tenant_id, device_id, capability_name, risk_level,
                status, execution_mode, idempotency_key, approval_token,
                parameters, result, error_detail, duration_ms,
-               EXTRACT(EPOCH FROM created_at),
-               EXTRACT(EPOCH FROM completed_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at,
+               EXTRACT(EPOCH FROM completed_at) AS completed_at
         FROM device_execution_records
         WHERE device_id = %s AND tenant_id = %s
         ORDER BY created_at DESC
@@ -533,7 +533,7 @@ class PostgresPlatformRepository(BasePlatformRepository):
         sql = """
         SELECT event_id, tenant_id, device_id, action, principal_id,
                event_type, risk_level, details,
-               EXTRACT(EPOCH FROM created_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at
         FROM device_audit_events
         WHERE device_id = %s AND tenant_id = %s
         ORDER BY created_at DESC
@@ -546,15 +546,15 @@ class PostgresPlatformRepository(BasePlatformRepository):
                 for row in cur.fetchall():
                     events.append(
                         DeviceAuditEvent(
-                            event_id=row[0],
-                            tenant_id=row[1],
-                            device_id=row[2],
-                            action=row[3],
-                            principal_id=row[4],
-                            event_type=row[5],
-                            risk_level=CapabilityRiskLevel(row[6]),
-                            details=_json_loads(row[7]),
-                            created_at=_to_timestamp(row[8]),
+                            event_id=str(row["event_id"]),
+                            tenant_id=str(row["tenant_id"]),
+                            device_id=str(row["device_id"]),
+                            action=str(row["action"]),
+                            principal_id=str(row["principal_id"]),
+                            event_type=str(row["event_type"]),
+                            risk_level=CapabilityRiskLevel(row["risk_level"]),
+                            details=_json_loads(row.get("details")),
+                            created_at=_to_timestamp(row.get("created_at")),
                         )
                     )
         return events

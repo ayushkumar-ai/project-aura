@@ -100,9 +100,9 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
                   causation_id, intent, status, current_phase, depth,
                   budget, iteration_count, tool_call_count, provider_call_count,
                   token_usage, cost_estimate, final_outcome, error_detail,
-                  EXTRACT(EPOCH FROM created_at),
-                  EXTRACT(EPOCH FROM started_at),
-                  EXTRACT(EPOCH FROM completed_at);
+                  EXTRACT(EPOCH FROM created_at) AS created_at,
+                  EXTRACT(EPOCH FROM started_at) AS started_at,
+                  EXTRACT(EPOCH FROM completed_at) AS completed_at;
         """
         params = (
             run.run_id,
@@ -139,9 +139,9 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
                causation_id, intent, status, current_phase, depth,
                budget, iteration_count, tool_call_count, provider_call_count,
                token_usage, cost_estimate, final_outcome, error_detail,
-               EXTRACT(EPOCH FROM created_at),
-               EXTRACT(EPOCH FROM started_at),
-               EXTRACT(EPOCH FROM completed_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at,
+               EXTRACT(EPOCH FROM started_at) AS started_at,
+               EXTRACT(EPOCH FROM completed_at) AS completed_at
         FROM agent_runs
         WHERE run_id = %s AND tenant_id = %s;
         """
@@ -157,9 +157,9 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
                causation_id, intent, status, current_phase, depth,
                budget, iteration_count, tool_call_count, provider_call_count,
                token_usage, cost_estimate, final_outcome, error_detail,
-               EXTRACT(EPOCH FROM created_at),
-               EXTRACT(EPOCH FROM started_at),
-               EXTRACT(EPOCH FROM completed_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at,
+               EXTRACT(EPOCH FROM started_at) AS started_at,
+               EXTRACT(EPOCH FROM completed_at) AS completed_at
         FROM agent_runs
         WHERE tenant_id = %s
         ORDER BY created_at DESC
@@ -188,9 +188,9 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
                   causation_id, intent, status, current_phase, depth,
                   budget, iteration_count, tool_call_count, provider_call_count,
                   token_usage, cost_estimate, final_outcome, error_detail,
-                  EXTRACT(EPOCH FROM created_at),
-                  EXTRACT(EPOCH FROM started_at),
-                  EXTRACT(EPOCH FROM completed_at);
+                  EXTRACT(EPOCH FROM created_at) AS created_at,
+                  EXTRACT(EPOCH FROM started_at) AS started_at,
+                  EXTRACT(EPOCH FROM completed_at) AS completed_at;
         """
         with self.db_pool.connection() as conn:
             with conn.cursor() as cur:
@@ -223,8 +223,8 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
         RETURNING step_id, run_id, tenant_id, step_number, phase,
                   plan_action, action_type, parameters, result, status,
                   verification_status, approval_token, duration_ms,
-                  EXTRACT(EPOCH FROM created_at),
-                  EXTRACT(EPOCH FROM completed_at);
+                  EXTRACT(EPOCH FROM created_at) AS created_at,
+                  EXTRACT(EPOCH FROM completed_at) AS completed_at;
         """
         params = (
             step.step_id,
@@ -254,8 +254,8 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
         SELECT step_id, run_id, tenant_id, step_number, phase,
                plan_action, action_type, parameters, result, status,
                verification_status, approval_token, duration_ms,
-               EXTRACT(EPOCH FROM created_at),
-               EXTRACT(EPOCH FROM completed_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at,
+               EXTRACT(EPOCH FROM completed_at) AS completed_at
         FROM agent_run_steps
         WHERE run_id = %s AND tenant_id = %s
         ORDER BY step_number ASC;
@@ -281,8 +281,8 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
         )
         RETURNING delegation_id, parent_run_id, child_run_id, tenant_id,
                   role, capabilities, budget_allocated, status,
-                  EXTRACT(EPOCH FROM created_at),
-                  EXTRACT(EPOCH FROM completed_at);
+                  EXTRACT(EPOCH FROM created_at) AS created_at,
+                  EXTRACT(EPOCH FROM completed_at) AS completed_at;
         """
         params = (
             delegation.delegation_id,
@@ -306,8 +306,8 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
         sql = """
         SELECT delegation_id, parent_run_id, child_run_id, tenant_id,
                role, capabilities, budget_allocated, status,
-               EXTRACT(EPOCH FROM created_at),
-               EXTRACT(EPOCH FROM completed_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at,
+               EXTRACT(EPOCH FROM completed_at) AS completed_at
         FROM agent_delegations
         WHERE parent_run_id = %s AND tenant_id = %s
         ORDER BY created_at ASC;
@@ -325,7 +325,7 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
             event_id, run_id, tenant_id, event_type, phase, data, created_at
         ) VALUES (%s, %s, %s, %s, %s, %s, TO_TIMESTAMP(%s))
         RETURNING event_id, run_id, tenant_id, event_type, phase, data,
-                  EXTRACT(EPOCH FROM created_at);
+                  EXTRACT(EPOCH FROM created_at) AS created_at;
         """
         params = (
             event.event_id,
@@ -341,19 +341,19 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
                 cur.execute(sql, params)
                 row = cur.fetchone()
                 return AgentMeshEvent(
-                    event_id=row[0],
-                    run_id=row[1],
-                    tenant_id=row[2],
-                    event_type=row[3],
-                    phase=AgentPhase(row[4]),
-                    data=_json_loads(row[5]),
-                    created_at=_to_timestamp(row[6]),
+                    event_id=str(row["event_id"]),
+                    run_id=str(row["run_id"]),
+                    tenant_id=str(row["tenant_id"]),
+                    event_type=str(row["event_type"]),
+                    phase=AgentPhase(row["phase"]),
+                    data=_json_loads(row.get("data")),
+                    created_at=_to_timestamp(row.get("created_at")),
                 )
 
     def list_events(self, run_id: str, tenant_id: str) -> list[AgentMeshEvent]:
         sql = """
         SELECT event_id, run_id, tenant_id, event_type, phase, data,
-               EXTRACT(EPOCH FROM created_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at
         FROM agent_mesh_events
         WHERE run_id = %s AND tenant_id = %s
         ORDER BY created_at ASC;
@@ -364,13 +364,13 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
                 rows = cur.fetchall()
                 return [
                     AgentMeshEvent(
-                        event_id=r[0],
-                        run_id=r[1],
-                        tenant_id=r[2],
-                        event_type=r[3],
-                        phase=AgentPhase(r[4]),
-                        data=_json_loads(r[5]),
-                        created_at=_to_timestamp(r[6]),
+                        event_id=str(r["event_id"]),
+                        run_id=str(r["run_id"]),
+                        tenant_id=str(r["tenant_id"]),
+                        event_type=str(r["event_type"]),
+                        phase=AgentPhase(r["phase"]),
+                        data=_json_loads(r.get("data")),
+                        created_at=_to_timestamp(r.get("created_at")),
                     )
                     for r in rows
                 ]
@@ -382,7 +382,7 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
             audit_id, run_id, tenant_id, action, principal_id, risk_level, details, created_at
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, TO_TIMESTAMP(%s))
         RETURNING audit_id, run_id, tenant_id, action, principal_id, risk_level, details,
-                  EXTRACT(EPOCH FROM created_at);
+                  EXTRACT(EPOCH FROM created_at) AS created_at;
         """
         params = (
             audit.audit_id,
@@ -399,20 +399,20 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
                 cur.execute(sql, params)
                 row = cur.fetchone()
                 return AgentMeshAudit(
-                    audit_id=row[0],
-                    run_id=row[1],
-                    tenant_id=row[2],
-                    action=row[3],
-                    principal_id=row[4],
-                    risk_level=CapabilityRiskLevel(row[5]),
-                    details=_json_loads(row[6]),
-                    created_at=_to_timestamp(row[7]),
+                    audit_id=str(row["audit_id"]),
+                    run_id=str(row["run_id"]),
+                    tenant_id=str(row["tenant_id"]),
+                    action=str(row["action"]),
+                    principal_id=str(row["principal_id"]),
+                    risk_level=CapabilityRiskLevel(row["risk_level"]),
+                    details=_json_loads(row.get("details")),
+                    created_at=_to_timestamp(row.get("created_at")),
                 )
 
     def list_audits(self, tenant_id: str, limit: int = 100) -> list[AgentMeshAudit]:
         sql = """
         SELECT audit_id, run_id, tenant_id, action, principal_id, risk_level, details,
-               EXTRACT(EPOCH FROM created_at)
+               EXTRACT(EPOCH FROM created_at) AS created_at
         FROM agent_mesh_audits
         WHERE tenant_id = %s
         ORDER BY created_at DESC
@@ -424,14 +424,14 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
                 rows = cur.fetchall()
                 return [
                     AgentMeshAudit(
-                        audit_id=r[0],
-                        run_id=r[1],
-                        tenant_id=r[2],
-                        action=r[3],
-                        principal_id=r[4],
-                        risk_level=CapabilityRiskLevel(r[5]),
-                        details=_json_loads(r[6]),
-                        created_at=_to_timestamp(r[7]),
+                        audit_id=str(r["audit_id"]),
+                        run_id=str(r["run_id"]),
+                        tenant_id=str(r["tenant_id"]),
+                        action=str(r["action"]),
+                        principal_id=str(r["principal_id"]),
+                        risk_level=CapabilityRiskLevel(r["risk_level"]),
+                        details=_json_loads(r.get("details")),
+                        created_at=_to_timestamp(r.get("created_at")),
                     )
                     for r in rows
                 ]
@@ -445,60 +445,60 @@ class PostgresAgentMeshRepository(BaseAgentMeshRepository):
                 return cur.rowcount
 
     # Helpers
-    def _row_to_run(self, row: Any) -> AgentRun:
+    def _row_to_run(self, row: dict[str, Any]) -> AgentRun:
         return AgentRun(
-            run_id=row[0],
-            tenant_id=row[1],
-            user_id=row[2],
-            parent_run_id=row[3],
-            correlation_id=row[4],
-            causation_id=row[5],
-            intent=row[6],
-            status=AgentRunStatus(row[7]),
-            current_phase=AgentPhase(row[8]),
-            depth=row[9],
-            budget=AgentRunBudget.from_dict(_json_loads(row[10])),
-            iteration_count=row[11],
-            tool_call_count=row[12],
-            provider_call_count=row[13],
-            token_usage=_json_loads(row[14]),
-            cost_estimate=float(row[15] or 0.0),
-            final_outcome=_json_loads(row[16]),
-            error_detail=row[17],
-            created_at=_to_timestamp(row[18]),
-            started_at=_to_timestamp(row[19]) if row[19] is not None else None,
-            completed_at=_to_timestamp(row[20]) if row[20] is not None else None,
+            run_id=str(row["run_id"]),
+            tenant_id=str(row["tenant_id"]),
+            user_id=str(row["user_id"]),
+            parent_run_id=str(row["parent_run_id"]) if row.get("parent_run_id") is not None else None,
+            correlation_id=str(row["correlation_id"]),
+            causation_id=str(row["causation_id"]) if row.get("causation_id") is not None else None,
+            intent=str(row["intent"]),
+            status=AgentRunStatus(row["status"]),
+            current_phase=AgentPhase(row["current_phase"]),
+            depth=int(row.get("depth", 0)),
+            budget=AgentRunBudget.from_dict(_json_loads(row.get("budget"))),
+            iteration_count=int(row.get("iteration_count", 0)),
+            tool_call_count=int(row.get("tool_call_count", 0)),
+            provider_call_count=int(row.get("provider_call_count", 0)),
+            token_usage=_json_loads(row.get("token_usage")),
+            cost_estimate=float(row.get("cost_estimate") or 0.0),
+            final_outcome=_json_loads(row.get("final_outcome")),
+            error_detail=str(row["error_detail"]) if row.get("error_detail") is not None else None,
+            created_at=_to_timestamp(row.get("created_at")),
+            started_at=_to_timestamp(row["started_at"]) if row.get("started_at") is not None else None,
+            completed_at=_to_timestamp(row["completed_at"]) if row.get("completed_at") is not None else None,
         )
 
-    def _row_to_step(self, row: Any) -> AgentRunStep:
+    def _row_to_step(self, row: dict[str, Any]) -> AgentRunStep:
         return AgentRunStep(
-            step_id=row[0],
-            run_id=row[1],
-            tenant_id=row[2],
-            step_number=row[3],
-            phase=AgentPhase(row[4]),
-            plan_action=row[5],
-            action_type=ActionType(row[6]),
-            parameters=_json_loads(row[7]),
-            result=_json_loads(row[8]),
-            status=row[9],
-            verification_status=VerificationStatus(row[10]),
-            approval_token=row[11],
-            duration_ms=float(row[12] or 0.0),
-            created_at=_to_timestamp(row[13]),
-            completed_at=_to_timestamp(row[14]) if row[14] is not None else None,
+            step_id=str(row["step_id"]),
+            run_id=str(row["run_id"]),
+            tenant_id=str(row["tenant_id"]),
+            step_number=int(row["step_number"]),
+            phase=AgentPhase(row["phase"]),
+            plan_action=str(row["plan_action"]),
+            action_type=ActionType(row["action_type"]),
+            parameters=_json_loads(row.get("parameters")),
+            result=_json_loads(row.get("result")),
+            status=str(row.get("status", "requested")),
+            verification_status=VerificationStatus(row["verification_status"]),
+            approval_token=str(row["approval_token"]) if row.get("approval_token") is not None else None,
+            duration_ms=float(row.get("duration_ms") or 0.0),
+            created_at=_to_timestamp(row.get("created_at")),
+            completed_at=_to_timestamp(row["completed_at"]) if row.get("completed_at") is not None else None,
         )
 
-    def _row_to_delegation(self, row: Any) -> AgentDelegation:
+    def _row_to_delegation(self, row: dict[str, Any]) -> AgentDelegation:
         return AgentDelegation(
-            delegation_id=row[0],
-            parent_run_id=row[1],
-            child_run_id=row[2],
-            tenant_id=row[3],
-            role=AgentRole(row[4]),
-            capabilities=list(_json_loads(row[5])),
-            budget_allocated=AgentRunBudget.from_dict(_json_loads(row[6])),
-            status=row[7],
-            created_at=_to_timestamp(row[8]),
-            completed_at=_to_timestamp(row[9]) if row[9] is not None else None,
+            delegation_id=str(row["delegation_id"]),
+            parent_run_id=str(row["parent_run_id"]),
+            child_run_id=str(row["child_run_id"]),
+            tenant_id=str(row["tenant_id"]),
+            role=AgentRole(row["role"]),
+            capabilities=list(_json_loads(row.get("capabilities"))),
+            budget_allocated=AgentRunBudget.from_dict(_json_loads(row.get("budget_allocated"))),
+            status=str(row.get("status", "active")),
+            created_at=_to_timestamp(row.get("created_at")),
+            completed_at=_to_timestamp(row["completed_at"]) if row.get("completed_at") is not None else None,
         )
