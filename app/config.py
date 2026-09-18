@@ -173,9 +173,28 @@ class Settings(BaseSettings):
     aura_server_port: int = 8000
     aura_server_api_key: str = ""
     aura_api_key_auth_enabled: bool = False
-    aura_cors_allowed_origins: str = "*"
+    aura_cors_allowed_origins: str = "http://localhost:8000,http://127.0.0.1:8000"
+    aura_cors_allow_credentials: bool = False
+    aura_trusted_proxy_cidrs: str = "127.0.0.1/32,::1/128"
     aura_max_request_body_bytes: int = 1048576
     aura_shutdown_grace_period_seconds: float = 10.0
+
+    # M60 Production Deployment, Rate Limiting & Operational Reliability Configuration
+    aura_rate_limit_enabled: bool = True
+    aura_rate_limit_requests_per_minute: int = 600
+    aura_rate_limit_burst_size: int = 100
+    aura_rate_limit_max_buckets: int = 50000
+    aura_rate_limit_cleanup_interval_seconds: float = 3600.0
+    aura_rate_limit_auth_rpm: int = 120
+    aura_rate_limit_auth_burst: int = 30
+    aura_rate_limit_agent_execution_rpm: int = 120
+    aura_rate_limit_agent_execution_burst: int = 30
+    aura_rate_limit_multimodal_rpm: int = 120
+    aura_rate_limit_multimodal_burst: int = 30
+    aura_rate_limit_admin_rpm: int = 120
+    aura_rate_limit_admin_burst: int = 30
+    aura_db_name: str = "aura_db"
+    aura_restore_verify_db_name: str = "aura_restore_verify_db"
 
     # Persistent Storage Root Directories
     aura_artifact_storage_dir: str = ".aura_artifacts"

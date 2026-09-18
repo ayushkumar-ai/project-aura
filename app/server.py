@@ -166,7 +166,9 @@ from core.cognitive_memory import (
     UserCognitiveProfile,
 )
 import queue
+import ipaddress
 from core.config_validator import validate_production_config
+from core.rate_limiter import get_rate_limiter, map_path_to_category, RateLimitResult, OperationCategory
 
 logger = logging.getLogger("aura.server")
 
@@ -489,18 +491,141 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         self.req_start = time.time()
         return req_id, tr_id, parent_ctx
 
+    def _is_peer_trusted_proxy(self) -> bool:
+        """Check if the direct socket client IP matches configured trusted proxy CIDRs."""
+        if not self.client_address:
+            return False
+        peer_ip = self.client_address[0]
+        trusted_cidrs_str = getattr(self.config, "aura_trusted_proxy_cidrs", "").strip()
+        if not trusted_cidrs_str:
+            return False
+        try:
+            peer_addr = ipaddress.ip_address(peer_ip)
+            for cidr_str in trusted_cidrs_str.split(","):
+                c = cidr_str.strip()
+                if not c:
+                    continue
+                try:
+                    net = ipaddress.ip_network(c, strict=False)
+                    if peer_addr in net:
+                        return True
+                except ValueError:
+                    continue
+        except ValueError:
+            return False
+        return False
+
+    def _resolve_client_ip_and_scheme(self) -> tuple[str, str]:
+        """Safely extract client IP and connection scheme enforcing trusted-proxy security boundaries."""
+        peer_ip = self.client_address[0] if self.client_address else "127.0.0.1"
+        scheme = "http"
+
+        if self._is_peer_trusted_proxy():
+            # Only trust forwarded headers if immediate peer is inside trusted proxy CIDRs
+            proto_hdr = self.headers.get("X-Forwarded-Proto", "").strip().lower()
+            if proto_hdr in ("http", "https"):
+                scheme = proto_hdr
+
+            xff_hdr = self.headers.get("X-Forwarded-For", "").strip()
+            if xff_hdr:
+                hops = [h.strip() for h in xff_hdr.split(",") if h.strip()]
+                if hops:
+                    first_hop = hops[0]
+                    try:
+                        ipaddress.ip_address(first_hop)
+                        return first_hop, scheme
+                    except ValueError:
+                        # Malformed forwarded IP fails closed to peer IP
+                        return peer_ip, scheme
+            return peer_ip, scheme
+        else:
+            # Untrusted direct peer: forwarded headers are ignored to prevent scheme/IP spoofing
+            return peer_ip, scheme
+
+    def _check_rate_limit(self, path: str, identity: UserIdentity | None = None) -> bool:
+        """Check rate limit for requested path and client identity.
+
+        Returns True if request is allowed, False if rate limited (emits HTTP 429).
+        """
+        if not getattr(self.config, "aura_rate_limit_enabled", True):
+            return True
+
+        category = map_path_to_category(path)
+        if category is None:
+            # Unthrottled endpoint (e.g. /health)
+            return True
+
+        if identity is not None and identity.user_id not in ("anonymous", "default", ""):
+            tenant_id = getattr(identity, "tenant_id", None) or (identity.metadata.get("tenant_id") if hasattr(identity, "metadata") and isinstance(identity.metadata, dict) else None) or getattr(identity, "user_id", "default")
+            user_id = getattr(identity, "user_id", "default")
+            identity_key = f"{tenant_id}:{user_id}"
+        else:
+            client_ip, _ = self._resolve_client_ip_and_scheme()
+            identity_key = client_ip
+
+        limiter = get_rate_limiter(self.config)
+        res = limiter.check_rate_limit(identity_key=identity_key, category=category)
+        self._rate_limit_result = res
+
+        if not res.allowed:
+            self._send_error_response(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                "rate_limit_exceeded",
+                "Rate limit exceeded. Try again later.",
+                details={"retry_after": res.retry_after, "category": res.category},
+            )
+            return False
+        return True
+
     def _set_cors_headers(self) -> None:
-        """Apply CORS and correlation headers from configuration."""
-        origin = self.config.aura_cors_allowed_origins
-        self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, traceparent")
+        """Apply CORS, rate limiting, and correlation headers from configuration."""
+        env = self.config.aura_env.lower()
+        configured_origins = getattr(self.config, "aura_cors_allowed_origins", "*").strip()
+        allow_credentials = getattr(self.config, "aura_cors_allow_credentials", False)
+        request_origin = self.headers.get("Origin", "").strip()
+
+        if env == "production":
+            if configured_origins and configured_origins != "*":
+                allowed_list = [o.strip() for o in configured_origins.split(",") if o.strip()]
+                if request_origin in allowed_list:
+                    self.send_header("Access-Control-Allow-Origin", request_origin)
+                    self.send_header("Vary", "Origin")
+                    if allow_credentials:
+                        self.send_header("Access-Control-Allow-Credentials", "true")
+            # In production mode with wildcard or unconfigured origin, Access-Control-Allow-Origin is omitted (fail-closed)
+        else:
+            if configured_origins == "*":
+                self.send_header("Access-Control-Allow-Origin", "*")
+            else:
+                allowed_list = [o.strip() for o in configured_origins.split(",") if o.strip()]
+                if request_origin in allowed_list:
+                    self.send_header("Access-Control-Allow-Origin", request_origin)
+                    self.send_header("Vary", "Origin")
+                elif allowed_list:
+                    self.send_header("Access-Control-Allow-Origin", allowed_list[0])
+                if allow_credentials and configured_origins != "*":
+                    self.send_header("Access-Control-Allow-Credentials", "true")
+
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, X-Request-ID, traceparent, X-Forwarded-For, X-Forwarded-Proto, Origin, Accept",
+        )
+
         req_id = getattr(self, "request_id", None) or get_current_request_id()
         if req_id:
             self.send_header("X-Request-ID", str(req_id))
         tr_id = getattr(self, "trace_id", None) or get_current_trace_id()
         if tr_id:
             self.send_header("X-Trace-ID", str(tr_id))
+
+        rl_res: RateLimitResult | None = getattr(self, "_rate_limit_result", None)
+        if rl_res is not None:
+            self.send_header("X-RateLimit-Limit", str(rl_res.limit))
+            self.send_header("X-RateLimit-Remaining", str(rl_res.remaining))
+            self.send_header("X-RateLimit-Reset", str(rl_res.reset_epoch))
+            if not rl_res.allowed and rl_res.retry_after > 0:
+                self.send_header("Retry-After", str(rl_res.retry_after))
 
     def _send_json_response(
         self,
@@ -749,37 +874,140 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path in ("/ready", "/readyz"):
-            is_ready = self.aura is not None and self.aura.orchestrator is not None
+            critical_failures: list[str] = []
             db_status = "ok"
             rep_container = getattr(self.server, "repository_container", None)
-            if rep_container is not None and rep_container.db_pool is not None:
-                db_health = rep_container.db_pool.check_health()
-                if not db_health.get("connected", False):
-                    is_ready = False
-                    db_status = db_health.get("error", "database_unreachable")
-
-            # In production or when DB URL is set, fail closed if DB is unreachable
-            is_prod = self.config.aura_env.lower() == "production"
-            if (is_prod or self.config.aura_database_url) and db_status != "ok":
-                is_ready = False
-
-            if is_ready:
-                self._send_json_response({
-                    "status": "ready",
-                    "ready": True,
-                    "model_provider": self.config.aura_model_provider or "default",
-                    "agentic_enabled": self.aura.agentic_runtime is not None,
-                    "database": db_status,
-                    "timestamp": time.time(),
-                })
-                self._record_http_metric("GET", path, 200, req_start)
+            pool = getattr(rep_container, "db_pool", None) if rep_container is not None else None
+            if pool is not None:
+                try:
+                    if hasattr(pool, "check_health"):
+                        db_health = pool.check_health()
+                        if not (db_health.get("connected", False) or db_health.get("status") == "healthy"):
+                            err = db_health.get("error", "database_unreachable")
+                            db_status = f"unhealthy: {err}"
+                            critical_failures.append(f"database_unreachable: {err}")
+                    elif not getattr(pool, "is_active", False):
+                        db_status = "disconnected"
+                        critical_failures.append("database_disconnected")
+                except Exception as dbe:
+                    db_status = f"error: {dbe}"
+                    critical_failures.append(f"database_error: {dbe}")
+            elif self.config.aura_persistence_backend.lower() == "postgres":
+                db_status = "unconfigured_or_disconnected"
+                critical_failures.append("database_pool_missing")
             else:
-                self._send_error_response(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    "not_ready",
-                    f"AURA runtime is initializing or degraded (database: {db_status})",
+                db_status = "in_memory"
+
+            # Schema migration integrity check
+            migration_status = "ok"
+            if pool is not None and getattr(pool, "is_active", False):
+                try:
+                    from core.database import MigrationRunner
+                    runner = MigrationRunner(pool)
+                    # Running migrations idempotently verifies checksums of 001-010
+                    runner.run_migrations()
+                except Exception as me:
+                    migration_status = f"migration_check_failed: {me}"
+                    critical_failures.append(f"migration_integrity_failure: {me}")
+
+            # Persistent storage writability check
+            storage_status = "ok"
+            for sdir_attr in ("aura_artifact_storage_dir", "aura_checkpoint_dir", "aura_knowledge_storage_dir"):
+                sdir = getattr(self.config, sdir_attr, "")
+                if sdir:
+                    p = Path(sdir)
+                    try:
+                        p.mkdir(parents=True, exist_ok=True)
+                        test_file = p / ".aura_write_test"
+                        test_file.write_text("ok", encoding="utf-8")
+                        test_file.unlink(missing_ok=True)
+                    except Exception as se:
+                        storage_status = f"unwritable: {sdir_attr} ({se})"
+                        critical_failures.append(f"storage_unwritable: {sdir_attr}")
+                        break
+
+            # Production configuration validity
+            config_status = "ok"
+            if self.config.aura_env.lower() == "production":
+                valid_cfg, cfg_errs = validate_production_config(self.config, raise_on_error=False)
+                if not valid_cfg:
+                    config_status = f"invalid_config: {len(cfg_errs)} errors"
+                    critical_failures.append(f"invalid_config: {cfg_errs[0] if cfg_errs else 'unknown'}")
+
+            # Optional dependency checks: M51 providers
+            optional_degraded: list[str] = []
+            providers_info: dict[str, Any] = {}
+            aura_inst = getattr(self.server, "aura", None)
+            if aura_inst is not None and hasattr(aura_inst, "model_gateway") and aura_inst.model_gateway is not None:
+                try:
+                    gw = aura_inst.model_gateway
+                    providers_info = gw.get_provider_status() if hasattr(gw, "get_provider_status") else {}
+                    for p_name, p_info in providers_info.items():
+                        if isinstance(p_info, dict) and p_info.get("circuit_state") == "open":
+                            optional_degraded.append(f"provider_{p_name}_circuit_open")
+                except Exception:
+                    pass
+
+            if critical_failures:
+                self._send_json_response(
+                    {
+                        "status": "not_ready",
+                        "ready": False,
+                        "state": "NOT_READY",
+                        "error": {
+                            "code": "not_ready",
+                            "message": f"AURA runtime is initializing or degraded ({', '.join(critical_failures)})",
+                        },
+                        "critical_failures": critical_failures,
+                        "database": db_status,
+                        "storage": storage_status,
+                        "migration": migration_status,
+                        "config": config_status,
+                        "timestamp": time.time(),
+                    },
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
                 )
                 self._record_http_metric("GET", path, 503, req_start)
+                return
+
+            if optional_degraded:
+                self._send_json_response(
+                    {
+                        "status": "degraded",
+                        "ready": True,
+                        "state": "DEGRADED",
+                        "degraded_reasons": optional_degraded,
+                        "database": db_status,
+                        "storage": storage_status,
+                        "migration": migration_status,
+                        "config": config_status,
+                        "providers": providers_info,
+                        "timestamp": time.time(),
+                    },
+                    status=HTTPStatus.OK,
+                )
+                self._record_http_metric("GET", path, 200, req_start)
+                return
+
+            self._send_json_response(
+                {
+                    "status": "ready",
+                    "ready": True,
+                    "state": "READY",
+                    "database": db_status,
+                    "storage": storage_status,
+                    "migration": migration_status,
+                    "config": config_status,
+                    "providers": providers_info,
+                    "timestamp": time.time(),
+                },
+                status=HTTPStatus.OK,
+            )
+            self._record_http_metric("GET", path, 200, req_start)
+            return
+
+        # Rate limiting check for remaining GET endpoints
+        if not self._check_rate_limit(path):
             return
 
         if path == "/metrics":
@@ -1751,6 +1979,10 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         self._setup_request_context()
         parsed_url = urlparse(self.path)
         path = parsed_url.path.rstrip("/")
+
+        # Rate limiting check
+        if not self._check_rate_limit(path):
+            return
 
         # M54: Public Webhook Ingress (POST /v1/webhooks/{endpoint_id})
         # Note: Must bypass AURA user Bearer token auth; validated via endpoint HMAC / signatures
@@ -2845,6 +3077,10 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         path = parsed_url.path.rstrip("/")
 
+        # Rate limiting check
+        if not self._check_rate_limit(path):
+            return
+
         is_auth, identity, err_msg, status_code = self._resolve_identity()
         if not is_auth:
             self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
@@ -2922,6 +3158,10 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         self._setup_request_context()
         parsed_url = urlparse(self.path)
         path = parsed_url.path.rstrip("/")
+
+        # Rate limiting check
+        if not self._check_rate_limit(path):
+            return
 
         is_auth, identity, err_msg, status_code = self._resolve_identity()
         if not is_auth:
@@ -3096,6 +3336,10 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
         self._setup_request_context()
         parsed_url = urlparse(self.path)
         path = parsed_url.path.rstrip("/")
+
+        # Rate limiting check
+        if not self._check_rate_limit(path):
+            return
 
         is_auth, identity, err_msg, status_code = self._resolve_identity()
         if not is_auth:
