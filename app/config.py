@@ -140,12 +140,23 @@ class Settings(BaseSettings):
     # M51 Multi-Provider Model Gateway & Intelligent Provider Routing Configuration
     aura_model_gateway_enabled: bool = True
     aura_model_fallback_providers: str = ""
+    aura_model_routing_strategy: str = "priority"
+    aura_model_max_fallback_providers: int = 3
+    aura_model_max_retries_per_provider: int = 1
     aura_gemini_endpoint_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
     aura_gemini_api_key: str = ""
     aura_gemini_model_name: str = "gemini-2.5-flash"
     aura_groq_endpoint_url: str = "https://api.groq.com/openai/v1"
     aura_groq_api_key: str = ""
-    aura_groq_model_name: str = "llama-3.3-70b-versatile"
+    aura_groq_model_name: str = "openai/gpt-oss-120b"
+    aura_openrouter_endpoint_url: str = "https://openrouter.ai/api/v1"
+    aura_openrouter_api_key: str = ""
+    aura_openrouter_model_name: str = "openai/gpt-oss-120b:free"
+    aura_openrouter_site_url: str = ""
+    aura_openrouter_app_name: str = "Project AURA"
+    aura_mistral_endpoint_url: str = "https://api.mistral.ai/v1"
+    aura_mistral_api_key: str = ""
+    aura_mistral_model_name: str = "mistral-small-latest"
     aura_openai_endpoint_url: str = "https://api.openai.com/v1"
     aura_openai_api_key: str = ""
     aura_openai_model_name: str = "gpt-4o-mini"

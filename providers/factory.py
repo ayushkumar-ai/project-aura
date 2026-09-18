@@ -53,7 +53,36 @@ def create_model_provider(
 
     if provider_name == "groq":
         eff_url = base_url.strip() if base_url.strip() else "https://api.groq.com/openai/v1"
-        eff_model = model_name.strip() if model_name.strip() else "llama-3.3-70b-versatile"
+        eff_model = model_name.strip() if model_name.strip() else "openai/gpt-oss-120b"
+        return GenericOpenAICompatibleProvider(
+            base_url=eff_url,
+            model_name=eff_model,
+            api_key=api_key,
+            custom_headers=custom_headers,
+            timeout=timeout,
+            allow_local_endpoints=allow_local_endpoints,
+        )
+
+    if provider_name == "openrouter":
+        eff_url = base_url.strip() if base_url.strip() else "https://openrouter.ai/api/v1"
+        eff_model = model_name.strip() if model_name.strip() else "openai/gpt-oss-120b:free"
+        headers = dict(custom_headers or {})
+        if "HTTP-Referer" not in headers:
+            headers["HTTP-Referer"] = "https://github.com/project-aura"
+        if "X-Title" not in headers:
+            headers["X-Title"] = "Project AURA"
+        return GenericOpenAICompatibleProvider(
+            base_url=eff_url,
+            model_name=eff_model,
+            api_key=api_key,
+            custom_headers=headers,
+            timeout=timeout,
+            allow_local_endpoints=allow_local_endpoints,
+        )
+
+    if provider_name == "mistral":
+        eff_url = base_url.strip() if base_url.strip() else "https://api.mistral.ai/v1"
+        eff_model = model_name.strip() if model_name.strip() else "mistral-small-latest"
         return GenericOpenAICompatibleProvider(
             base_url=eff_url,
             model_name=eff_model,
