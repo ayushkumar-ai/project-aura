@@ -31,6 +31,7 @@ from core.repositories.base_webhook import BaseWebhookRepository
 from core.repositories.base_fleet import BaseFleetRepository
 from core.repositories.base_multimodal import BaseMultimodalRepository
 from core.repositories.base_platform import BasePlatformRepository
+from core.repositories.base_agent_mesh import BaseAgentMeshRepository
 from core.repositories.in_memory import (
     InMemoryApiTokenRepository,
     InMemoryApprovalRepository,
@@ -50,6 +51,7 @@ from core.repositories.in_memory_fleet import InMemoryFleetRepository
 from core.repositories.in_memory_cognitive_memory import InMemoryCognitiveMemoryRepository
 from core.repositories.in_memory_multimodal import InMemoryMultimodalRepository
 from core.repositories.in_memory_platform import InMemoryPlatformRepository
+from core.repositories.in_memory_agent_mesh import InMemoryAgentMeshRepository
 from core.repositories.postgres import (
     PostgresApiTokenRepository,
     PostgresCheckpointRepository,
@@ -69,6 +71,7 @@ from core.repositories.postgres_fleet import PostgresFleetRepository
 from core.repositories.postgres_cognitive_memory import PostgresCognitiveMemoryRepository
 from core.repositories.postgres_multimodal import PostgresMultimodalRepository
 from core.repositories.postgres_platform import PostgresPlatformRepository
+from core.repositories.postgres_agent_mesh import PostgresAgentMeshRepository
 
 
 logger = logging.getLogger("aura.repositories.factory")
@@ -95,6 +98,7 @@ class RepositoryContainer:
     cognitive_memories: BaseCognitiveMemoryRepository | None = None
     multimodal: BaseMultimodalRepository | None = None
     platform: BasePlatformRepository | None = None
+    agent_mesh: BaseAgentMeshRepository | None = None
     db_pool: DatabaseConnectionPool | None = None
     is_postgres: bool = False
 
@@ -122,6 +126,7 @@ def create_in_memory_repositories() -> RepositoryContainer:
     cog_repo = InMemoryCognitiveMemoryRepository()
     mm_repo = InMemoryMultimodalRepository()
     platform_repo = InMemoryPlatformRepository()
+    agent_mesh_repo = InMemoryAgentMeshRepository()
 
     return RepositoryContainer(
         users=user_repo,
@@ -141,6 +146,7 @@ def create_in_memory_repositories() -> RepositoryContainer:
         cognitive_memories=cog_repo,
         multimodal=mm_repo,
         platform=platform_repo,
+        agent_mesh=agent_mesh_repo,
         db_pool=None,
         is_postgres=False,
     )
@@ -168,6 +174,7 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
     cog_repo = PostgresCognitiveMemoryRepository(db_pool)
     mm_repo = PostgresMultimodalRepository(db_pool)
     platform_repo = PostgresPlatformRepository(db_pool)
+    agent_mesh_repo = PostgresAgentMeshRepository(db_pool)
 
     return RepositoryContainer(
         users=user_repo,
@@ -187,6 +194,7 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
         cognitive_memories=cog_repo,
         multimodal=mm_repo,
         platform=platform_repo,
+        agent_mesh=agent_mesh_repo,
         db_pool=db_pool,
         is_postgres=True,
     )

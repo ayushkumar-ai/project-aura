@@ -107,10 +107,20 @@ from core.api_contracts import (
     DeviceTrustUpdateSchema,
     DeviceCapabilityAuthorizeSchema,
     DeviceActionExecuteSchema,
+    AgentRunCreateSchema,
+    AgentRunApproveSchema,
 )
 from core.repositories.base_cognitive_memory import BaseCognitiveMemoryRepository
 from core.repositories.base_multimodal import BaseMultimodalRepository
 from core.repositories.base_platform import BasePlatformRepository
+from core.repositories.base_agent_mesh import BaseAgentMeshRepository
+from core.agent_mesh import (
+    UnifiedAgentRuntime,
+    AgentRun,
+    AgentRunBudget,
+    AgentRunStatus,
+    AgentRole,
+)
 from core.platform import (
     PlatformIntegrationGateway,
     PlatformMemoryBridge,
@@ -405,6 +415,26 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             )
             setattr(self.server, "platform_bridge", pb)
         return pb
+
+    @property
+    def agent_mesh_repo(self) -> BaseAgentMeshRepository | None:
+        rc = getattr(self.server, "repository_container", None)
+        return getattr(rc, "agent_mesh", None) if rc else None
+
+    @property
+    def agent_runtime(self) -> UnifiedAgentRuntime:
+        ar = getattr(self.server, "agent_runtime", None)
+        if ar is None:
+            ar = UnifiedAgentRuntime(
+                repository=self.agent_mesh_repo,
+                model_gateway=getattr(self.server.aura, "model_gateway", None) if hasattr(self.server, "aura") else None,
+                platform_gateway=self.platform_gateway,
+                memory_repo=self.cognitive_memory_repo,
+                policy_engine=getattr(self.server.aura, "policy", None) if hasattr(self.server, "aura") else None,
+                approval_engine=getattr(self.server, "approval_engine", None),
+            )
+            setattr(self.server, "agent_runtime", ar)
+        return ar
 
 
     def _read_raw_body(self) -> bytes | None:
@@ -1633,6 +1663,68 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
 
 
 
+        # M59: List Intelligence Mesh Roles
+        if path == "/v1/agent/mesh/roles":
+            roles = self.agent_runtime.mesh_coordinator.list_roles()
+            self._send_json_response({"roles": roles, "count": len(roles)})
+            return
+
+        # M59: List Agent Runs
+        if path == "/v1/agent/runs":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.agent_mesh_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Agent mesh repository unavailable")
+                return
+            params = parse_qs(parsed_url.query)
+            limit = int(params.get("limit", [50])[0])
+            runs = self.agent_mesh_repo.list_runs(tenant_id=user_id, limit=limit)
+            self._send_json_response({"runs": [r.to_dict() for r in runs], "count": len(runs)})
+            return
+
+        # M59: Get Agent Run Details & Steps
+        if path.startswith("/v1/agent/runs/") and not path.endswith("/events"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            run_id = path[len("/v1/agent/runs/"):].strip()
+            if not self.agent_mesh_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Agent mesh repository unavailable")
+                return
+            run = self.agent_mesh_repo.get_run(run_id, tenant_id=user_id)
+            if not run:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "run_not_found", f"AgentRun '{run_id}' not found")
+                return
+            steps = self.agent_mesh_repo.list_steps(run_id, tenant_id=user_id)
+            resp = run.to_dict()
+            resp["steps"] = [s.to_dict() for s in steps]
+            self._send_json_response(resp)
+            return
+
+        # M59: List Agent Run Events
+        if path.startswith("/v1/agent/runs/") and path.endswith("/events"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            run_id = path[len("/v1/agent/runs/"): -len("/events")].strip()
+            if not self.agent_mesh_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Agent mesh repository unavailable")
+                return
+            run = self.agent_mesh_repo.get_run(run_id, tenant_id=user_id)
+            if not run:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "run_not_found", f"AgentRun '{run_id}' not found")
+                return
+            events = self.agent_mesh_repo.list_events(run_id, tenant_id=user_id)
+            self._send_json_response({"events": [e.to_dict() for e in events], "count": len(events)})
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
     def do_POST(self) -> None:
@@ -2627,6 +2719,101 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "execution_error", str(e))
             return
 
+        # M59: Create / Execute Agent Run
+        if path == "/v1/agent/runs":
+            if not self.agent_mesh_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Agent mesh repository unavailable")
+                return
+            try:
+                schema = AgentRunCreateSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+            try:
+                budget = AgentRunBudget(**schema.budget) if schema.budget else None
+                run = self.agent_runtime.create_run(
+                    tenant_id=user_id,
+                    user_id=user_id,
+                    intent=schema.intent,
+                    budget=budget,
+                    parent_run_id=schema.parent_run_id,
+                )
+                if schema.auto_execute:
+                    run = self.agent_runtime.execute_run(run)
+                self._send_json_response(run.to_dict(), status=HTTPStatus.CREATED)
+            except Exception as e:
+                logger.error(f"Error creating agent run: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "agent_run_create_error", str(e))
+            return
+
+        # M59: Cancel Agent Run
+        if path.startswith("/v1/agent/runs/") and path.endswith("/cancel"):
+            run_id = path[len("/v1/agent/runs/"): -len("/cancel")].strip()
+            if not self.agent_mesh_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Agent mesh repository unavailable")
+                return
+            try:
+                run = self.agent_runtime.cancel_run(run_id=run_id, tenant_id=user_id)
+                self._send_json_response(run.to_dict())
+            except ValueError as ve:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "run_not_found", str(ve))
+            except Exception as e:
+                logger.error(f"Error cancelling agent run: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "agent_run_cancel_error", str(e))
+            return
+
+        # M59: Pause Agent Run
+        if path.startswith("/v1/agent/runs/") and path.endswith("/pause"):
+            run_id = path[len("/v1/agent/runs/"): -len("/pause")].strip()
+            if not self.agent_mesh_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Agent mesh repository unavailable")
+                return
+            try:
+                run = self.agent_runtime.pause_run(run_id=run_id, tenant_id=user_id)
+                self._send_json_response(run.to_dict())
+            except ValueError as ve:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "run_not_found", str(ve))
+            except Exception as e:
+                logger.error(f"Error pausing agent run: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "agent_run_pause_error", str(e))
+            return
+
+        # M59: Resume Agent Run
+        if path.startswith("/v1/agent/runs/") and path.endswith("/resume"):
+            run_id = path[len("/v1/agent/runs/"): -len("/resume")].strip()
+            if not self.agent_mesh_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Agent mesh repository unavailable")
+                return
+            try:
+                run = self.agent_runtime.resume_run(run_id=run_id, tenant_id=user_id)
+                self._send_json_response(run.to_dict())
+            except ValueError as ve:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "run_not_found", str(ve))
+            except Exception as e:
+                logger.error(f"Error resuming agent run: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "agent_run_resume_error", str(e))
+            return
+
+        # M59: Approve Step for Agent Run
+        if path.startswith("/v1/agent/runs/") and path.endswith("/approve"):
+            run_id = path[len("/v1/agent/runs/"): -len("/approve")].strip()
+            if not self.agent_mesh_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Agent mesh repository unavailable")
+                return
+            try:
+                schema = AgentRunApproveSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+            try:
+                run = self.agent_runtime.approve_step(run_id=run_id, tenant_id=user_id, approval_token=schema.approval_token)
+                self._send_json_response(run.to_dict())
+            except ValueError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_approval", str(ve))
+            except Exception as e:
+                logger.error(f"Error approving agent run step: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "agent_run_approve_error", str(e))
+            return
 
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
@@ -3012,6 +3199,19 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_error_response(HTTPStatus.NOT_FOUND, "device_not_found", f"Device '{dev_id}' not found")
                 return
             self._send_json_response({"device_id": dev_id, "deleted": True})
+            return
+
+        # M59: Purge Tenant Agent Data (GDPR compliance)
+        if path.startswith("/v1/agent/tenants/") and path.endswith("/purge"):
+            t_id = path[len("/v1/agent/tenants/"): -len("/purge")].strip()
+            if not self.agent_mesh_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Agent mesh repository unavailable")
+                return
+            if t_id != user_id and not (identity and (identity.has_role(UserRole.ADMIN) or identity.has_scope(UserScope.ADMIN.value))):
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Cannot purge another tenant's agent data")
+                return
+            purged = self.agent_mesh_repo.purge_tenant_data(tenant_id=t_id)
+            self._send_json_response({"purged_count": purged, "tenant_id": t_id, "success": True})
             return
 
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")

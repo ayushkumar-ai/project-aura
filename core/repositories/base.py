@@ -554,4 +554,5 @@ from core.repositories.base_automation import BaseAutomationRepository
 from core.repositories.base_cognitive_memory import BaseCognitiveMemoryRepository
 from core.repositories.base_multimodal import BaseMultimodalRepository
 from core.repositories.base_platform import BasePlatformRepository
+from core.repositories.base_agent_mesh import BaseAgentMeshRepository
 

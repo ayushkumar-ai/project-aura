@@ -446,3 +446,25 @@ class DeviceActionExecuteSchema(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=128, description="Idempotency key for replay prevention")
     admit_to_memory: bool = Field(default=False, description="Whether to bridge observation into M56 cognitive memory")
 
+
+# -----------------------------------------------------------------------------
+# M59 Unified Autonomous Agent Runtime & Enterprise Intelligence Mesh Schemas
+# -----------------------------------------------------------------------------
+
+class AgentRunCreateSchema(BaseModel):
+    """Schema for POST /v1/agent/runs."""
+    model_config = ConfigDict(extra="ignore")
+
+    intent: str = Field(..., min_length=1, max_length=10000, description="User goal or task instruction")
+    parent_run_id: str | None = Field(default=None, max_length=128, description="Optional parent run ID for delegation")
+    budget: dict[str, Any] = Field(default_factory=dict, description="Optional budget overrides")
+    auto_execute: bool = Field(default=True, description="Whether to start execution immediately")
+
+
+class AgentRunApproveSchema(BaseModel):
+    """Schema for POST /v1/agent/runs/{id}/approve."""
+    model_config = ConfigDict(extra="ignore")
+
+    approval_token: str = Field(..., min_length=1, max_length=128, description="M48 Human Approval token")
+    step_number: int | None = Field(default=None, description="Step number to approve")
+
