@@ -73,8 +73,8 @@ def repo(db_pool):
 @pytest.fixture
 def test_users(db_pool):
     user_repo = PostgresUserRepository(db_pool)
-    u1 = UserIdentity(id=f"usr_dev_pg1_{uuid.uuid4().hex[:8]}", username=f"u_dev1_{uuid.uuid4().hex[:6]}", role=UserRole.USER)
-    u2 = UserIdentity(id=f"usr_dev_pg2_{uuid.uuid4().hex[:8]}", username=f"u_dev2_{uuid.uuid4().hex[:6]}", role=UserRole.USER)
+    u1 = UserIdentity(user_id=f"usr_dev_pg1_{uuid.uuid4().hex[:8]}", username=f"u_dev1_{uuid.uuid4().hex[:6]}", roles=frozenset({UserRole.USER}))
+    u2 = UserIdentity(user_id=f"usr_dev_pg2_{uuid.uuid4().hex[:8]}", username=f"u_dev2_{uuid.uuid4().hex[:6]}", roles=frozenset({UserRole.USER}))
     user_repo.save(u1)
     user_repo.save(u2)
     return u1, u2
@@ -85,7 +85,7 @@ class TestPostgresPlatformIntegration:
         u1, _ = test_users
         device = DeviceRecord(
             device_id=f"dev_pg_{uuid.uuid4().hex[:12]}",
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             name="PG Workstation",
             device_type=DeviceType.DESKTOP,
             platform=PlatformType.WINDOWS,
@@ -95,25 +95,25 @@ class TestPostgresPlatformIntegration:
         saved = repo.save_device(device)
         assert saved.device_id == device.device_id
 
-        fetched = repo.get_device(device.device_id, tenant_id=u1.id)
+        fetched = repo.get_device(device.device_id, tenant_id=u1.user_id)
         assert fetched is not None
         assert fetched.name == "PG Workstation"
 
         # Update trust
-        updated = repo.update_device_trust(device.device_id, tenant_id=u1.id, trust_state=DeviceTrustState.AUTHORIZED)
+        updated = repo.update_device_trust(device.device_id, tenant_id=u1.user_id, trust_state=DeviceTrustState.AUTHORIZED)
         assert updated is not None
         assert updated.trust_state == DeviceTrustState.AUTHORIZED
 
         # Delete
-        deleted = repo.delete_device(device.device_id, tenant_id=u1.id)
+        deleted = repo.delete_device(device.device_id, tenant_id=u1.user_id)
         assert deleted is True
-        assert repo.get_device(device.device_id, tenant_id=u1.id) is None
+        assert repo.get_device(device.device_id, tenant_id=u1.user_id) is None
 
     def test_capabilities_and_executions_in_postgres(self, repo, test_users):
         u1, _ = test_users
         device = DeviceRecord(
             device_id=f"dev_pg_exec_{uuid.uuid4().hex[:12]}",
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             name="PG Exec Node",
             trust_state=DeviceTrustState.AUTHORIZED,
         )
@@ -123,7 +123,7 @@ class TestPostgresPlatformIntegration:
         cap = DeviceCapabilityRecord(
             capability_id=f"cap_pg_{uuid.uuid4().hex[:12]}",
             device_id=device.device_id,
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             name="get_clock",
             risk_level=CapabilityRiskLevel.LOW,
             auth_status=CapabilityAuthStatus.AUTHORIZED,
@@ -134,7 +134,7 @@ class TestPostgresPlatformIntegration:
         # Save execution
         exec_rec = DeviceExecutionRecord(
             execution_id=f"exec_pg_{uuid.uuid4().hex[:12]}",
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             device_id=device.device_id,
             capability_name="get_clock",
             risk_level=CapabilityRiskLevel.LOW,
@@ -148,22 +148,22 @@ class TestPostgresPlatformIntegration:
         assert saved_exec.execution_id == exec_rec.execution_id
 
         # Query by idempotency
-        idemp_fetched = repo.get_execution_by_idempotency(tenant_id=u1.id, idempotency_key="pg_idemp_123")
+        idemp_fetched = repo.get_execution_by_idempotency(tenant_id=u1.user_id, idempotency_key="pg_idemp_123")
         assert idemp_fetched is not None
         assert idemp_fetched.execution_id == exec_rec.execution_id
 
         # Save audit event
         audit = DeviceAuditEvent(
             event_id=f"evt_pg_{uuid.uuid4().hex[:12]}",
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             device_id=device.device_id,
             action="execute_get_clock",
-            principal_id=u1.id,
+            principal_id=u1.user_id,
             event_type="execution",
             risk_level=CapabilityRiskLevel.LOW,
         )
         repo.save_audit_event(audit)
-        events = repo.list_audit_events(device.device_id, tenant_id=u1.id)
+        events = repo.list_audit_events(device.device_id, tenant_id=u1.user_id)
         assert len(events) >= 1
 
     def test_multi_tenant_isolation_in_postgres(self, repo, test_users):
@@ -171,24 +171,24 @@ class TestPostgresPlatformIntegration:
         u1, u2 = test_users
         dev1 = DeviceRecord(
             device_id=f"dev_iso1_{uuid.uuid4().hex[:8]}",
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             name="Tenant 1 Machine",
         )
         repo.save_device(dev1)
 
         # Tenant 2 cannot access Tenant 1 device
-        assert repo.get_device(dev1.device_id, tenant_id=u2.id) is None
-        assert repo.delete_device(dev1.device_id, tenant_id=u2.id) is False
+        assert repo.get_device(dev1.device_id, tenant_id=u2.user_id) is None
+        assert repo.delete_device(dev1.device_id, tenant_id=u2.user_id) is False
 
     def test_hard_purge_tenant_in_postgres(self, repo, test_users):
         u1, _ = test_users
         dev = DeviceRecord(
             device_id=f"dev_purge_{uuid.uuid4().hex[:8]}",
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             name="Purge Machine",
         )
         repo.save_device(dev)
 
-        purged_count = repo.purge_tenant_data(tenant_id=u1.id)
+        purged_count = repo.purge_tenant_data(tenant_id=u1.user_id)
         assert purged_count >= 1
-        assert repo.get_device(dev.device_id, tenant_id=u1.id) is None
+        assert repo.get_device(dev.device_id, tenant_id=u1.user_id) is None

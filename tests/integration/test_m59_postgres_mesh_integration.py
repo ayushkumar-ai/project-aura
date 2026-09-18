@@ -1,4 +1,4 @@
-﻿"""M59 — PostgreSQL Agent Mesh Repository Integration Tests.
+"""M59 — PostgreSQL Agent Mesh Repository Integration Tests.
 
 Validates live PostgreSQL 16 persistence for migration 010, AgentRun CRUD,
 steps, delegations, events, audits, and tenant isolation.
@@ -25,7 +25,9 @@ from core.agent_mesh.types import (
     AgentRunStep,
     VerificationStatus,
 )
+from core.identity import UserIdentity, UserRole
 from core.platform.types import CapabilityRiskLevel
+from core.repositories.postgres import PostgresUserRepository
 from core.repositories.postgres_agent_mesh import PostgresAgentMeshRepository
 
 DB_URL = os.getenv("AURA_DATABASE_URL", "postgresql://aura_user:aura_password@127.0.0.1:5432/aura_db")
@@ -68,11 +70,26 @@ def repo(db_pool):
     return PostgresAgentMeshRepository(db_pool)
 
 
+@pytest.fixture
+def user_repo(db_pool):
+    return PostgresUserRepository(db_pool)
+
+
+@pytest.fixture
+def test_tenants(user_repo):
+    t_a = f"t_pg_a_{uuid.uuid4().hex[:8]}"
+    t_b = f"t_pg_b_{uuid.uuid4().hex[:8]}"
+    u1 = UserIdentity(user_id=t_a, username=f"user_{t_a}", roles=frozenset({UserRole.USER}))
+    u2 = UserIdentity(user_id=t_b, username=f"user_{t_b}", roles=frozenset({UserRole.USER}))
+    user_repo.save(u1)
+    user_repo.save(u2)
+    return t_a, t_b
+
+
 class TestPostgresAgentMeshIntegration:
-    def test_run_crud_and_tenant_isolation(self, repo):
+    def test_run_crud_and_tenant_isolation(self, repo, test_tenants):
         # Invariants M59-F01, M59-F17, M59-F50
-        tenant_a = f"t_pg_a_{uuid.uuid4().hex[:8]}"
-        tenant_b = f"t_pg_b_{uuid.uuid4().hex[:8]}"
+        tenant_a, tenant_b = test_tenants
 
         run_a = AgentRun(
             run_id=f"run_pg_{uuid.uuid4().hex[:12]}",
@@ -102,8 +119,8 @@ class TestPostgresAgentMeshIntegration:
         updated = repo.get_run(run_a.run_id, tenant_a)
         assert updated.status == AgentRunStatus.RUNNING
 
-    def test_steps_delegations_events_audits(self, repo):
-        tenant = f"t_pg_{uuid.uuid4().hex[:8]}"
+    def test_steps_delegations_events_audits(self, repo, test_tenants):
+        tenant, _ = test_tenants
         run_id = f"run_{uuid.uuid4().hex[:12]}"
 
         run = AgentRun(
@@ -133,9 +150,19 @@ class TestPostgresAgentMeshIntegration:
         assert steps[0].plan_action == "calculate"
 
         # 2. Delegation
+        child_run_id = f"run_child_{uuid.uuid4().hex[:8]}"
+        child_run = AgentRun(
+            run_id=child_run_id,
+            tenant_id=tenant,
+            user_id="alice",
+            parent_run_id=run_id,
+            status=AgentRunStatus.RUNNING,
+        )
+        repo.save_run(child_run)
+
         delegation = AgentDelegation(
             parent_run_id=run_id,
-            child_run_id=f"run_child_{uuid.uuid4().hex[:8]}",
+            child_run_id=child_run_id,
             tenant_id=tenant,
             role=AgentRole.RESEARCH,
             capabilities=["web_search"],
@@ -168,7 +195,7 @@ class TestPostgresAgentMeshIntegration:
             details={"allowed": True},
         )
         repo.save_audit(audit)
-        audits = repo.list_audits(run_id, tenant)
+        audits = repo.list_audits(tenant)
         assert len(audits) == 1
         assert audits[0].action == "policy_evaluate"
 

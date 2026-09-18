@@ -78,8 +78,8 @@ def user_repo(db_pool):
 def test_tenants(user_repo):
     t1_id = f"test_tenant_a_{uuid.uuid4().hex[:8]}"
     t2_id = f"test_tenant_b_{uuid.uuid4().hex[:8]}"
-    u1 = UserIdentity(user_id=t1_id, username=f"user_{t1_id}", roles=[UserRole.USER])
-    u2 = UserIdentity(user_id=t2_id, username=f"user_{t2_id}", roles=[UserRole.USER])
+    u1 = UserIdentity(user_id=t1_id, username=f"user_{t1_id}", roles=frozenset({UserRole.USER}))
+    u2 = UserIdentity(user_id=t2_id, username=f"user_{t2_id}", roles=frozenset({UserRole.USER}))
     user_repo.save(u1)
     user_repo.save(u2)
     yield t1_id, t2_id
@@ -188,9 +188,11 @@ class TestPostgresCognitiveMemoryIntegration:
 
         # Update profile
         saved1.preferences["theme"] = "system"
-        saved2 = repo.save_profile(saved1)
+        repo.save_profile(saved1)
+        saved2 = repo.get_profile(t1)
+        assert saved2 is not None
         assert saved2.preferences["theme"] == "system"
-        assert saved2.version > saved1.version
+        assert saved2.version > 1
 
     def test_experience_pattern_persistence(self, repo, test_tenants):
         """Invariant M56-F14 & M56-F32: Experience pattern upsert."""

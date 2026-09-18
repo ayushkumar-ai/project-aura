@@ -72,8 +72,8 @@ def repo(db_pool):
 @pytest.fixture
 def test_users(db_pool):
     user_repo = PostgresUserRepository(db_pool)
-    u1 = UserIdentity(id=f"usr_mm_pg1_{uuid.uuid4().hex[:8]}", username=f"u_mm1_{uuid.uuid4().hex[:6]}", role=UserRole.USER)
-    u2 = UserIdentity(id=f"usr_mm_pg2_{uuid.uuid4().hex[:8]}", username=f"u_mm2_{uuid.uuid4().hex[:6]}", role=UserRole.USER)
+    u1 = UserIdentity(user_id=f"usr_mm_pg1_{uuid.uuid4().hex[:8]}", username=f"u_mm1_{uuid.uuid4().hex[:6]}", roles=frozenset({UserRole.USER}))
+    u2 = UserIdentity(user_id=f"usr_mm_pg2_{uuid.uuid4().hex[:8]}", username=f"u_mm2_{uuid.uuid4().hex[:6]}", roles=frozenset({UserRole.USER}))
     user_repo.save(u1)
     user_repo.save(u2)
     return u1, u2
@@ -84,7 +84,7 @@ class TestPostgresMultimodalIntegration:
         u1, _ = test_users
         art = MultimodalArtifact(
             artifact_id=f"art_pg_{uuid.uuid4().hex[:12]}",
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             media_type=MultimodalMediaType.IMAGE,
             format=MediaFormat.PNG,
             size_bytes=2048,
@@ -96,19 +96,19 @@ class TestPostgresMultimodalIntegration:
         saved = repo.save_artifact(art)
         assert saved.artifact_id == art.artifact_id
 
-        fetched = repo.get_artifact(art.artifact_id, tenant_id=u1.id)
+        fetched = repo.get_artifact(art.artifact_id, tenant_id=u1.user_id)
         assert fetched is not None
         assert fetched.size_bytes == 2048
 
         # Update state
-        updated = repo.update_artifact_state(art.artifact_id, tenant_id=u1.id, lifecycle_state=ArtifactLifecycleState.PROCESSED)
+        updated = repo.update_artifact_state(art.artifact_id, tenant_id=u1.user_id, lifecycle_state=ArtifactLifecycleState.PROCESSED)
         assert updated.lifecycle_state == ArtifactLifecycleState.PROCESSED
 
     def test_job_and_result_persistence(self, repo, test_users):
         u1, _ = test_users
         art = MultimodalArtifact(
             artifact_id=f"art_job_{uuid.uuid4().hex[:12]}",
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             media_type=MultimodalMediaType.DOCUMENT,
             format=MediaFormat.PDF,
             size_bytes=4096,
@@ -119,7 +119,7 @@ class TestPostgresMultimodalIntegration:
 
         job = MultimodalProcessingJob(
             job_id=f"job_pg_{uuid.uuid4().hex[:12]}",
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             artifact_id=art.artifact_id,
             operation="extract_document",
             capability_id="document_extraction",
@@ -131,7 +131,7 @@ class TestPostgresMultimodalIntegration:
 
         res = MultimodalResult(
             result_id=f"res_pg_{uuid.uuid4().hex[:12]}",
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             artifact_id=art.artifact_id,
             job_id=job.job_id,
             operation="extract_document",
@@ -141,14 +141,14 @@ class TestPostgresMultimodalIntegration:
         saved_res = repo.save_result(res)
         assert saved_res.extracted_text == "PostgreSQL parsed text"
 
-        results = repo.list_results(art.artifact_id, tenant_id=u1.id)
+        results = repo.list_results(art.artifact_id, tenant_id=u1.user_id)
         assert len(results) >= 1
 
     def test_multi_tenant_isolation_in_postgres(self, repo, test_users):
         u1, u2 = test_users
         art = MultimodalArtifact(
             artifact_id=f"art_iso_{uuid.uuid4().hex[:12]}",
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             media_type=MultimodalMediaType.AUDIO,
             format=MediaFormat.WAV,
             size_bytes=1000,
@@ -158,14 +158,14 @@ class TestPostgresMultimodalIntegration:
         repo.save_artifact(art)
 
         # Tenant 2 cannot get Tenant 1's artifact
-        assert repo.get_artifact(art.artifact_id, tenant_id=u2.id) is None
-        assert repo.delete_artifact(art.artifact_id, tenant_id=u2.id) is False
+        assert repo.get_artifact(art.artifact_id, tenant_id=u2.user_id) is None
+        assert repo.delete_artifact(art.artifact_id, tenant_id=u2.user_id) is False
 
     def test_hard_purge_tenant_in_postgres(self, repo, test_users):
         u1, _ = test_users
         art = MultimodalArtifact(
             artifact_id=f"art_purge_{uuid.uuid4().hex[:12]}",
-            tenant_id=u1.id,
+            tenant_id=u1.user_id,
             media_type=MultimodalMediaType.IMAGE,
             format=MediaFormat.JPEG,
             size_bytes=500,
@@ -174,6 +174,6 @@ class TestPostgresMultimodalIntegration:
         )
         repo.save_artifact(art)
 
-        purged = repo.purge_tenant_data(tenant_id=u1.id)
+        purged = repo.purge_tenant_data(tenant_id=u1.user_id)
         assert purged >= 1
-        assert repo.get_artifact(art.artifact_id, tenant_id=u1.id) is None
+        assert repo.get_artifact(art.artifact_id, tenant_id=u1.user_id) is None
