@@ -103,9 +103,28 @@ from core.api_contracts import (
     MultimodalArtifactUploadSchema,
     MultimodalProcessRequestSchema,
     MultimodalArtifactUpdateSchema,
+    DeviceRegisterSchema,
+    DeviceTrustUpdateSchema,
+    DeviceCapabilityAuthorizeSchema,
+    DeviceActionExecuteSchema,
 )
 from core.repositories.base_cognitive_memory import BaseCognitiveMemoryRepository
 from core.repositories.base_multimodal import BaseMultimodalRepository
+from core.repositories.base_platform import BasePlatformRepository
+from core.platform import (
+    PlatformIntegrationGateway,
+    PlatformMemoryBridge,
+    PlatformCapabilityRegistry,
+    PlatformSecurityManager,
+    DeviceRecord,
+    DeviceCapabilityRecord,
+    DeviceTrustState,
+    CapabilityAuthStatus,
+    CapabilityRiskLevel,
+    DeviceType,
+    PlatformType,
+)
+
 from core.multimodal import (
     MultimodalProcessor,
     IObjectStorageService,
@@ -358,6 +377,35 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             )
             setattr(self.server, "multimodal_deletion_cascade", dc)
         return dc
+
+    @property
+    def platform_repo(self) -> BasePlatformRepository | None:
+        rc = getattr(self.server, "repository_container", None)
+        return getattr(rc, "platform", None) if rc else None
+
+    @property
+    def platform_gateway(self) -> PlatformIntegrationGateway:
+        gw = getattr(self.server, "platform_gateway", None)
+        if gw is None:
+            gw = PlatformIntegrationGateway(
+                repository=self.platform_repo,
+                policy_engine=getattr(self.server.aura, "policy", None) if hasattr(self.server, "aura") else None,
+                approval_engine=getattr(self.server, "approval_engine", None),
+            )
+            setattr(self.server, "platform_gateway", gw)
+        return gw
+
+    @property
+    def platform_bridge(self) -> PlatformMemoryBridge:
+        pb = getattr(self.server, "platform_bridge", None)
+        if pb is None:
+            pb = PlatformMemoryBridge(
+                memory_repo=self.cognitive_memory_repo,
+                platform_repo=self.platform_repo,
+            )
+            setattr(self.server, "platform_bridge", pb)
+        return pb
+
 
     def _read_raw_body(self) -> bytes | None:
         """Safely read raw binary body within size limits (M54)."""
@@ -1474,6 +1522,116 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response({"results": [r.to_dict() for r in results], "count": len(results)})
             return
 
+        # M58: List Platform Standard Capabilities
+        if path == "/v1/platform/capabilities":
+            caps = self.platform_gateway.registry.list_all()
+            self._send_json_response({"capabilities": [
+                {
+                    "name": c.name,
+                    "title": c.title,
+                    "description": c.description,
+                    "risk_level": c.risk_level.value,
+                    "requires_approval": c.requires_approval,
+                    "parameters_schema": c.parameters_schema,
+                }
+                for c in caps
+            ]})
+            return
+
+        # M58: List Registered Devices
+        if path == "/v1/devices":
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            if not self.platform_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Platform repository unavailable")
+                return
+            devs = self.platform_repo.list_devices(tenant_id=user_id)
+            self._send_json_response({"devices": [d.to_dict() for d in devs], "count": len(devs)})
+            return
+
+        # M58: Get Single Device Details
+        if path.startswith("/v1/devices/") and not path.endswith("/capabilities") and not path.endswith("/executions") and not path.endswith("/audits"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            dev_id = path[len("/v1/devices/"):].strip()
+            if not self.platform_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Platform repository unavailable")
+                return
+            dev = self.platform_repo.get_device(dev_id, tenant_id=user_id)
+            if not dev:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "device_not_found", f"Device '{dev_id}' not found")
+                return
+            self._send_json_response(dev.to_dict())
+            return
+
+        # M58: List Device Capabilities
+        if path.startswith("/v1/devices/") and path.endswith("/capabilities"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            dev_id = path[len("/v1/devices/"): -len("/capabilities")].strip()
+            if not self.platform_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Platform repository unavailable")
+                return
+            dev = self.platform_repo.get_device(dev_id, tenant_id=user_id)
+            if not dev:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "device_not_found", f"Device '{dev_id}' not found")
+                return
+            caps = self.platform_repo.list_capabilities(dev_id, tenant_id=user_id)
+            self._send_json_response({"capabilities": [c.to_dict() for c in caps], "count": len(caps)})
+            return
+
+        # M58: List Device Execution History
+        if path.startswith("/v1/devices/") and path.endswith("/executions"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            dev_id = path[len("/v1/devices/"): -len("/executions")].strip()
+            if not self.platform_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Platform repository unavailable")
+                return
+            dev = self.platform_repo.get_device(dev_id, tenant_id=user_id)
+            if not dev:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "device_not_found", f"Device '{dev_id}' not found")
+                return
+            params = parse_qs(parsed_url.query)
+            limit = int(params.get("limit", [50])[0])
+            execs = self.platform_repo.list_executions(dev_id, tenant_id=user_id, limit=limit)
+            self._send_json_response({"executions": [e.to_dict() for e in execs], "count": len(execs)})
+            return
+
+        # M58: List Device Audit Events
+        if path.startswith("/v1/devices/") and path.endswith("/audits"):
+            is_auth, identity, err_msg, status_code = self._resolve_identity()
+            if not is_auth:
+                self._send_error_response(HTTPStatus(status_code), "unauthorized", err_msg or "Unauthorized")
+                return
+            user_id = identity.user_id if identity else "default"
+            dev_id = path[len("/v1/devices/"): -len("/audits")].strip()
+            if not self.platform_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Platform repository unavailable")
+                return
+            dev = self.platform_repo.get_device(dev_id, tenant_id=user_id)
+            if not dev:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "device_not_found", f"Device '{dev_id}' not found")
+                return
+            params = parse_qs(parsed_url.query)
+            limit = int(params.get("limit", [50])[0])
+            events = self.platform_repo.list_audit_events(dev_id, tenant_id=user_id, limit=limit)
+            self._send_json_response({"audit_events": [ev.to_dict() for ev in events], "count": len(events)})
+            return
+
+
 
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
@@ -2371,6 +2529,105 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "processing_error", str(e))
             return
 
+        # M58: Register Device
+        if path == "/v1/devices":
+            if not self.platform_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Platform repository unavailable")
+                return
+            try:
+                reg_schema = DeviceRegisterSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                device = self.platform_gateway.register_device(
+                    tenant_id=user_id,
+                    name=reg_schema.name,
+                    device_type=reg_schema.device_type,
+                    platform=reg_schema.platform,
+                    platform_version=reg_schema.platform_version,
+                    hostname=reg_schema.hostname,
+                    metadata=reg_schema.metadata,
+                    auto_authorize=reg_schema.auto_authorize,
+                )
+                self._send_json_response(device.to_dict(), status=HTTPStatus.CREATED)
+            except Exception as e:
+                logger.error(f"Error registering device: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "registration_error", str(e))
+            return
+
+        # M58: Authorize Device Capability
+        if path.startswith("/v1/devices/") and path.endswith("/authorize"):
+            dev_id = path[len("/v1/devices/"): -len("/authorize")].strip()
+            if not self.platform_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Platform repository unavailable")
+                return
+            try:
+                auth_schema = DeviceCapabilityAuthorizeSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                updated_cap = self.platform_gateway.authorize_capability(
+                    tenant_id=user_id,
+                    device_id=dev_id,
+                    capability_name=auth_schema.capability_name,
+                    auth_status=auth_schema.auth_status,
+                )
+                self._send_json_response(updated_cap.to_dict())
+            except ValueError as ve:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", str(ve))
+            except Exception as e:
+                logger.error(f"Error authorizing capability: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "authorization_error", str(e))
+            return
+
+        # M58: Execute Device Capability
+        if path.startswith("/v1/devices/") and path.endswith("/execute"):
+            dev_id = path[len("/v1/devices/"): -len("/execute")].strip()
+            if not self.platform_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Platform repository unavailable")
+                return
+            try:
+                exec_schema = DeviceActionExecuteSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+
+            try:
+                record = self.platform_gateway.execute_action(
+                    tenant_id=user_id,
+                    device_id=dev_id,
+                    capability_name=exec_schema.capability_name,
+                    parameters=exec_schema.parameters,
+                    approval_token=exec_schema.approval_token,
+                    idempotency_key=exec_schema.idempotency_key,
+                )
+
+                # Optionally bridge observation into M56 cognitive memory
+                if exec_schema.admit_to_memory and self.cognitive_memory_repo:
+                    dev = self.platform_repo.get_device(dev_id, tenant_id=user_id)
+                    if dev:
+                        self.platform_bridge.admit_observation_to_memory(
+                            tenant_id=user_id,
+                            device=dev,
+                            execution=record,
+                            explicit_user_confirmed=True,
+                        )
+
+                self._send_json_response(record.to_dict())
+            except ValueError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_execution_request", str(ve))
+            except PermissionError as pe:
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", str(pe))
+            except Exception as e:
+                logger.error(f"Error executing platform action: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "execution_error", str(e))
+            return
+
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
 
 
@@ -2600,7 +2857,33 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "artifact_update_error", str(e))
             return
 
+        # M58: Update Device Trust State
+        if path.startswith("/v1/devices/") and path.endswith("/trust"):
+            dev_id = path[len("/v1/devices/"): -len("/trust")].strip()
+            if not self.platform_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Platform repository unavailable")
+                return
+            try:
+                schema = DeviceTrustUpdateSchema.model_validate(body)
+            except ValidationError as ve:
+                self._send_error_response(HTTPStatus.BAD_REQUEST, "invalid_request", str(ve))
+                return
+            try:
+                updated = self.platform_gateway.update_device_trust(
+                    tenant_id=user_id,
+                    device_id=dev_id,
+                    trust_state=schema.trust_state,
+                )
+                self._send_json_response(updated.to_dict())
+            except ValueError as ve:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "device_not_found", str(ve))
+            except Exception as e:
+                logger.error(f"Error updating device trust: {e}", exc_info=True)
+                self._send_error_response(HTTPStatus.INTERNAL_SERVER_ERROR, "device_trust_error", str(e))
+            return
+
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
+
 
     def do_DELETE(self) -> None:
         """Route DELETE requests with authentication and tenant isolation."""
@@ -2705,8 +2988,34 @@ class AURAHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response({"artifact_id": art_id, "deleted": True})
             return
 
+        # M58: Purge Tenant Device Data (GDPR compliance)
+        if path.startswith("/v1/devices/tenants/") and path.endswith("/purge"):
+            t_id = path[len("/v1/devices/tenants/"): -len("/purge")].strip()
+            if not self.platform_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Platform repository unavailable")
+                return
+            if t_id != user_id and not (identity and (identity.has_role(UserRole.ADMIN) or identity.has_scope(UserScope.ADMIN.value))):
+                self._send_error_response(HTTPStatus.FORBIDDEN, "forbidden", "Cannot purge another tenant's device data")
+                return
+            purged = self.platform_repo.purge_tenant_data(tenant_id=t_id)
+            self._send_json_response({"purged_count": purged, "tenant_id": t_id, "success": True})
+            return
+
+        # M58: Delete / Unregister Single Device
+        if path.startswith("/v1/devices/"):
+            dev_id = path[len("/v1/devices/"):].strip()
+            if not self.platform_repo:
+                self._send_error_response(HTTPStatus.SERVICE_UNAVAILABLE, "service_unavailable", "Platform repository unavailable")
+                return
+            deleted = self.platform_bridge.cascade_device_deletion(tenant_id=user_id, device_id=dev_id)
+            if not deleted:
+                self._send_error_response(HTTPStatus.NOT_FOUND, "device_not_found", f"Device '{dev_id}' not found")
+                return
+            self._send_json_response({"device_id": dev_id, "deleted": True})
+            return
 
         self._send_error_response(HTTPStatus.NOT_FOUND, "not_found", f"Path '{path}' not found")
+
 
 
 class AURAHTTPServer:

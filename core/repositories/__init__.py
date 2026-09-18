@@ -19,16 +19,20 @@ from core.repositories.base_webhook import BaseWebhookRepository
 from core.repositories.base_fleet import BaseFleetRepository
 from core.repositories.base_cognitive_memory import BaseCognitiveMemoryRepository
 from core.repositories.base_multimodal import BaseMultimodalRepository
+from core.repositories.base_platform import BasePlatformRepository
 from core.repositories.in_memory_automation import InMemoryAutomationRepository
 from core.repositories.in_memory_webhook import InMemoryWebhookRepository
 from core.repositories.in_memory_fleet import InMemoryFleetRepository
 from core.repositories.in_memory_cognitive_memory import InMemoryCognitiveMemoryRepository
 from core.repositories.in_memory_multimodal import InMemoryMultimodalRepository
+from core.repositories.in_memory_platform import InMemoryPlatformRepository
 from core.repositories.postgres_automation import PostgresAutomationRepository
 from core.repositories.postgres_webhook import PostgresWebhookRepository
 from core.repositories.postgres_fleet import PostgresFleetRepository
 from core.repositories.postgres_cognitive_memory import PostgresCognitiveMemoryRepository
 from core.repositories.postgres_multimodal import PostgresMultimodalRepository
+from core.repositories.postgres_platform import PostgresPlatformRepository
+
 from core.repositories.postgres_task import PostgresTaskRepository
 from core.repositories.postgres_approval import PostgresApprovalRepository
 from core.repositories.factory import (
@@ -79,6 +83,7 @@ __all__ = [
     "BaseFleetRepository",
     "BaseCognitiveMemoryRepository",
     "BaseMultimodalRepository",
+    "BasePlatformRepository",
     "InMemoryUserRepository",
     "InMemoryUserPreferencesRepository",
     "InMemoryApiTokenRepository",
@@ -95,6 +100,7 @@ __all__ = [
     "InMemoryFleetRepository",
     "InMemoryCognitiveMemoryRepository",
     "InMemoryMultimodalRepository",
+    "InMemoryPlatformRepository",
     "PostgresUserRepository",
     "PostgresUserPreferencesRepository",
     "PostgresApiTokenRepository",
@@ -111,7 +117,9 @@ __all__ = [
     "PostgresFleetRepository",
     "PostgresCognitiveMemoryRepository",
     "PostgresMultimodalRepository",
+    "PostgresPlatformRepository",
     "RepositoryContainer",
+
     "create_in_memory_repositories",
     "create_postgres_repositories",
     "create_repository_container",

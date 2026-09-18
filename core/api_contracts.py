@@ -400,3 +400,49 @@ class MultimodalArtifactUpdateSchema(BaseModel):
     lifecycle_state: str | None = Field(default=None, description="Updated lifecycle state")
     security_classification: str | None = Field(default=None, description="Updated security classification")
     reason: str = Field(default="", max_length=500, description="Reason for update")
+
+
+
+# -----------------------------------------------------------------------------
+# M58 Real-World Device, Desktop OS & Platform Integration Schemas
+# -----------------------------------------------------------------------------
+
+class DeviceRegisterSchema(BaseModel):
+    """Schema for POST /v1/devices registration."""
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(..., min_length=1, max_length=256, description="Device human-readable name")
+    device_type: str = Field(default="desktop", description="Device type (desktop, mobile, server, iot_device, virtual_environment)")
+    platform: str = Field(default="windows", description="Operating system platform (windows, wsl, linux, macos, android, generic)")
+    platform_version: str = Field(default="", max_length=128, description="OS/Kernel version string")
+    hostname: str = Field(default="", max_length=256, description="Hostname")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Device metadata")
+    auto_authorize: bool = Field(default=False, description="Whether to auto-authorize device and capabilities")
+
+
+class DeviceTrustUpdateSchema(BaseModel):
+    """Schema for PATCH /v1/devices/{id}/trust."""
+    model_config = ConfigDict(extra="ignore")
+
+    trust_state: str = Field(..., description="Target trust state (verified, authorized, suspended, revoked)")
+    reason: str = Field(default="", max_length=500, description="Reason for trust transition")
+
+
+class DeviceCapabilityAuthorizeSchema(BaseModel):
+    """Schema for POST /v1/devices/{id}/authorize."""
+    model_config = ConfigDict(extra="ignore")
+
+    capability_name: str = Field(..., min_length=1, max_length=128, description="Capability name to authorize or revoke")
+    auth_status: str = Field(default="authorized", description="Target status (authorized, disabled, revoked)")
+
+
+class DeviceActionExecuteSchema(BaseModel):
+    """Schema for POST /v1/devices/{id}/execute."""
+    model_config = ConfigDict(extra="ignore")
+
+    capability_name: str = Field(..., min_length=1, max_length=128, description="Capability to execute")
+    parameters: dict[str, Any] = Field(default_factory=dict, description="Typed parameters for capability")
+    approval_token: str | None = Field(default=None, max_length=128, description="M48 approval token for high/critical risk actions")
+    idempotency_key: str | None = Field(default=None, max_length=128, description="Idempotency key for replay prevention")
+    admit_to_memory: bool = Field(default=False, description="Whether to bridge observation into M56 cognitive memory")
+

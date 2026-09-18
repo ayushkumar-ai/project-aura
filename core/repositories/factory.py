@@ -30,6 +30,7 @@ from core.repositories.base_cognitive_memory import BaseCognitiveMemoryRepositor
 from core.repositories.base_webhook import BaseWebhookRepository
 from core.repositories.base_fleet import BaseFleetRepository
 from core.repositories.base_multimodal import BaseMultimodalRepository
+from core.repositories.base_platform import BasePlatformRepository
 from core.repositories.in_memory import (
     InMemoryApiTokenRepository,
     InMemoryApprovalRepository,
@@ -48,6 +49,7 @@ from core.repositories.in_memory_webhook import InMemoryWebhookRepository
 from core.repositories.in_memory_fleet import InMemoryFleetRepository
 from core.repositories.in_memory_cognitive_memory import InMemoryCognitiveMemoryRepository
 from core.repositories.in_memory_multimodal import InMemoryMultimodalRepository
+from core.repositories.in_memory_platform import InMemoryPlatformRepository
 from core.repositories.postgres import (
     PostgresApiTokenRepository,
     PostgresCheckpointRepository,
@@ -66,6 +68,8 @@ from core.repositories.postgres_webhook import PostgresWebhookRepository
 from core.repositories.postgres_fleet import PostgresFleetRepository
 from core.repositories.postgres_cognitive_memory import PostgresCognitiveMemoryRepository
 from core.repositories.postgres_multimodal import PostgresMultimodalRepository
+from core.repositories.postgres_platform import PostgresPlatformRepository
+
 
 logger = logging.getLogger("aura.repositories.factory")
 
@@ -90,6 +94,7 @@ class RepositoryContainer:
     fleet: BaseFleetRepository | None = None
     cognitive_memories: BaseCognitiveMemoryRepository | None = None
     multimodal: BaseMultimodalRepository | None = None
+    platform: BasePlatformRepository | None = None
     db_pool: DatabaseConnectionPool | None = None
     is_postgres: bool = False
 
@@ -116,6 +121,7 @@ def create_in_memory_repositories() -> RepositoryContainer:
     fleet_repo = InMemoryFleetRepository(task_repo=task_repo)
     cog_repo = InMemoryCognitiveMemoryRepository()
     mm_repo = InMemoryMultimodalRepository()
+    platform_repo = InMemoryPlatformRepository()
 
     return RepositoryContainer(
         users=user_repo,
@@ -134,6 +140,7 @@ def create_in_memory_repositories() -> RepositoryContainer:
         fleet=fleet_repo,
         cognitive_memories=cog_repo,
         multimodal=mm_repo,
+        platform=platform_repo,
         db_pool=None,
         is_postgres=False,
     )
@@ -160,6 +167,7 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
     fleet_repo = PostgresFleetRepository(db_pool)
     cog_repo = PostgresCognitiveMemoryRepository(db_pool)
     mm_repo = PostgresMultimodalRepository(db_pool)
+    platform_repo = PostgresPlatformRepository(db_pool)
 
     return RepositoryContainer(
         users=user_repo,
@@ -178,9 +186,11 @@ def create_postgres_repositories(db_pool: DatabaseConnectionPool) -> RepositoryC
         fleet=fleet_repo,
         cognitive_memories=cog_repo,
         multimodal=mm_repo,
+        platform=platform_repo,
         db_pool=db_pool,
         is_postgres=True,
     )
+
 
 
 def create_repository_container(
